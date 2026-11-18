@@ -650,3 +650,34 @@ p.small.muted.center, #pos { font-size: var(--fs-xs); font-weight: 600; margin: 
 .lastcard.ng { border-color: var(--ng); } .lastcard.ng .lmark { color: var(--ng); }
 @keyframes stripin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .qstage { height: min(42vh, 360px); }
+
+/* v0.9 単語帳（カード） */
+.chips .cnt { font-size: 11px; color: var(--muted); margin-left: 5px; font-variant-numeric: tabular-nums; }
+.chips button.on .cnt { color: var(--accent); }
+.unitlist { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 210px; overflow: auto; }
+.unit { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface2); min-height: 44px; }
+.unit input { width: 20px; height: 20px; accent-color: var(--accent); flex: 0 0 auto; }
+.unit span { font-size: var(--fs-s); font-weight: 600; }
+.unit small { font-size: 11px; color: var(--muted); margin-left: auto; white-space: nowrap; }
+.qhead .qcenter { flex: 1; display: flex; flex-direction: column; align-items: center; line-height: 1.2; }
+.qhead .qcenter b { font-size: var(--fs-m); font-weight: 700; font-variant-numeric: tabular-nums; }
+.qhead .qcenter small { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; min-height: 13px; }
+.qhead .xbtn { width: 40px; height: 40px; }
+.qstage.stacked::before, .qstage.stacked::after { content: ''; position: absolute; left: 10px; right: 10px; bottom: -6px; height: 10px; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 18px 18px; background: var(--surface); z-index: 0; }
+.qstage.stacked::after { left: 20px; right: 20px; bottom: -12px; opacity: .6; }
+.qstage .fcard { z-index: 1; }
+.qstage .fcard.revealed { border-color: var(--line); }
+.tap-hint { position: absolute; left: 0; right: 0; bottom: 18px; font-size: 12px; color: var(--muted); }
+.cardbm { position: absolute; right: 10px; bottom: 10px; z-index: 3; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface2); color: var(--gray); display: inline-flex; align-items: center; justify-content: center; }
+.cardbm.on { color: #f28c28; border-color: #f28c28; }
+.cardbm.on svg path { fill: currentColor; }
+.player { display: flex; align-items: center; gap: 10px; margin: 2px 0 8px; }
+.player .hint { font-size: 11.5px; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repeat-btn { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 12px; border-radius: 99px; border: 1.5px solid var(--line); background: var(--surface); color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; flex: 0 0 auto; }
+.repeat-btn.on { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.sheet .replist { display: flex; flex-direction: column; gap: 6px; }
+.repopt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); }
+.repopt input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--accent); flex: 0 0 auto; }
+.repopt b { display: block; font-size: var(--fs-s); } .repopt small { display: block; font-size: 12px; color: var(--muted); }
+.sheet .unitlist { max-height: 160px; }
+dialog { max-height: 86vh; overflow: auto; }

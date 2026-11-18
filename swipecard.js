@@ -13,7 +13,7 @@ const DIST_UP = 70;         // px needed to commit up / down
 const FLICK_V = 0.55;       // px/ms: a fast flick commits with a shorter distance
 const FLICK_MIN = 35;
 
-export function makeSwipeCard(card, { knowRight = true, onTap, onCommit, canInteract = () => true }) {
+export function makeSwipeCard(card, { knowRight = true, onTap, onCommit, canInteract = () => true, revealOnCommit = null }) {
   let id = null, x0 = 0, y0 = 0, t0 = 0, dx = 0, dy = 0, axis = null, done = false;
   let lastX = 0, lastY = 0, lastT = 0, vx = 0, vy = 0;
   const knowDir = knowRight ? 'right' : 'left', dontDir = knowRight ? 'left' : 'right';
@@ -34,6 +34,8 @@ export function makeSwipeCard(card, { knowRight = true, onTap, onCommit, canInte
     if (done) return;
     done = true;
     card.classList.add('gone');
+    // like paper flashcards: the card shows its answer while it flies away
+    if (revealOnCommit) { const f = card.querySelector('.face'); if (f) f.innerHTML = revealOnCommit(); card.classList.add('revealed'); }
     const dir = dirFor(result);
     card.style.transition = 'transform .2s ease-in, opacity .2s ease-in';
     const tx = dir === 'right' ? window.innerWidth : dir === 'left' ? -window.innerWidth : dx;
@@ -88,13 +90,14 @@ export function makeSwipeCard(card, { knowRight = true, onTap, onCommit, canInte
 
   // Touch Events on iPhone (reliable in Safari / home-screen PWA; preventDefault stops page scroll),
   // Pointer Events for mouse / pen.
+  const onButton = (e) => !!e.target.closest?.('[data-nosw]');   // buttons on the card (bookmark) are not swipes
   card.addEventListener('touchstart', (e) => {
-    if (e.touches.length > 1) return;
+    if (e.touches.length > 1 || onButton(e)) return;
     const p = e.changedTouches[0];
     if (start(p.clientX, p.clientY, e.timeStamp)) e.preventDefault();
   }, { passive: false });
   card.addEventListener('touchmove', (e) => {
-    if (id === null) return;
+    if (id === null || onButton(e)) return;
     e.preventDefault();
     const p = e.changedTouches[0];
     move(p.clientX, p.clientY, e.timeStamp);
@@ -102,7 +105,7 @@ export function makeSwipeCard(card, { knowRight = true, onTap, onCommit, canInte
   card.addEventListener('touchend', (e) => { if (id !== null) { e.preventDefault(); end(e.timeStamp, false); } }, { passive: false });
   card.addEventListener('touchcancel', (e) => end(e.timeStamp, true));
   card.addEventListener('pointerdown', (e) => {
-    if (e.pointerType === 'touch') return;
+    if (e.pointerType === 'touch' || onButton(e)) return;
     if (start(e.clientX, e.clientY, e.timeStamp)) card.setPointerCapture?.(e.pointerId);
   });
   card.addEventListener('pointermove', (e) => { if (e.pointerType !== 'touch') move(e.clientX, e.clientY, e.timeStamp); });
@@ -113,8 +116,8 @@ export function makeSwipeCard(card, { knowRight = true, onTap, onCommit, canInte
 }
 
 // card HTML skeleton with direction labels
-export function swipeCardHTML(inner, knowRight = true) {
-  return `<div class="fcard">
+export function swipeCardHTML(inner, knowRight = true, extra = '') {
+  return `<div class="fcard">${extra}
     <span class="stamp s-left ${knowRight ? 'k-dont' : 'k-know'}">${knowRight ? 'わからない' : 'わかる'}</span>
     <span class="stamp s-right ${knowRight ? 'k-know' : 'k-dont'}">${knowRight ? 'わかる' : 'わからない'}</span>
     <span class="stamp s-upv k-vague">曖昧</span>

@@ -101,7 +101,7 @@ export async function studySetup(el) {
     const n = cfg.count === 'all' ? sel.list.length : Math.min(sel.list.length, cfg.count === 'custom' ? cfg.customCount : cfg.count);
     const range = rangeOf(cfg);
     el.innerHTML = `
-      <header class="top"><h1>単語テスト</h1><span class="grow"></span><a class="pill-link" href="#quick">${icon('bolt', 18)}Quick</a></header>
+      <header class="top"><h1>単語テスト</h1><span class="grow"></span><a class="pill-link" href="#quick">${icon('cards', 18)}単語帳（カード）</a></header>
       ${active ? `
         <div class="resume-bar">
           <span class="grow"><b>中断中のテスト</b><small>${DIRS[active.config.direction].label}・${FMT_SHORT[active.config.format]}　残り ${remaining(active)}/${active.queue.length}問</small></span>
@@ -336,6 +336,7 @@ export async function sessionScreen(el, params) {
     const st = { flipped: false, revealed: false, t0: performance.now() };
     st.ctl = makeSwipeCard(card, {
       knowRight,
+      revealOnCommit: () => back,
       onTap: () => {
         st.flipped = !st.flipped;
         card.classList.add('flipping');

@@ -1,118 +1,150 @@
-// Quick Flashcards: swipe-based fast self-check (linked to mastery / attempts / sessions)
+// 単語帳（Quick Flashcards）: swipe cards in units, with music-player-like repeat modes.
+// Linked to mastery / attempts / sessions exactly like before (self-report weights in judge.js).
 import { db, uid, getSetting, setSetting } from './db.js';
-import { $, $$, esc, toast, confirmDialog, go, speak } from './ui.js';
-import { LEVEL_LABELS, SKILL_LABELS } from './mastery.js';
+import { $, $$, esc, toast, go, speak } from './ui.js';
+import { LEVEL_LABELS, SKILL_LABELS, effLevel, filterLevel, loadAllMastery } from './mastery.js';
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
-import { selectWords, shuffle, allMeanings } from './study.js';
+import { shuffle, allMeanings } from './study.js';
+import { toggleBookmark } from './words.js';
 import { makeSwipeCard, swipeCardHTML, answerStripHTML } from './swipecard.js';
 import { icon } from './icons.js';
 
 const QDIRS = { en2ja: { label: '英→日', skill: 'recognition' }, ja2en: { label: '日→英', skill: 'recall' } };
-const ORDERS = [['random', 'ランダム'], ['registered', '登録順'], ['weak', '苦手順']];
-const COUNTS = [10, 20, 30, 50, 'all', 'custom'];
-const TIMES = [0, 3, 5, 10, 15, 'custom'];          // minutes, 0 = no limit
-const CARD_TIMES = [0, 5, 8, 15, 'custom'];         // seconds, 0 = no limit
+const RANGES = [
+  ['auto', 'おまかせ', '習得済み以外'], ['unlearned', '未学習', ''], ['weak', '苦手', ''], ['learning', '学習中', ''],
+  ['mastered', '習得済み', 'ほぼ習得以上'], ['bookmark', 'ブックマーク', ''], ['all', 'すべて', ''],
+];
+const ORDERS = [['random', 'ランダム'], ['old', '古い順'], ['new', '新しい順'], ['weak', '苦手順'], ['bookmark', 'ブックマーク優先']];
+export const REPEATS = {
+  five: { label: '5語リピート', desc: 'いま出ている5語を繰り返す' },
+  all: { label: '全リピート', desc: '選んだ単元を最後まで行ったら最初から' },
+  next: { label: '次の単元へ', desc: '単元が終わったら次の単元へ自動で進む（最後で終了）' },
+  end: { label: '単元で終了', desc: '今の単元が終わったら終了' },
+};
 export const QUICK_DEFAULTS = Object.freeze({
-  direction: 'en2ja', order: 'random', levels: [], bookmarkedOnly: false, tag: '', deck: '',
-  count: 'all', customCount: 20, time: 0, customTime: 7, cardTime: 0, customCardTime: 10,
+  range: 'auto', order: 'random', direction: 'en2ja', units: [0],
+  unitSize: 30, autoFlip: 10, cardTime: 0, time: 0, showTimer: true, repeat: 'end',
 });
-const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語' };
+const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語', conjunction: '接続詞', preposition: '前置詞' };
 
-// one running screen at a time: clear timers when leaving
 let cleanup = null;
 function setCleanup(fn) { cleanup?.(); cleanup = fn; }
 addEventListener('hashchange', () => { if (!location.hash.startsWith('#quick-run')) setCleanup(null); });
 
 const fmtClock = (ms) => { const t = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
-const limitMs = (c) => (c.time === 'custom' ? c.customTime : c.time) * 60000;
-const cardLimitMs = (c) => (c.cardTime === 'custom' ? c.customCardTime : c.cardTime) * 1000;
 const counts = (s) => {
   const v = Object.values(s.answered);
-  const know = v.filter((a) => a.result === 'know').length, dont = v.filter((a) => a.result === 'dont').length, vague = v.filter((a) => a.result === 'vague').length;
-  return { know, vague, dont, unanswered: s.queue.length - know - dont - vague, timeout: v.filter((a) => a.result === 'timeout').length };
+  const n = (r) => v.filter((a) => a.result === r).length;
+  return { know: n('know'), vague: n('vague'), dont: n('dont'), timeout: n('timeout'), unanswered: n('timeout') };
 };
 async function activeQuick() {
   return (await db.byIndex('sessions', 'status', 'active')).filter((x) => x.mode === 'quick').sort((a, b) => b.updatedAt - a.updatedAt)[0] || null;
 }
-export const getSwipe = () => getSetting('swipeKnow', 'right'); // 'right' = 右スワイプで「わかる」、左で「わからない」（↑曖昧は固定）
+export const getSwipe = () => getSetting('swipeKnow', 'right');
+async function loadCfg() { return { ...QUICK_DEFAULTS, ...(await getSetting('quickCfg', {})) }; }
 
-// ================= Setup =================
+// ---------- word list for a range + order ----------
+async function buildList(cfg, extra = {}) {
+  const [words, mastery] = await Promise.all([db.all('words'), loadAllMastery()]);
+  const skill = QDIRS[cfg.direction].skill;
+  const lv = (w) => filterLevel(effLevel(mastery[w.id]?.[skill]));
+  const attempts = (w) => mastery[w.id]?.[skill]?.stats?.attempts || 0;
+  const usable = words.filter((w) => allMeanings(w).length);
+  const test = {
+    // 苦手 = 回答して習得度が低い語＋手動で苦手にした語（一度も回答していない語は「未学習」）
+    auto: (w) => lv(w) <= 3, unlearned: (w) => attempts(w) === 0, weak: (w) => lv(w) <= 2 && (attempts(w) > 0 || mastery[w.id]?.[skill]?.manualLevel != null), learning: (w) => lv(w) === 3,
+    mastered: (w) => lv(w) >= 4, bookmark: (w) => w.bookmarked, all: () => true,
+  };
+  const countsByRange = Object.fromEntries(RANGES.map(([k]) => [k, usable.filter(test[k]).length]));
+  let list = usable.filter(test[cfg.range] || test.all);
+  if (extra.recentWrong) {
+    const weekAgo = Date.now() - 7 * 86400000;
+    const ids = new Set((await db.all('attempts')).filter((a) => !a.correct && a.at >= weekAgo).map((a) => a.wordId));
+    list = list.filter((w) => ids.has(w.id));
+  }
+  const byOld = (a, b) => a.createdAt - b.createdAt;
+  if (cfg.order === 'random') shuffle(list);
+  else if (cfg.order === 'old') list.sort(byOld);
+  else if (cfg.order === 'new') list.sort((a, b) => -byOld(a, b));
+  else if (cfg.order === 'weak') list.sort((a, b) => lv(a) - lv(b) || byOld(a, b));
+  else if (cfg.order === 'bookmark') list.sort((a, b) => (b.bookmarked ? 1 : 0) - (a.bookmarked ? 1 : 0) || byOld(a, b));
+  const size = Math.max(1, +cfg.unitSize || 30);
+  const units = [];
+  for (let i = 0; i < list.length; i += size) units.push({ label: `${i + 1}〜${Math.min(i + size, list.length)}語`, ids: list.slice(i, i + size).map((w) => w.id) });
+  return { list, units, countsByRange, total: usable.length };
+}
+
+// ================= Setup (minimal) =================
 export async function quickSetup(el) {
   setCleanup(null);
-  const cfg = { ...QUICK_DEFAULTS, ...(await getSetting('quickLast', {})) };
+  const cfg = await loadCfg();
   const active = await activeQuick();
-  const swipe = await getSwipe();
-  let sel;
-  const selCfg = () => ({ direction: cfg.direction, format: 'flash', levels: cfg.levels, order: cfg.order, bookmarkedOnly: cfg.bookmarkedOnly, tag: cfg.tag, deck: cfg.deck });
+  let data;
+  let detailsOpen = false;
 
-  async function refresh() { sel = await selectWords(selCfg()); draw(); }
+  async function refresh() { data = await buildList(cfg); cfg.units = cfg.units.filter((i) => i < data.units.length); if (!cfg.units.length && data.units.length) cfg.units = [0]; draw(); }
+  const chips = (id, arr, cur, lab) => `<div class="chips" id="${id}">${arr.map((v) => `<button data-v="${v}" class="${String(cur) === String(v) ? 'on' : ''}">${lab(v)}</button>`).join('')}</div>`;
   function draw() {
-    const n = cfg.count === 'all' ? sel.list.length : Math.min(sel.list.length, cfg.count === 'custom' ? cfg.customCount : cfg.count);
-    const chips = (id, arr, cur, lab) => `<div class="chips" id="${id}">${arr.map((v) => `<button data-v="${v}" class="${String(cur) === String(v) ? 'on' : ''}">${lab(v)}</button>`).join('')}</div>`;
+    const nWords = cfg.units.reduce((t, i) => t + (data.units[i]?.ids.length || 0), 0);
     el.innerHTML = `
-      <header class="top"><a href="#study" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>Quick Flashcards</h1></header>
-      ${active ? `<div class="card stack resume"><b>途中のカード</b><span class="small muted">${QDIRS[active.config.direction].label}　残り ${counts(active).unanswered - counts(active).timeout} 枚</span>
-        <div class="row"><a class="btn primary grow" href="#quick-run?id=${active.id}">続きから</a><button class="btn sm" id="end">終了して結果へ</button></div></div>` : ''}
-      <h2 class="sec">出題方向</h2>
-      <div class="card"><div class="seg" data-k="direction">${Object.entries(QDIRS).map(([k, d]) => `<button data-v="${k}" class="${cfg.direction === k ? 'on' : ''}">${d.label}</button>`).join('')}</div>
-        <p class="hint" style="margin-top:8px">英→和と和→英の習得度は別々に記録されます</p></div>
-      <h2 class="sec">習得度（複数可・未選択で全単語）</h2>
-      <div class="card"><div class="chips" id="levels">${[1, 2, 3, 4, 5].map((l) => `<button data-l="${l}" class="${cfg.levels.includes(l) ? 'on' : ''}">${LEVEL_LABELS[l]}</button>`).join('')}</div></div>
-      <h2 class="sec">絞り込み・順番</h2>
-      <div class="card stack">
-        <label class="chk"><input type="checkbox" id="bm" ${cfg.bookmarkedOnly ? 'checked' : ''}> ブックマークのみ</label>
-        <div class="row"><select id="tag" class="grow"><option value="">タグ：すべて</option>${sel.tags.map((t) => `<option ${cfg.tag === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
-          <select id="deck" class="grow"><option value="">単語集：すべて</option>${sel.decks.map((d) => `<option value="${d.id}" ${cfg.deck === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></div>
-        <div class="seg" data-k="order">${ORDERS.map(([v, l]) => `<button data-v="${v}" class="${cfg.order === v ? 'on' : ''}">${l}</button>`).join('')}</div>
-      </div>
-      <h2 class="sec">枚数</h2>
-      <div class="card stack">${chips('count', COUNTS, cfg.count, (v) => (v === 'all' ? '全問' : v === 'custom' ? '指定' : v + '枚'))}
-        ${cfg.count === 'custom' ? `<input type="number" id="cc" min="1" inputmode="numeric" value="${cfg.customCount}">` : ''}</div>
-      <h2 class="sec">制限時間</h2>
-      <div class="card stack">${chips('time', TIMES, cfg.time, (v) => (v === 0 ? 'なし' : v === 'custom' ? '任意' : v + '分'))}
-        ${cfg.time === 'custom' ? `<label class="field"><span>分</span><input type="number" id="ct" min="1" inputmode="numeric" value="${cfg.customTime}"></label>` : ''}
-        <span class="small muted">1枚ごとの制限（時間切れは未回答）</span>
-        ${chips('ctime', CARD_TIMES, cfg.cardTime, (v) => (v === 0 ? 'なし' : v === 'custom' ? '任意' : v + '秒'))}
-        ${cfg.cardTime === 'custom' ? `<label class="field"><span>秒</span><input type="number" id="cct" min="2" inputmode="numeric" value="${cfg.customCardTime}"></label>` : ''}
+      <header class="top"><a href="#study" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>単語帳</h1><span class="grow"></span><span class="small muted">スワイプで確認</span></header>
+      ${active && active.units ? `<div class="resume-bar"><span class="grow"><b>途中の単語帳</b><small>${QDIRS[active.config.direction].label}・${esc(REPEATS[active.config.repeat]?.label || '')}・${Object.keys(active.answered).length}枚済み</small></span>
+        <button class="btn sm ghost" id="end">終了</button><a class="btn sm primary" href="#quick-run?id=${active.id}">再開</a></div>` : ''}
+      <div class="setlist">
+        <div class="setrow"><span class="setlabel">問題範囲</span>
+          <div class="chips" id="range">${RANGES.map(([k, l]) => `<button data-v="${k}" class="${cfg.range === k ? 'on' : ''}">${l}<span class="cnt">${data.countsByRange[k]}</span></button>`).join('')}</div></div>
+        <div class="setrow"><span class="setlabel">並び順</span>${chips('order', ORDERS.map((o) => o[0]), cfg.order, (v) => ORDERS.find((o) => o[0] === v)[1])}</div>
+        <div class="setrow"><span class="setlabel">出題形式</span>
+          <div class="seg" data-k="direction">${Object.entries(QDIRS).map(([k, d]) => `<button data-v="${k}" class="${cfg.direction === k ? 'on' : ''}">${d.label}</button>`).join('')}</div></div>
+        ${data.units.length > 1 ? `<div class="setrow"><span class="setlabel">単元（${cfg.unitSize}語ずつ・複数選択可）</span>
+          <div class="unitlist" id="units">${data.units.map((u, i) => `<label class="unit"><input type="checkbox" value="${i}" ${cfg.units.includes(i) ? 'checked' : ''}><span>単元${i + 1}</span><small>${u.label}</small></label>`).join('')}</div></div>` : ''}
       </div>
 
-      <p class="hint center">${swipe === 'right' ? '← わからない　→ わかる' : '← わかる　→ わからない'}　↑ 曖昧（<a class="link" href="#settings">左右は設定で入れ替え</a>）</p>
-      <div class="cta-bar"><div class="cta-count"><b>${n}</b><span>枚</span><small>対象 ${sel.list.length}語</small></div>
-        <button class="btn primary cta" id="start" ${n ? '' : 'disabled'}>スタート</button></div>`;
+      <details class="card details" id="det" ${detailsOpen ? 'open' : ''}><summary>詳細設定<span class="muted small">　語数・自動めくり・時間・リピート</span></summary>
+        <div class="fgrp"><span>1単元の語数</span>${chips('usize', [10, 20, 30, 50], cfg.unitSize, (v) => v + '語')}</div>
+        <div class="fgrp"><span>自動めくり（答えを自動で表示）</span>${chips('flip', [0, 5, 10, 15], cfg.autoFlip, (v) => (v ? v + '秒' : 'オフ'))}</div>
+        <div class="fgrp"><span>1枚の制限時間（過ぎたら未回答で次へ）</span>${chips('ctime', [0, 10, 15, 30], cfg.cardTime, (v) => (v ? v + '秒' : 'オフ'))}</div>
+        <div class="fgrp"><span>全体の制限時間</span>${chips('time', [0, 3, 5, 10, 15], cfg.time, (v) => (v ? v + '分' : 'なし'))}</div>
+        <label class="chk"><input type="checkbox" id="showTimer" ${cfg.showTimer ? 'checked' : ''}> 学習中に時間を表示する</label>
+        <div class="fgrp"><span>単元が終わったとき（学習中もリピートボタンで変更可）</span>
+          <div class="seg wrap" data-k="repeat">${Object.entries(REPEATS).map(([k, r]) => `<button data-v="${k}" class="${cfg.repeat === k ? 'on' : ''}">${r.label}</button>`).join('')}</div></div>
+        <button class="btn ghost" id="reset">初期設定に戻す</button>
+      </details>
+
+      <div class="cta-bar"><div class="cta-count"><b>${nWords}</b><span>語</span><small>${cfg.units.length}単元・${QDIRS[cfg.direction].label}・${REPEATS[cfg.repeat].label}</small></div>
+        <button class="btn primary cta" id="start" ${nWords ? '' : 'disabled'}>スタート</button></div>`;
     bind();
   }
   function bind() {
-    el.querySelectorAll('.seg[data-k]').forEach((s) => s.addEventListener('click', (e) => { const v = e.target.dataset.v; if (!v) return; cfg[s.dataset.k] = v; refresh(); }));
-    $('#levels', el).onclick = (e) => { const l = +e.target.dataset.l; if (!l) return; cfg.levels = cfg.levels.includes(l) ? cfg.levels.filter((x) => x !== l) : [...cfg.levels, l].sort(); refresh(); };
-    const num = (v) => (v === 'all' || v === 'custom' ? v : +v);
-    $('#count', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { cfg.count = num(v); draw(); } };
-    $('#time', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { cfg.time = num(v); draw(); } };
-    $('#ctime', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { cfg.cardTime = num(v); draw(); } };
-    $('#cc', el)?.addEventListener('change', (e) => { cfg.customCount = Math.max(1, +e.target.value || 1); draw(); });
-    $('#ct', el)?.addEventListener('change', (e) => { cfg.customTime = Math.max(1, +e.target.value || 1); });
-    $('#cct', el)?.addEventListener('change', (e) => { cfg.customCardTime = Math.max(2, +e.target.value || 2); });
-    $('#bm', el).onchange = (e) => { cfg.bookmarkedOnly = e.target.checked; refresh(); };
-    $('#tag', el).onchange = (e) => { cfg.tag = e.target.value; refresh(); };
-    $('#deck', el).onchange = (e) => { cfg.deck = e.target.value; refresh(); };
+    const keepOpen = () => { detailsOpen = $('#det', el)?.open || false; };
+    $('#range', el).onclick = (e) => { const v = e.target.closest('button')?.dataset.v; if (!v) return; keepOpen(); cfg.range = v; cfg.units = [0]; refresh(); };
+    $('#order', el).onclick = (e) => { const v = e.target.dataset.v; if (!v) return; keepOpen(); cfg.order = v; cfg.units = [0]; refresh(); };
+    el.querySelectorAll('.seg[data-k]').forEach((s) => s.addEventListener('click', (e) => { const v = e.target.dataset.v; if (!v) return; keepOpen(); cfg[s.dataset.k] = v; if (s.dataset.k === 'direction') { cfg.units = [0]; refresh(); } else draw(); }));
+    $('#units', el)?.addEventListener('change', () => { cfg.units = $$('#units input:checked', el).map((x) => +x.value); keepOpen(); draw(); });
+    const num = (id, key, after) => { $('#' + id, el).onclick = (e) => { const v = e.target.dataset.v; if (v == null) return; keepOpen(); cfg[key] = +v; after ? after() : draw(); }; };
+    num('usize', 'unitSize', () => { cfg.units = [0]; refresh(); });
+    num('flip', 'autoFlip'); num('ctime', 'cardTime'); num('time', 'time');
+    $('#showTimer', el).onchange = (e) => { cfg.showTimer = e.target.checked; };
+    $('#reset', el).onclick = async () => { Object.assign(cfg, QUICK_DEFAULTS, { units: [0] }); await setSetting('quickCfg', cfg); toast('初期設定に戻しました（10秒で自動めくり・30語）'); detailsOpen = true; refresh(); };
     $('#end', el)?.addEventListener('click', async () => { active.status = 'done'; active.endedAt = Date.now(); await db.put('sessions', active); go(`#quick-result?id=${active.id}`); });
     $('#start', el).onclick = async () => {
       if (active) { active.status = 'done'; active.endedAt = Date.now(); await db.put('sessions', active); }
-      await setSetting('quickLast', cfg);
-      const s = await createQuick(cfg, sel.list);
+      await setSetting('quickCfg', { ...cfg });           // 次回もこの設定
+      const s = await createQuick(cfg, data.units);
       go(`#quick-run?id=${s.id}`);
     };
   }
   await refresh();
 }
 
-async function createQuick(cfg, list, retryOf = null) {
-  const n = cfg.count === 'all' || retryOf ? list.length : Math.min(list.length, cfg.count === 'custom' ? cfg.customCount : cfg.count);
-  const skill = QDIRS[cfg.direction].skill;
+async function createQuick(cfg, units, retryOf = null) {
   const now = Date.now();
+  const checked = (cfg.units || [0]).filter((i) => units[i]);
   const s = {
     id: uid('qs_'), mode: 'quick', status: 'active', config: { ...cfg }, retryOf,
-    queue: list.slice(0, n).map((w) => ({ qid: uid('q_'), wordId: w.id, direction: cfg.direction, skill })),
-    answered: {}, startedAt: now, updatedAt: now, endedAt: null, elapsedMs: 0, activeMs: 0,
+    units, checked: checked.length ? checked : [0],
+    play: { u: 0, pos: 0 },                 // u = index into checked, pos = index in that unit
+    queue: [], answered: {}, startedAt: now, updatedAt: now, endedAt: null, elapsedMs: 0, activeMs: 0, laps: 0,
   };
   await db.put('sessions', s);
   return s;
@@ -122,138 +154,163 @@ async function createQuick(cfg, list, retryOf = null) {
 export async function quickRun(el, params) {
   const s = await db.get('sessions', params.get('id'));
   if (!s || s.status !== 'active') { go(s ? `#quick-result?id=${s.id}` : '#quick'); return; }
+  if (!s.units) { s.status = 'done'; await db.put('sessions', s); go(`#quick-result?id=${s.id}`); return; }   // pre-v0.9 session
   const words = Object.fromEntries((await db.all('words')).map((w) => [w.id, w]));
   const knowRight = (await getSwipe()) === 'right';
-  const cfg = s.config, LIMIT = limitMs(cfg), CARD = cardLimitMs(cfg);
+  const cfg = s.config;
+  const skill = QDIRS[cfg.direction].skill;
   const undo = [];
-  let idx = nextIdx(0), running = true, cardMs = 0, last = performance.now(), busy = Promise.resolve(), ended = false;
-  let cur = null;            // { card, ctl, flipped, qid }
+  let running = true, cardMs = 0, last = performance.now(), busy = Promise.resolve(), ended = false, cur = null;
 
-  function nextIdx(from) { for (let i = from; i < s.queue.length; i++) if (!s.answered[s.queue[i].qid] && words[s.queue[i].wordId]) return i; return -1; }
-  if (idx < 0) return finish();
+  const unitOf = () => s.units[s.checked[s.play.u]];
+  const curWordId = () => unitOf()?.ids[s.play.pos];
+
+  // advance the play head according to the repeat mode. returns false when the session should end
+  function advance() {
+    const unit = unitOf(); const len = unit.ids.length;
+    if (cfg.repeat === 'five') {
+      const block = Math.floor(s.play.pos / 5) * 5, end = Math.min(block + 5, len);
+      s.play.pos = s.play.pos + 1 >= end ? block : s.play.pos + 1;
+      if (s.play.pos === block) s.laps++;
+      return true;
+    }
+    if (s.play.pos + 1 < len) { s.play.pos++; return true; }
+    if (cfg.repeat === 'end') return false;
+    if (cfg.repeat === 'next') { if (s.play.u + 1 >= s.checked.length) return false; s.play.u++; s.play.pos = 0; return true; }
+    s.play.u = (s.play.u + 1) % s.checked.length; s.play.pos = 0; if (s.play.u === 0) s.laps++;   // all
+    return true;
+  }
+  function skipMissing() {   // words deleted meanwhile
+    let guard = 0;
+    while (!words[curWordId()] && guard++ < 5000) if (!advance()) return false;
+    return !!words[curWordId()];
+  }
 
   el.innerHTML = `
     <div class="qrun">
-    <header class="qhead"><button class="xbtn" id="quit" aria-label="終了">✕</button>
-      <b id="clock" class="clock"></b>
-      <button class="xbtn" id="pause" aria-label="一時停止">❚❚</button></header>
+    <header class="qhead"><button class="xbtn" id="quit" aria-label="終了">${icon('close', 18)}</button>
+      <span class="qcenter"><b id="pos"></b><small id="clock"></small></span>
+      <button class="xbtn" id="gear" aria-label="設定">${icon('gear', 18)}</button>
+      <button class="xbtn" id="pause" aria-label="一時停止">${icon('pause', 18)}</button></header>
     <div class="progress"><i id="prog"></i></div>
-    <div class="row between small muted" style="margin:6px 2px"><span id="pos"></span><span id="tally"></span></div>
+    <div class="row between small muted" style="margin:6px 2px"><span id="unitlbl"></span><span id="tally"></span></div>
     <div class="cardbar"><i id="cbar"></i></div>
-    <div class="qstage" id="stage"></div>
+    <div class="qstage stacked" id="stage"></div>
     <div class="laststrip" id="last"></div>
-    <p class="hint center">タップで答え ・ ${knowRight ? '← わからない ・ → わかる' : '← わかる ・ → わからない'} ・ ↑曖昧</p>
+    <div class="player">
+      <button class="repeat-btn" id="repeat" aria-label="リピート設定">${icon('review', 20)}<span id="replbl"></span></button>
+      <span class="hint">タップで答え・${knowRight ? '←わからない →わかる' : '←わかる →わからない'}・↑曖昧</span>
+    </div>
     <div class="qbtns3">
       <button class="btn qb ${knowRight ? 'dont' : 'know'}" data-r="${knowRight ? 'dont' : 'know'}"><b>←</b>${knowRight ? 'わからない' : 'わかる'}</button>
       <button class="btn qb vague" data-r="vague"><b>↑</b>曖昧</button>
       <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}"><b>→</b>${knowRight ? 'わかる' : 'わからない'}</button>
-      <button class="btn qb" id="undo" aria-label="取り消し">↩︎</button>
+      <button class="btn qb" id="undo" aria-label="取り消し">${icon('undo', 20)}</button>
     </div>
     <div class="pauseov" id="pov" hidden><div class="card center stack"><b>一時停止中</b><button class="btn primary" id="resume">再開</button><button class="btn" id="quit2">終了して結果へ</button></div></div>
     </div>`;
   document.body.classList.add('noscroll');
-
   const stage = $('#stage', el);
+
   function updateTop() {
-    const c = counts(s);
-    $('#clock', el).textContent = LIMIT ? `残り ${fmtClock(LIMIT - s.elapsedMs)}` : fmtClock(s.elapsedMs);
-    $('#prog', el).style.width = `${((s.queue.length - c.unanswered + c.timeout) / s.queue.length) * 100}%`;
-    $('#pos', el).textContent = `${Math.min(s.queue.length, Object.keys(s.answered).length + 1)} / ${s.queue.length}`;
-    $('#tally', el).textContent = `○${c.know}　△${c.vague}　✕${c.dont}${c.timeout ? '　未' + c.timeout : ''}`;
-    $('#cbar', el).style.width = CARD ? `${Math.max(0, 100 - (cardMs / CARD) * 100)}%` : '0';
+    const c = counts(s), unit = unitOf();
+    $('#pos', el).textContent = `${s.play.pos + 1} / ${unit.ids.length}`;
+    $('#clock', el).textContent = cfg.showTimer ? (cfg.time ? `残り ${fmtClock(cfg.time * 60000 - s.elapsedMs)}` : fmtClock(s.elapsedMs)) : '';
+    $('#prog', el).style.width = `${((s.play.pos) / unit.ids.length) * 100}%`;
+    $('#unitlbl', el).textContent = `単元${s.checked[s.play.u] + 1}（${unit.label}）${s.laps ? `・${s.laps}周目済み` : ''}${cfg.repeat === 'five' ? `・${Math.floor(s.play.pos / 5) * 5 + 1}〜${Math.min(Math.floor(s.play.pos / 5) * 5 + 5, unit.ids.length)}語目` : ''}`;
+    $('#tally', el).textContent = `○${c.know} △${c.vague} ✕${c.dont}${c.timeout ? ' 未' + c.timeout : ''}`;
+    $('#cbar', el).style.width = cfg.cardTime ? `${Math.max(0, 100 - (cardMs / (cfg.cardTime * 1000)) * 100)}%` : '0';
     $('#undo', el).disabled = !undo.length;
+    $('#replbl', el).textContent = REPEATS[cfg.repeat].label;
+    $('#repeat', el).classList.toggle('on', cfg.repeat !== 'end');
   }
 
   function faces(w) {
     const mean = esc(allMeanings(w).join('、'));
     const pos = [...new Set((w.senses || []).map((x) => POS_JA[x.pos] || x.pos).filter(Boolean))].join('・');
     const ex = (w.senses || []).flatMap((x) => x.examples || []).find((x) => x.en);
+    const posTag = pos ? `<div class="q-sub">${esc(pos)}</div>` : '';
     const en = `<div class="fc-en">${esc(w.headword)}</div>`;
-    const ja = `<div class="fc-ja">${mean}</div>${pos ? `<div class="q-sub">${esc(pos)}</div>` : ''}`;
+    const ja = `<div class="fc-ja">${mean}</div>`;
     const exH = ex ? `<div class="fc-ex">${esc(ex.en)}${ex.ja ? `<br><span class="muted">${esc(ex.ja)}</span>` : ''}</div>` : '';
-    return cfg.direction === 'en2ja' ? { front: en, back: `${en}${ja}${exH}` } : { front: ja, back: `${ja}${en}${exH}` };
+    const tapHint = '<div class="tap-hint">タップで答えを表示</div>';
+    return cfg.direction === 'en2ja'
+      ? { front: `${en}${posTag}${tapHint}`, back: `${en}${posTag}${ja}${exH}` }
+      : { front: `${ja}${posTag}${tapHint}`, back: `${ja}${en}${exH}` };
   }
+  const bmBtn = (on) => `<button class="cardbm ${on ? 'on' : ''}" data-nosw aria-label="ブックマーク">${icon('bookmark', 22)}</button>`;
 
-  // render card for queue index i (inserted underneath any card that is flying away)
-  function showCard(i) {
-    const q = s.queue[i], w = words[q.wordId];
+  // show the card at the play head (reuse = an existing queue entry when undoing)
+  function showCard(reuse = null) {
+    const wordId = reuse ? reuse.wordId : curWordId();
+    const w = words[wordId];
+    const entry = reuse || { qid: uid('q_'), wordId, direction: cfg.direction, skill, unit: s.checked[s.play.u], pos: s.play.pos };
+    if (!reuse) s.queue.push(entry);
     const f = faces(w);
-    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(f.front, knowRight));
+    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(f.front, knowRight, bmBtn(w.bookmarked)));
     const card = stage.firstElementChild;
-    const state = { card, flipped: false, qid: q.qid, i };
-    state.ctl = makeSwipeCard(card, {
-      knowRight,
-      canInteract: () => running && !ended,
-      onTap: () => {
-        state.flipped = !state.flipped;
-        card.classList.add('flipping');
-        setTimeout(() => { $('.face', card).innerHTML = state.flipped ? f.back : f.front; card.classList.remove('flipping'); }, 90);
-        if (state.flipped) { state.revealed = true; speak(w.headword); }
-      },
-      onCommit: (result) => answer(state, result),
-    });
-    cur = state; cardMs = 0;
+    const st = { card, entry, flipped: false, revealed: false };
+    const setFace = (back) => { st.flipped = back; card.classList.add('flipping'); setTimeout(() => { $('.face', card).innerHTML = back ? f.back : f.front; card.classList.remove('flipping'); }, 90); if (back) { st.revealed = true; speak(w.headword); } };
+    st.flip = () => setFace(!st.flipped);
+    st.autoFlip = () => { if (!st.flipped) setFace(true); };
+    st.ctl = makeSwipeCard(card, { knowRight, canInteract: () => running && !ended, onTap: st.flip, onCommit: (r) => answer(st, r), revealOnCommit: () => f.back });
+    const bmb = $('.cardbm', card);
+    bmb.onclick = async (e) => { e.stopPropagation(); const on = await toggleBookmark(w.id); w.bookmarked = on; bmb.classList.toggle('on', on); toast(on ? 'ブックマークしました' : 'ブックマークを外しました', 1000); };
+    cur = st; cardMs = 0;
     updateTop();
   }
 
-  function answer(state, result) {
-    if (ended || s.answered[state.qid]) return;          // double-registration guard
-    const q = s.queue[state.i], w = words[q.wordId];
+  function answer(st, result) {
+    const q = st.entry;
+    if (ended || s.answered[q.qid]) return;
+    const w = words[q.wordId];
     const ms = Math.round(cardMs);
-    const revealed = !!state.revealed;
-    s.answered[q.qid] = { result, ms, revealed, at: Date.now() };
-    if (result !== 'timeout') $('#last', el).innerHTML = answerStripHTML(result, esc(w.headword), esc(allMeanings(w).join('、')), revealed);
-    if (result !== 'timeout') s.activeMs += ms;
-    const entry = { i: state.i, qid: q.qid, wordId: w.id, snap: null, attemptIds: [] };
+    s.answered[q.qid] = { result, ms, revealed: st.revealed, at: Date.now() };
+    if (result !== 'timeout') { s.activeMs += ms; $('#last', el).innerHTML = answerStripHTML(result, esc(w.headword), esc(allMeanings(w).join('、')), st.revealed); }
+    const entry = { q, play: { ...s.play }, laps: s.laps, snap: null, attemptIds: [], ms, result };
     undo.push(entry);
     busy = busy.then(async () => {
       if (result !== 'timeout') {
-        entry.snap = await snapshotMastery(w.id, [q.skill]);
-        const out = await recordAnswer({ sessionId: s.id, qid: q.qid, wordId: w.id, direction: q.direction, format: 'swipe', mode: 'quick', self: true, revealed, grade: result,
-          prompt: q.direction === 'en2ja' ? w.headword : allMeanings(w).join('、'), answer: { know: 'わかる', vague: '曖昧', dont: 'わからない' }[result], ms,
-          results: [{ skill: q.skill, correct: result !== 'dont', hint: result === 'vague' }] });
+        entry.snap = await snapshotMastery(w.id, [skill]);
+        const out = await recordAnswer({ sessionId: s.id, qid: q.qid, wordId: w.id, direction: cfg.direction, format: 'swipe', mode: 'quick', self: true, revealed: st.revealed, grade: result,
+          prompt: cfg.direction === 'en2ja' ? w.headword : allMeanings(w).join('、'), answer: { know: 'わかる', vague: '曖昧', dont: 'わからない' }[result], ms,
+          results: [{ skill, correct: result !== 'dont', hint: result === 'vague' }] });
         entry.attemptIds = out._attemptIds;
-        if (s.answered[q.qid]) s.answered[q.qid].change = out[q.skill];
+        if (s.answered[q.qid]) s.answered[q.qid].change = out[skill];
       }
-      s.updatedAt = Date.now();
-      await db.put('sessions', s);
+      s.updatedAt = Date.now(); await db.put('sessions', s);
     }).catch((e) => toast('保存に失敗: ' + e.message));
-    idx = nextIdx(state.i + 1);
-    if (idx < 0) setTimeout(finish, 200); else showCard(idx);
-  }
-
-  function byButton(result) {
-    if (!running || ended || !cur || cur.ctl.done) return;
-    cur.ctl.commit(result);
-  }
-  function timeoutCard() {
-    if (!cur || cur.ctl.done) return;
-    cur.card.remove();
-    answer(cur, 'timeout');
+    if (!advance() || !skipMissing()) { setTimeout(finish, 200); return; }
+    showCard();
   }
 
   async function doUndo() {
     const e = undo.pop(); if (!e) return;
     await busy;
-    if (e.snap) await undoAnswer(e.wordId, e.snap, e.attemptIds);
-    const a = s.answered[e.qid];
-    if (a && a.result !== 'timeout') s.activeMs -= a.ms;
-    delete s.answered[e.qid];
-    s.updatedAt = Date.now();
-    await db.put('sessions', s);
-    stage.innerHTML = ''; $('#last', el).innerHTML = ''; idx = e.i; showCard(idx); toast('取り消しました', 1000);
+    if (e.snap) await undoAnswer(e.q.wordId, e.snap, e.attemptIds);
+    if (e.result !== 'timeout') s.activeMs -= e.ms;
+    delete s.answered[e.q.qid];
+    // drop the card currently shown (not answered yet), go back to the undone one
+    const lastQ = s.queue[s.queue.length - 1];
+    if (lastQ && lastQ.qid !== e.q.qid && !s.answered[lastQ.qid]) s.queue.pop();
+    s.play = { ...e.play }; s.laps = e.laps;
+    s.updatedAt = Date.now(); await db.put('sessions', s);
+    stage.innerHTML = ''; $('#last', el).innerHTML = '';
+    showCard(e.q); toast('取り消しました', 900);
   }
 
   function setPaused(p) {
     if (ended) return;
     running = !p; last = performance.now();
     $('#pov', el).hidden = !p;
-    $('#pause', el).textContent = p ? '▶︎' : '❚❚';
+    $('#pause', el).innerHTML = icon(p ? 'play' : 'pause', 18);
     if (p) { s.updatedAt = Date.now(); db.put('sessions', s); }
   }
-
   async function finish() {
     if (ended) return; ended = true; running = false;
+    // the card on screen that was never answered is not part of the session
+    const lastQ = s.queue[s.queue.length - 1];
+    if (lastQ && !s.answered[lastQ.qid]) s.queue.pop();
     setCleanup(null);
     await busy;
     s.status = 'done'; s.endedAt = Date.now(); s.updatedAt = Date.now();
@@ -261,12 +318,52 @@ export async function quickRun(el, params) {
     go(`#quick-result?id=${s.id}`);
   }
 
+  // ---- repeat / settings sheet (also reachable from the gear) ----
+  function openSheet() {
+    const wasRunning = running; running = false;
+    const dlg = $('#dialog');
+    dlg.innerHTML = `<form method="dialog" class="dlg stack sheet">
+      <h3>リピートと範囲</h3>
+      <div class="replist">${Object.entries(REPEATS).map(([k, r]) => `<label class="repopt"><input type="radio" name="rep" value="${k}" ${cfg.repeat === k ? 'checked' : ''}><span><b>${r.label}</b><small>${r.desc}</small></span></label>`).join('')}</div>
+      ${s.units.length > 1 ? `<span class="setlabel">出題する単元（チェックしたものを順に）</span>
+        <div class="unitlist">${s.units.map((u, i) => `<label class="unit"><input type="checkbox" name="unit" value="${i}" ${s.checked.includes(i) ? 'checked' : ''}><span>単元${i + 1}</span><small>${u.label}</small></label>`).join('')}</div>` : ''}
+      <span class="setlabel">自動めくり</span>
+      <div class="seg" id="sflip">${[0, 5, 10, 15].map((v) => `<button type="button" data-v="${v}" class="${cfg.autoFlip === v ? 'on' : ''}">${v ? v + '秒' : 'オフ'}</button>`).join('')}</div>
+      <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">適用</button></div></form>`;
+    let flip = cfg.autoFlip;
+    $('#sflip', dlg).onclick = (e) => { const v = e.target.dataset.v; if (v == null) return; flip = +v; $$('#sflip button', dlg).forEach((b) => b.classList.toggle('on', b.dataset.v === v)); };
+    dlg.returnValue = '';
+    dlg.onclose = async () => {
+      running = wasRunning; last = performance.now();
+      if (dlg.returnValue !== 'ok') return;
+      cfg.repeat = $('input[name=rep]:checked', dlg)?.value || cfg.repeat;
+      cfg.autoFlip = flip;
+      const picked = $$('input[name=unit]:checked', dlg).map((x) => +x.value);
+      if (picked.length && picked.join() !== s.checked.join()) {
+        const curUnit = s.checked[s.play.u];
+        s.checked = picked;
+        if (picked.includes(curUnit)) s.play.u = picked.indexOf(curUnit);
+        else {   // current unit removed: jump to the first picked unit
+          s.play = { u: 0, pos: 0 };
+          const q = s.queue[s.queue.length - 1]; if (q && !s.answered[q.qid]) s.queue.pop();
+          stage.innerHTML = ''; skipMissing(); showCard();
+        }
+      }
+      await setSetting('quickCfg', { ...(await loadCfg()), repeat: cfg.repeat, autoFlip: cfg.autoFlip });
+      s.updatedAt = Date.now(); await db.put('sessions', s);
+      updateTop(); toast(`${REPEATS[cfg.repeat].label}にしました`, 1200);
+    };
+    dlg.showModal();
+  }
+
+  // ---- timers ----
   const iv = setInterval(() => {
     const now = performance.now(), d = now - last; last = now;
     if (!running || ended) return;
     s.elapsedMs += d; cardMs += d;
-    if (LIMIT && s.elapsedMs >= LIMIT) { s.elapsedMs = LIMIT; toast('時間になりました'); finish(); return; }
-    if (CARD && cardMs >= CARD) timeoutCard();
+    if (cfg.time && s.elapsedMs >= cfg.time * 60000) { s.elapsedMs = cfg.time * 60000; toast('時間になりました'); finish(); return; }
+    if (cfg.autoFlip && cardMs >= cfg.autoFlip * 1000) cur?.autoFlip();
+    if (cfg.cardTime && cardMs >= cfg.cardTime * 1000 && cur && !cur.ctl.done) { cur.card.remove(); answer(cur, 'timeout'); }
     updateTop();
   }, 200);
   const onVis = () => { if (document.hidden && running) setPaused(true); };
@@ -275,10 +372,16 @@ export async function quickRun(el, params) {
 
   $('#pause', el).onclick = () => setPaused(running);
   $('#resume', el).onclick = () => setPaused(false);
-  $('#quit', el).onclick = $('#quit2', el).onclick = () => { finish(); };   // results are already saved: no confirmation
+  $('#quit', el).onclick = $('#quit2', el).onclick = () => finish();
   $('#undo', el).onclick = doUndo;
-  el.querySelectorAll('.qb[data-r]').forEach((b) => (b.onclick = () => byButton(b.dataset.r)));
-  showCard(idx);
+  $('#gear', el).onclick = openSheet;
+  $('#repeat', el).onclick = openSheet;
+  el.querySelectorAll('.qb[data-r]').forEach((b) => (b.onclick = () => { if (running && cur && !cur.ctl.done) cur.ctl.commit(b.dataset.r); }));
+
+  // resume: if the last queued card was not answered, show it again; otherwise show the play head
+  const lastQ = s.queue[s.queue.length - 1];
+  if (lastQ && !s.answered[lastQ.qid] && words[lastQ.wordId]) showCard(lastQ);
+  else { if (!skipMissing()) return finish(); showCard(); }
 }
 
 // ================= Result =================
@@ -292,54 +395,63 @@ export async function quickResult(el, params) {
   const avg = answered.length ? answered.reduce((a, b) => a + b.ms, 0) / answered.length / 1000 : 0;
   const prev = (await db.all('sessions')).filter((x) => x.mode === 'quick' && x.status === 'done' && x.id !== s.id && x.config.direction === s.config.direction && x.startedAt < s.startedAt).sort((a, b) => b.startedAt - a.startedAt)[0];
   const rate = (x) => { const k = counts(x); const n = k.know + k.dont + k.vague; return n ? Math.round((k.know / n) * 100) : 0; };
-  const dontIds = s.queue.filter((q) => s.answered[q.qid]?.result === 'dont' && words[q.wordId]).map((q) => q.wordId);
-  const weakIds = s.queue.filter((q) => ['dont', 'vague'].includes(s.answered[q.qid]?.result) && words[q.wordId]).map((q) => q.wordId);
-  const revealedKnow = Object.values(s.answered).filter((a) => a.result === 'know' && a.revealed).length;
+  // latest judgment per word (repeats can show a word several times)
+  const latest = new Map();
+  for (const q of s.queue) { const a = s.answered[q.qid]; if (a && a.result !== 'timeout') latest.set(q.wordId, { q, a }); }
+  const dontIds = [...latest].filter(([id, x]) => x.a.result === 'dont' && words[id]).map(([id]) => id);
+  const weakIds = [...latest].filter(([id, x]) => x.a.result !== 'know' && words[id]).map(([id]) => id);
+  const revealedKnow = answered.filter((a) => a.result === 'know' && a.revealed).length;
   const lt = (l) => (l ? LEVEL_LABELS[l] : '判定保留');
   let cmp = '';
   if (prev) {
-    const pk = counts(prev), d = rate(s) - rate(prev);
-    cmp = `<div class="card small">前回（${new Date(prev.startedAt).toLocaleDateString('ja-JP')}）：わかる ${pk.know} / 曖昧 ${pk.vague || 0} / わからない ${pk.dont}・${rate(prev)}%　→　今回 ${rate(s)}%
-      <b class="${d >= 0 ? 'up' : 'down'}">（${d >= 0 ? '+' : ''}${d}）</b></div>`;
+    const d = rate(s) - rate(prev);
+    cmp = `<div class="card small">前回（${new Date(prev.startedAt).toLocaleDateString('ja-JP')}）${rate(prev)}% → 今回 ${rate(s)}% <b class="${d >= 0 ? 'up' : 'down'}">（${d >= 0 ? '+' : ''}${d}）</b></div>`;
   }
   el.innerHTML = `
     <header class="top"><a href="#quick" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>結果</h1></header>
-    <div class="donemark">${icon('check', 30)}<span>${c.know + c.vague + c.dont}枚 完了</span></div>
+    <div class="donemark">${icon('check', 30)}<span>${c.know + c.vague + c.dont}枚 完了（${latest.size}語）</span></div>
     <div class="stats stats4">
       <div class="stat"><b class="up">${c.know}</b><span>わかる</span></div>
       <div class="stat"><b class="mid">${c.vague}</b><span>曖昧</span></div>
       <div class="stat"><b class="down">${c.dont}</b><span>わからない</span></div>
-      <div class="stat"><b>${c.unanswered}</b><span>未回答</span></div>
+      <div class="stat"><b>${c.timeout}</b><span>時間切れ</span></div>
     </div>
     <p class="small muted center">わかる ${c.know} のうち、答えを見てから ${revealedKnow}・見ずに ${c.know - revealedKnow}</p>
     <div class="card stack" style="margin-top:10px">
       <div class="kv"><span>学習時間</span><b>${fmtClock(s.elapsedMs)}</b></div>
       <div class="kv"><span>1枚あたり平均</span><b>${avg.toFixed(1)}秒</b></div>
-      <div class="kv"><span>方向</span><b>${QDIRS[s.config.direction].label}（${SKILL_LABELS[QDIRS[s.config.direction].skill]}の習得度に記録）</b></div>
+      <div class="kv"><span>方向</span><b>${QDIRS[s.config.direction].label}（${SKILL_LABELS[QDIRS[s.config.direction].skill]}に記録）</b></div>
     </div>
     ${cmp}
-    ${dontIds.length ? `<button class="btn primary" id="again">わからなかった${dontIds.length}枚だけ再学習</button>` : ''}
-    ${weakIds.length > dontIds.length ? `<button class="btn" id="again2" style="margin-top:8px">わからない＋曖昧の${weakIds.length}枚を再学習</button>` : ''}
-    <h2 class="sec">カード一覧</h2>
-    ${s.queue.map((q) => {
-      const a = s.answered[q.qid], w = words[q.wordId]; if (!w) return '';
-      const mk = !a || a.result === 'timeout' ? ['未', 'muted'] : a.result === 'know' ? [a.revealed ? '○見' : '○', 'ok'] : a.result === 'vague' ? ['△', 'near'] : ['✕', 'ng'];
-      const ch = a?.change && a.change.before !== a.change.after ? `${lt(a.change.before)} → <b>${lt(a.change.after)}</b>` : '';
+    ${dontIds.length ? `<button class="btn primary" id="again">わからなかった${dontIds.length}語だけ再学習</button>` : ''}
+    ${weakIds.length > dontIds.length ? `<button class="btn" id="again2" style="margin-top:8px">わからない＋曖昧の${weakIds.length}語を再学習</button>` : ''}
+    <h2 class="sec">単語（最後の判定）</h2>
+    ${[...latest].map(([id, { a }]) => {
+      const w = words[id]; if (!w) return '';
+      const mk = a.result === 'know' ? [a.revealed ? '○見' : '○', 'ok'] : a.result === 'vague' ? ['△', 'near'] : ['✕', 'ng'];
+      const ch = a.change && a.change.before !== a.change.after ? `${lt(a.change.before)} → <b>${lt(a.change.after)}</b>` : '';
       return `<a class="rrow" href="#word?id=${w.id}"><span class="mk ${mk[1]}">${mk[0]}</span><span class="grow"><b>${esc(w.headword)}</b> <span class="small muted">${esc(allMeanings(w).slice(0, 2).join('、'))}</span></span><span class="small lvc">${ch}</span></a>`;
     }).join('')}
-    <p class="hint">「○見」＝答えを表示してから「わかる」。習得度の判定では、自己申告の「わかる」は0.8回分、「曖昧」は0.4回分（連続正答はリセット）として数えます。自己申告だけでは「ほぼ習得」までで、「習得済み」にはテストでの正解と7日以上空けた正解が必要です。</p>
-    <a class="btn" href="#quick" style="margin-top:12px">設定に戻る</a>`;
-  const again = async (ids) => { const ns = await createQuick({ ...s.config, count: 'all' }, shuffle(ids.map((id) => words[id])), s.id); go(`#quick-run?id=${ns.id}`); };
+    <p class="hint">「わかる」は自己申告なので0.8回分、「曖昧」は0.4回分として習得度を判定します。自己申告だけでは「ほぼ習得」まで。「習得済み」にはテストでの正解と7日以上空けた正解が必要です。</p>
+    <a class="btn" href="#quick" style="margin-top:12px">単語帳に戻る</a>`;
+  const again = async (ids) => {
+    const cfg = { ...s.config, units: [0], repeat: 'end' };
+    const ns = await createQuick(cfg, [{ label: `${ids.length}語`, ids: shuffle([...ids]) }], s.id);
+    go(`#quick-run?id=${ns.id}`);
+  };
   $('#again', el)?.addEventListener('click', () => again(dontIds));
   $('#again2', el)?.addEventListener('click', () => again(weakIds));
 }
 
-// One-tap start from Home / Review
+// One-tap start from Home / Review (uses the saved settings; range from the caller)
 export async function startQuick(overrides = {}) {
-  const cfg = { ...QUICK_DEFAULTS, ...(await getSetting('quickLast', {})), ...overrides };
-  const sel = await selectWords({ direction: cfg.direction, format: 'flash', levels: cfg.levels, order: cfg.order, bookmarkedOnly: cfg.bookmarkedOnly, recentWrong: cfg.recentWrong, tag: cfg.tag, deck: cfg.deck });
-  if (!sel.list.length) { toast('対象の単語がありません'); return; }
+  const base = await loadCfg();
+  const map = (o) => (o.bookmarkedOnly ? 'bookmark' : o.levels?.length && o.levels.every((l) => l <= 2) ? 'weak' : base.range);
+  const cfg = { ...base, range: map(overrides), units: [0] };
+  const data = await buildList(cfg, { recentWrong: overrides.recentWrong });
+  if (!data.list.length) { toast('対象の単語がありません'); return; }
   for (const x of await db.byIndex('sessions', 'status', 'active')) if (x.mode === 'quick') { x.status = 'done'; x.endedAt = Date.now(); await db.put('sessions', x); }
-  const s = await createQuick(cfg, sel.list);
+  // whole range as consecutive units
+  const s = await createQuick({ ...cfg, units: data.units.map((_, i) => i), repeat: cfg.repeat === 'five' ? 'next' : cfg.repeat }, data.units);
   go(`#quick-run?id=${s.id}`);
 }

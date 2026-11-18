@@ -78,19 +78,19 @@ export async function homeScreen(el) {
 
     <section class="actions">
       ${test ? `<a class="action resume" href="#session?id=${test.id}">${icon('play', 20)}<span class="grow"><b>前回の続きから</b><small>単語テスト 残り${left(test)}問</small></span>${icon('chevron', 18)}</a>` : ''}
-      ${quick ? `<a class="action resume" href="#quick-run?id=${quick.id}">${icon('play', 20)}<span class="grow"><b>Quick の続きから</b><small>残り${left(quick)}枚</small></span>${icon('chevron', 18)}</a>` : ''}
+      ${quick ? `<a class="action resume" href="#quick-run?id=${quick.id}">${icon('play', 20)}<span class="grow"><b>単語帳の続きから</b><small>${Object.keys(quick.answered || {}).length}枚済み</small></span>${icon('chevron', 18)}</a>` : ''}
       <button class="action primary" id="goWeak" ${st.weak.length ? '' : 'disabled'}>${icon('review', 20)}<span class="grow"><b>苦手を復習</b><small>${st.weak.length ? `苦手・未習得 ${st.weak.length}語（前回の出題方法で）` : '現在復習する単語はありません'}</small></span>${icon('chevron', 18)}</button>
     </section>
 
     <h2 class="sec">学習</h2>
     <nav class="menu">
       ${item('#study', 'cards', '単語テスト', '4択・カード・タイピング')}
-      ${item('#quick', 'bolt', 'Quick Flashcards', 'スワイプで高速確認')}
+      ${item('#quick', 'bolt', '単語帳（カード）', 'スワイプで確認・リピート')}
       ${item('#grammar', 'grammar', '文法', '単元一覧', true)}
     </nav>
     <h2 class="sec">単語・復習</h2>
     <nav class="menu">
-      ${item('#vocab', 'book', '単語帳', `${st.words.length}語・追加と編集`)}
+      ${item('#vocab', 'book', '単語リスト', `${st.words.length}語・追加と編集`)}
       ${item('#review', 'review', '復習・記録', '苦手・誤答・履歴・進捗')}
     </nav>
 
@@ -117,7 +117,7 @@ export async function reviewScreen(el) {
       <div class="rhead">${icon(ic, 20)}<b class="grow">${title}</b><span class="count">${list.length}</span></div>
       ${note ? `<p class="hint">${note}</p>` : ''}
       <div class="minis">${preview(list)}${list.length > 4 ? `<span class="small muted">ほか ${list.length - 4}語</span>` : ''}</div>
-      <div class="row"><button class="btn grow" data-go="${id}:test">テスト</button><button class="btn grow" data-go="${id}:quick">${icon('bolt', 16)} Quick</button></div>
+      <div class="row"><button class="btn grow" data-go="${id}:test">テスト</button><button class="btn grow" data-go="${id}:quick">${icon('cards', 16)} 単語帳</button></div>
     </section>` : '';
   const sessions = st.sessions.filter((s) => s.status === 'done' && Object.keys(s.answered || {}).length).sort((a, b) => (b.endedAt || b.updatedAt) - (a.endedAt || a.updatedAt)).slice(0, 8);
   const sRow = (s) => {
@@ -125,7 +125,7 @@ export async function reviewScreen(el) {
     const ok = s.mode === 'quick' ? v.filter((a) => a.result === 'know').length : v.filter((a) => a.correct).length;
     const n = s.mode === 'quick' ? v.filter((a) => a.result !== 'timeout').length : v.length;
     const href = s.mode === 'quick' ? `#quick-result?id=${s.id}` : `#result?id=${s.id}`;
-    return `<a class="hrow2" href="${href}"><span class="grow"><b>${s.mode === 'quick' ? 'Quick' : '単語テスト'}</b><small>${fmtDay(s.endedAt || s.updatedAt)}・${n}問</small></span><span class="acc">${n ? Math.round((ok / n) * 100) : 0}%</span>${icon('chevron', 16)}</a>`;
+    return `<a class="hrow2" href="${href}"><span class="grow"><b>${s.mode === 'quick' ? '単語帳' : '単語テスト'}</b><small>${fmtDay(s.endedAt || s.updatedAt)}・${n}問</small></span><span class="acc">${n ? Math.round((ok / n) * 100) : 0}%</span>${icon('chevron', 16)}</a>`;
   };
   const any = st.weak.length || st.recentWrong.length || st.bookmarked.length;
 

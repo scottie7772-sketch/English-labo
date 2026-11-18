@@ -1,5 +1,5 @@
 // Network-first for app files (updates appear automatically when online), cache fallback for offline.
-const CACHE = 'ell-shell-v9';
+const CACHE = 'ell-shell-v10';
 const SHELL = ['./', './index.html', './app.css', './app.js', './db.js', './backup.js', './ui.js', './mastery.js', './words.js', './vocab.js', './seed.js', './judge.js', './study.js', './quick.js', './video.js', './swipecard.js', './icons.js', './hub.js', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {

@@ -808,3 +808,11 @@ header.top h1 { white-space: nowrap; }
 .vctl2 { display: grid; grid-template-columns: repeat(3, 1fr); }
 .vctl2 .tgl { min-width: 0; padding: 0 4px; white-space: nowrap; }
 .cuelist .veil { filter: blur(6px); }
+
+.prow.bad { background: color-mix(in srgb, var(--mid) 8%, transparent); }
+label.prow { display: flex; gap: 10px; align-items: flex-start; }
+label.prow input, .dcrow input { width: 22px; height: 22px; flex: 0 0 auto; margin-top: 2px; accent-color: var(--accent); }
+.prow em { display: block; font-style: normal; font-size: 12px; }
+.dcrow { display: flex; gap: 10px; align-items: flex-start; padding: 12px 4px; border-bottom: 1px solid var(--line); }
+.dcrow:last-child { border-bottom: 0; }
+.dcrow .block { display: block; margin-top: 2px; }

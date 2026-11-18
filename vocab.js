@@ -6,8 +6,9 @@ import { videoNames } from './video.js';
 import { icon } from './icons.js';
 import { L, curLang, langOf, numToMarks, LANGS } from './langs.js';
 import { setDue } from './srs.js';
+import { scanWords } from './datacheck.js';
 import { EXTRA_SKILLS } from './mastery.js';
-import { newWord, newSense, saveWord, toggleBookmark, deleteWord, headKey, splitList, parseBulk, csvToEntries, registerEntries, wordsByHead, findDuplicate, meaningsOf, splitWord } from './words.js';
+import { newWord, newSense, saveWord, toggleBookmark, deleteWord, headKey, splitList, parseBulk, csvToEntries, analyzeCSV, entryIssues, registerEntries, wordsByHead, findDuplicate, meaningsOf, splitWord } from './words.js';
 
 const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', preposition: '前置詞', conjunction: '接続詞', pronoun: '代名詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語' };
 const POS_OPTIONS = ['', 'noun', 'verb', 'adjective', 'adverb', 'phrasal verb', 'idiom', 'phrase', 'preposition', 'conjunction'];
@@ -52,6 +53,7 @@ export async function vocabList(el) {
       <div class="fgrp"><span>並び順</span><select id="sort">${[['new', '新しい順'], ['old', '古い順'], ['abc', 'ABC順'], ['weak', '習得度が低い順']].map(([v, l]) => `<option value="${v}" ${f.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <button class="btn ghost" id="clear">条件をクリア</button>
     </details>
+    ${await (async () => { const n = (await scanWords()).flagged.length; return n ? `<a class="notice warn" href="#datacheck">${icon('warn', 18)}<span>列がずれて登録された可能性のある項目が${n}件あります。データ点検で確認できます</span></a>` : ''; })()}
     <p class="muted small" id="count"></p>
     <div id="list"></div>`;
 
@@ -369,7 +371,7 @@ export async function vocabBulk(el) {
   el.innerHTML = `
     <header class="top"><a href="#vocab" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>まとめて追加</h1></header>
     <div class="card stack">
-      <p class="small muted">1行に1語。英語と意味の間はカンマ（,）かタブ。意味が複数なら「/」で区切ります。</p>
+      <p class="small muted">1行に1語。英語と意味の間はカンマ（,）・タブ・スペースのどれでも可（例：put off 延期する）。意味が複数なら「/」で区切ります。先頭の番号は自動で外します。</p>
       <textarea id="t" rows="10" placeholder="postpone, 延期する&#10;take over, 引き継ぐ / 乗っ取る&#10;in advance, 前もって" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
       <label class="field"><span>タグ（任意・全件に付与）</span><input id="tags" autocapitalize="off"></label>
       <label class="chk"><input type="checkbox" id="bm"> 全件ブックマークする</label>
@@ -379,28 +381,71 @@ export async function vocabBulk(el) {
   $('#prev', el).onclick = () => previewAndRegister(el, parseBulk($('#t', el).value), { type: 'bulk' }, { tags: splitList($('#tags', el).value), bookmarked: $('#bm', el).checked });
 }
 
-// shared preview -> register
-async function previewAndRegister(el, entries, src, extra = {}) {
+// shared preview -> register. Rows with problems are listed with the reason and NOT registered unless ticked.
+const FIELD_JA = { headword: '英語（見出し語）', meanings: '意味', example_en: '例文', example_ja: '例文の訳', pos: '品詞', tags: 'タグ' };
+async function previewAndRegister(el, entries, src, extra = {}, csv = null) {
   const out = $('#out', el);
-  if (!entries.length) { out.innerHTML = '<div class="card warn">登録できる行がありません</div>'; return; }
-  const byHead = await wordsByHead();
-  const rows = entries.map((e) => {
-    const dup = !!findDuplicate(byHead, e.headword, e.meanings || []);
+  const lang = curLang();
+  const notes = csv ? csv.analysis.notes : [];
+  let rows = [];
+  if (!entries.length) {
+    const why = csv ? (notes.join('。') || '読み取れる行がありません')
+      : '入力が空です。1行に「英語, 意味」の形で入力してください（例：postpone, 延期する）';
+    out.innerHTML = `<div class="card warn stack"><b>登録できる行がありません</b><span class="small">${esc(why)}</span>
+      ${csv ? mapHTML(csv.analysis) : ''}
+      <a class="btn" href="#word?new=1">1語ずつ追加する</a></div>`;
+    bindMap();
+    return;
+  }
+  const byHead = await wordsByHead(lang);
+  rows = entries.map((e) => {
+    const dup = findDuplicate(byHead, e.headword, e.meanings || []);
+    const issues = entryIssues(e, e.lang || lang);
     if (!dup) { const k = headKey(e.headword); if (!byHead.has(k)) byHead.set(k, []); byHead.get(k).push({ id: '_', headword: e.headword, senses: [{ meanings: e.meanings || [] }] }); }
-    return { ...e, dup };
+    return { e, dup, issues, on: !dup && !issues.length };
   });
-  const n = rows.filter((r) => !r.dup).length;
-  out.innerHTML = `
-    <h2 class="sec">確認（${n}件を登録 / 重複${rows.length - n}件はスキップ）</h2>
-    <div class="card">${rows.map((r) => `<div class="prow ${r.dup ? 'dup' : ''}"><b>${esc(r.headword)}</b><span>${esc(r.meanings.join('、') || '（意味なし）')}</span>${r.dup ? '<em>同じ意味で登録済み</em>' : ''}</div>`).join('')}</div>
-    ${rows.some((r) => !r.dup && !r.meanings.length) ? '<p class="hint">意味がない単語は、あとで詳細画面から追加してください（意味がないとテストに出せません）。</p>' : ''}
-    <button class="btn primary" id="reg" ${n ? '' : 'disabled'}>${n}件を登録</button>`;
-  out.scrollIntoView({ behavior: 'smooth' });
-  $('#reg', out).onclick = async () => {
-    const r = await registerEntries(entries, src, extra);
-    toast(`${r.added}件を登録しました${r.skipped ? `（${r.skipped}件スキップ）` : ''}`);
-    go('#vocab');
+  const draw = () => {
+    const n = rows.filter((r) => r.on).length;
+    const bad = rows.filter((r) => r.issues.length).length;
+    out.innerHTML = `
+      ${notes.length ? `<div class="notice info small">${notes.map(esc).join('<br>')}</div>` : ''}
+      ${csv ? mapHTML(csv.analysis) : ''}
+      <h2 class="sec">確認（${n}件を登録${bad ? ` / 要確認 ${bad}件` : ''}${rows.some((r) => r.dup) ? ` / 重複 ${rows.filter((r) => r.dup).length}件` : ''}）</h2>
+      ${bad ? '<p class="hint">要確認の行は、列のずれなどの可能性があるため登録しません。正しければチェックを入れてください。値の自動補完はしていません。</p>' : ''}
+      <div class="card">${rows.map((r, i) => `<label class="prow ${r.dup ? 'dup' : ''} ${r.issues.length ? 'bad' : ''}">
+        <input type="checkbox" data-i="${i}" ${r.on ? 'checked' : ''} ${r.dup ? 'disabled' : ''}>
+        <span class="grow"><b>${esc(r.e.headword)}</b> <span>${esc((r.e.meanings || []).join('、') || '（意味なし）')}</span>
+        ${r.e.example_en ? `<span class="small muted block">例文：${esc(r.e.example_en)}</span>` : ''}
+        ${r.dup ? '<em>同じ意味で登録済み</em>' : ''}${r.issues.map((x) => `<em class="warn-text">${esc(x)}</em>`).join('')}</span></label>`).join('')}</div>
+      ${rows.some((r) => r.on && !(r.e.meanings || []).length) ? '<p class="hint">意味がない単語は、あとで詳細画面から追加してください（意味がないとテストに出せません）。</p>' : ''}
+      <button class="btn primary" id="reg" ${n ? '' : 'disabled'}>${n}件を登録</button>`;
+    out.querySelectorAll('input[data-i]').forEach((c) => (c.onchange = () => { rows[+c.dataset.i].on = c.checked; draw(); }));
+    bindMap();
+    $('#reg', out).onclick = async () => {
+      const r = await registerEntries(rows.filter((x) => x.on).map((x) => x.e), src, extra);
+      toast(`${r.added}件を登録しました${r.skipped ? `（${r.skipped}件スキップ）` : ''}`);
+      go('#vocab');
+    };
   };
+  draw();
+  out.scrollIntoView({ behavior: 'smooth' });
+
+  function mapHTML(a) {
+    if (!a.columns.length) return '';
+    const opt = (field) => `<select data-f="${field}"><option value="">使わない</option>${a.columns.map((c, i) => `<option value="${i}" ${a.map[field] === i ? 'selected' : ''}>${esc(c.name)}${c.sample ? '：' + esc(c.sample.slice(0, 24)) : ''}</option>`).join('')}</select>`;
+    return `<details class="card details" ${a.entries.length && !rows.some((r) => r.issues.length) ? '' : 'open'}><summary>読み取った列${a.header ? '' : '（列名なし）'}</summary>
+      ${['headword', 'meanings', 'example_en', 'example_ja'].map((f) => `<label class="field"><span>${FIELD_JA[f]}</span>${opt(f)}</label>`).join('')}
+      <p class="hint">違っていたら列を選び直してください。すぐに確認画面が更新されます。</p></details>`;
+  }
+  function bindMap() {
+    if (!csv) return;
+    out.querySelectorAll('select[data-f]').forEach((sel) => (sel.onchange = () => {
+      const m = {}; out.querySelectorAll('select[data-f]').forEach((x) => { if (x.value !== '') m[x.dataset.f] = +x.value; });
+      for (const k of ['pos', 'tags', 'bookmarked', 'accepted', 'ipa', 'lang', 'gender']) if (csv.analysis.map[k] != null) m[k] = csv.analysis.map[k];
+      const a = analyzeCSV(csv.text, m);
+      previewAndRegister(el, a.entries, src, extra, { text: csv.text, analysis: a });
+    }));
+  }
 }
 
 // ================= CSV import =================
@@ -408,7 +453,7 @@ export async function vocabCSV(el) {
   el.innerHTML = `
     <header class="top"><a href="#vocab" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>CSVから追加</h1></header>
     <div class="card stack">
-      <p class="small muted">1行目に見出しがあれば列名で読み取ります（headword / meanings / pos / example_en / example_ja / tags / bookmarked。「英語」「意味」など日本語の列名も可）。見出しがない場合は「英語, 意味, 例文, 例文訳」の順とみなします。</p>
+      <p class="small muted">列名（headword / meanings / example_en、「英語」「熟語」「意味」「例文」など）があれば列名で、なければ中身から列を判断します。番号の列は自動で飛ばします。読み取った列は確認画面で変更できます。</p>
       <label class="btn" for="file">📂 CSVファイルを選ぶ</label>
       <input type="file" id="file" accept=".csv,text/csv,text/plain" hidden>
       <label class="field"><span>タグ（任意・全件に付与）</span><input id="tags" autocapitalize="off"></label>
@@ -416,8 +461,11 @@ export async function vocabCSV(el) {
     <div id="out"></div>`;
   $('#file', el).onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
-    const entries = csvToEntries(await f.text());
-    previewAndRegister(el, entries, { type: 'csv', note: f.name }, { tags: splitList($('#tags', el).value) });
+    e.target.value = '';
+    if (/\.(xlsx|xls|numbers)$/i.test(f.name)) { $('#out', el).innerHTML = '<div class="card warn">Excel・Numbersのファイルは直接読めません。Numbersなら「共有 → 書き出す → CSV」で書き出したファイルを選んでください。</div>'; return; }
+    const text = await f.text();
+    const a = analyzeCSV(text);
+    previewAndRegister(el, a.entries, { type: 'csv', note: f.name }, { tags: splitList($('#tags', el).value) }, { text, analysis: a });
   };
 }
 

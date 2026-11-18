@@ -56,16 +56,43 @@ export async function existingHeadMap() {
   return map;
 }
 
-// ---- bulk text: one per line "headword, 意味1/意味2" or "headword<TAB>意味" ----
+// ---- bulk text: one per line "headword, 意味1/意味2" / "headword<TAB>意味" / "headword 意味"（英語のあとに日本語） ----
+// A leading number ("1.", "12)", "3 ") before the word is treated as numbering and removed.
+const JA_RE = /[぀-ヿ㐀-鿿ｦ-ﾟ]/;
+export const hasJa = (s) => JA_RE.test(String(s || ''));
+export const hasKana = (s) => /[぀-ヿ]/.test(String(s || ''));
+const isNumOnly = (s) => /^\s*[#No.\s]*\d+\s*[.)）:：]?\s*$/i.test(String(s || ''));
 export function parseBulk(text) {
   const out = [];
   for (const raw of String(text).split(/\r?\n/)) {
-    const line = raw.trim();
+    let line = raw.trim();
     if (!line) continue;
-    const m = line.match(/^(.+?)\s*(?:\t|,|，|:|：|=|\s-\s)\s*(.*)$/);
+    const parts = line.split('\t').map((x) => x.trim()).filter(Boolean);
+    if (parts.length > 1 && isNumOnly(parts[0])) parts.shift();         // "12<TAB>word<TAB>意味"
+    line = parts.join('\t');
+    line = line.replace(/^\d+\s*[.)）:：]\s*/, '').replace(/^\d+\s+(?=[A-Za-z¿¡])/, '');   // "12. word" / "12 word"
+    let m = line.match(/^(.+?)\s*(?:\t|,|，|:|：|=|\s-\s|\s–\s)\s*(.*)$/);
+    if (!m) {   // "put off 延期する": split where Japanese starts (Latin-script words only)
+      const k = line.search(JA_RE);
+      if (k > 0 && !hasJa(line.slice(0, k))) m = [line, line.slice(0, k).trim(), line.slice(k).trim()];
+    }
     const head = m ? m[1] : line;
-    out.push({ headword: normHead(head), meanings: m ? splitList(m[2]) : [] });
+    out.push({ headword: normHead(head), meanings: m ? splitList(m[2].replace(/\t/g, '/')) : [] });
   }
+  return out.filter((e) => e.headword);
+}
+
+// Problems of one entry / word (used by the import preview and the data check). Nothing is filled in automatically.
+export function entryIssues(e, lang = 'en') {
+  const out = [];
+  const head = e.headword || '', ms = e.meanings || [];
+  const ex = e.example_en ?? '';
+  if (!head.trim()) out.push('見出し語がありません');
+  else if (isNumOnly(head)) out.push('見出し語が数字だけです（番号の列を読んだ可能性）');
+  else if (/^(no|番号|id|headword|word|英語|単語|英単語|熟語|句動詞|meaning|意味)$/i.test(head.trim())) out.push('見出し行（列名）を単語として読んだ可能性');
+  if (lang !== 'zh-TW' && hasJa(head)) out.push('見出し語に日本語が入っています');
+  if (ms.length && !ms.some(hasJa)) out.push('意味に日本語がありません');
+  if (ex && hasKana(ex) && lang !== 'zh-TW') out.push('例文の欄に日本語が入っています');
   return out;
 }
 
@@ -90,11 +117,11 @@ export function parseCSV(text) {
 }
 
 const COLS = {
-  headword: ['headword', 'word', 'english', 'en', 'term', '英語', '単語', '英単語', '見出し語'],
-  meanings: ['meanings', 'meaning', 'japanese', 'ja', 'translation', '意味', '日本語', '日本語訳', '訳'],
+  headword: ['headword', 'word', 'english', 'en', 'term', 'phrase', 'phrasal verb', 'phrasal', 'expression', 'idiom', 'vocabulary', 'vocab', 'spanish', 'chinese', 'hanzi', '英語', '単語', '英単語', '見出し語', '見出し', '熟語', '英熟語', '句動詞', 'イディオム', '表現', '英語表現', '単語・熟語', 'スペイン語', '華語', '中国語', '漢字'],
+  meanings: ['meanings', 'meaning', 'japanese', 'ja', 'translation', 'definition', '意味', '日本語', '日本語訳', '訳', '和訳', '日本語の意味'],
   pos: ['pos', 'part of speech', '品詞'],
   example_en: ['example_en', 'example', 'sentence', '例文', '英文例'],
-  example_ja: ['example_ja', 'example translation', '例文訳', '例文の日本語訳'],
+  example_ja: ['example_ja', 'example translation', '例文訳', '例文の日本語訳', '例文（日本語）', '和訳例文'],
   tags: ['tags', 'tag', 'タグ', 'カテゴリ'],
   bookmarked: ['bookmarked', 'bookmark', 'ブックマーク'],
   accepted: ['accepted', '別解', '許容解答'],
@@ -103,24 +130,53 @@ const COLS = {
   gender: ['gender', '性'],
 };
 
-// Returns [{headword, meanings, pos, example_en, example_ja, tags, bookmarked, accepted, ipa}]
-export function csvToEntries(text) {
+// CSV analysis: header detection, number column detection, content-based fallback.
+// Returns { entries, columns: [{name, sample}], map: {field: colIndex}, header: bool, indexCols: [i], notes: [] }
+export function analyzeCSV(text, overrideMap = null) {
   const rows = parseCSV(text);
-  if (!rows.length) return [];
-  const head = rows[0].map((h) => h.trim().toLowerCase());
+  const res = { entries: [], columns: [], map: {}, header: false, indexCols: [], notes: [], rows: rows.length };
+  if (!rows.length) { res.notes.push('ファイルに読み取れる行がありません（空、またはCSVではない形式）'); return res; }
+  const width = Math.max(...rows.map((r) => r.length));
+  const head = rows[0].map((h) => String(h || '').trim().toLowerCase());
   const idx = {};
   for (const [k, names] of Object.entries(COLS)) idx[k] = head.findIndex((h) => names.includes(h));
-  const hasHeader = idx.headword >= 0;
-  if (!hasHeader) { idx.headword = 0; idx.meanings = 1; idx.example_en = 2; idx.example_ja = 3; }
-  const get = (r, k) => (idx[k] >= 0 ? (r[idx[k]] || '').trim() : '');
-  return rows.slice(hasHeader ? 1 : 0).map((r) => ({
+  // header row = any recognised column name, or a first row whose cells are all non-numeric while a column below is numeric
+  const body0 = rows.slice(1);
+  const numericCol = (c, list) => list.length > 0 && list.every((r) => /^\s*\d+\s*$/.test(r[c] || ''));
+  let header = Object.values(idx).some((i) => i >= 0);
+  if (!header && rows.length > 1) for (let c = 0; c < width; c++) if (numericCol(c, body0) && !/^\s*\d+\s*$/.test(rows[0][c] || '')) header = true;
+  const body = header ? body0 : rows;
+  res.header = header;
+  for (let c = 0; c < width; c++) if (numericCol(c, body) && idx.headword !== c) res.indexCols.push(c);
+  const col = (c) => body.map((r) => String(r[c] || '').trim()).filter(Boolean);
+  const share = (c, f) => { const v = col(c); return v.length ? v.filter(f).length / v.length : 0; };
+  const free = () => [...Array(width).keys()].filter((c) => !res.indexCols.includes(c) && !Object.values(map).includes(c));
+  const map = {};
+  for (const [k, i] of Object.entries(idx)) if (i >= 0 && !res.indexCols.includes(i)) map[k] = i;
+  // content-based guess for missing headword / meanings / examples
+  const latin = (x) => /[A-Za-zÀ-ÿ]/.test(x) && !hasKana(x);
+  const sentence = (x) => x.split(/\s+/).length >= 4;
+  if (map.headword == null) { const c = free().find((c) => share(c, (x) => latin(x) && !sentence(x)) >= 0.6) ?? free().find((c) => share(c, latin) >= 0.6) ?? free()[0]; if (c != null) map.headword = c; }
+  if (map.meanings == null) { const c = free().find((c) => share(c, hasJa) >= 0.6 && share(c, (x) => x.length <= 40) >= 0.6); if (c != null) map.meanings = c; }
+  if (map.example_en == null) { const c = free().find((c) => share(c, (x) => latin(x) && sentence(x)) >= 0.5); if (c != null) map.example_en = c; }
+  if (map.example_ja == null && map.example_en != null) { const c = free().find((c) => share(c, hasJa) >= 0.5); if (c != null) map.example_ja = c; }
+  if (overrideMap) { for (const k of Object.keys(map)) delete map[k]; for (const [k, v] of Object.entries(overrideMap)) if (v != null && v !== '' && v >= 0) map[k] = +v; }
+  res.map = map;
+  res.columns = [...Array(width).keys()].map((c) => ({ name: header ? rows[0][c] || `列${c + 1}` : `列${c + 1}`, sample: col(c).slice(0, 2).join(' / ') }));
+  if (res.indexCols.length) res.notes.push(`番号の列（${res.indexCols.map((c) => res.columns[c].name).join('・')}）は読み飛ばしました`);
+  if (!header) res.notes.push('1行目に列名がないため、中身から列を判断しました');
+  const get = (r, k) => (map[k] != null ? String(r[map[k]] || '').trim() : '');
+  res.entries = body.map((r) => ({
     headword: normHead(get(r, 'headword')),
     meanings: splitList(get(r, 'meanings')),
     pos: get(r, 'pos'), example_en: get(r, 'example_en'), example_ja: get(r, 'example_ja'),
     tags: splitList(get(r, 'tags')), accepted: splitList(get(r, 'accepted')), ipa: get(r, 'ipa'), lang: normLangCode(get(r, 'lang')), gender: get(r, 'gender'),
     bookmarked: /^(1|true|yes|y|済|○|★)$/i.test(get(r, 'bookmarked')),
   })).filter((e) => e.headword);
+  if (!res.entries.length) res.notes.push(map.headword == null ? '英語の列が見つかりませんでした' : '英語の列が空です');
+  return res;
 }
+export function csvToEntries(text) { return analyzeCSV(text).entries; }
 
 const normLangCode = (s) => { s = String(s || '').trim().toLowerCase(); if (!s) return ''; if (/^(es|spa|spanish|スペイン語|西)/.test(s)) return 'es'; if (/^(zh|華|中|台湾|chinese|mandarin)/.test(s)) return 'zh-TW'; if (/^(en|英)/.test(s)) return 'en'; return ''; };
 export function entryToWord(e, source, extra = {}) {

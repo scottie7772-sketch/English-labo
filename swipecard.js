@@ -1,9 +1,8 @@
 // Shared 3-direction swipe card (left / up / right) with tap-to-flip.
 // iPhone Safari + home-screen PWA: Touch Events (preventDefault) + touch-action:none; Pointer Events for mouse.
 //
-// Directions: ↑ up = わかる / ↓ down = わからない・スキップ / → right = 曖昧 (left if vagueRight=false).
-// The other horizontal side does nothing (card returns).
-// makeSwipeCard(card, { vagueRight, onTap, onCommit, canInteract })
+// Directions: → right = わかる / ← left = わからない（knowRight=false で左右入れ替え）/ ↑ up = 曖昧. ↓ down does nothing.
+// makeSwipeCard(card, { knowRight, onTap, onCommit, canInteract })
 //   onCommit(result) is called exactly once per card: 'know' | 'vague' | 'dont'
 //   returns { commit(result) }  (for buttons)
 
@@ -14,12 +13,12 @@ const DIST_UP = 70;         // px needed to commit up / down
 const FLICK_V = 0.55;       // px/ms: a fast flick commits with a shorter distance
 const FLICK_MIN = 35;
 
-export function makeSwipeCard(card, { vagueRight = true, onTap, onCommit, canInteract = () => true }) {
+export function makeSwipeCard(card, { knowRight = true, onTap, onCommit, canInteract = () => true }) {
   let id = null, x0 = 0, y0 = 0, t0 = 0, dx = 0, dy = 0, axis = null, done = false;
   let lastX = 0, lastY = 0, lastT = 0, vx = 0, vy = 0;
-  const vagueDir = vagueRight ? 'right' : 'left';
-  const resultFor = (dir) => (dir === 'up' ? 'know' : dir === 'down' ? 'dont' : dir === vagueDir ? 'vague' : null);
-  const dirFor = (result) => (result === 'know' ? 'up' : result === 'dont' ? 'down' : vagueDir);
+  const knowDir = knowRight ? 'right' : 'left', dontDir = knowRight ? 'left' : 'right';
+  const resultFor = (dir) => (dir === 'up' ? 'vague' : dir === knowDir ? 'know' : dir === dontDir ? 'dont' : null);
+  const dirFor = (result) => (result === 'vague' ? 'up' : result === 'know' ? knowDir : dontDir);
 
   function setStamp(dir, strength) {
     card.dataset.dir = dir || '';
@@ -63,12 +62,14 @@ export function makeSwipeCard(card, { vagueRight = true, onTap, onCommit, canInt
     // lock the axis once the finger has clearly moved (prevents diagonal mis-detection)
     if (!axis && Math.hypot(dx, dy) > TAP_MOVE) axis = Math.abs(dx) >= Math.abs(dy) ? 'x' : dy < 0 ? 'up' : 'down';
     if (axis === 'x') {
-      const side = dx > 0 ? 'right' : 'left';
-      if (side === vagueDir) { card.style.transform = `translate(${dx}px, ${dy * 0.15}px) rotate(${dx / 16}deg)`; setStamp(side, Math.abs(dx) / DIST_X); }
-      else { card.style.transform = `translateX(${dx * 0.2}px)`; setStamp(null, 0); }   // the other side does nothing
-    } else if (axis === 'up' || axis === 'down') {
-      card.style.transform = `translate(${dx * 0.15}px, ${dy}px)`;
-      setStamp(dy < 0 ? 'up' : 'down', Math.abs(dy) / DIST_UP);
+      card.style.transform = `translate(${dx}px, ${dy * 0.15}px) rotate(${dx / 16}deg)`;
+      setStamp(dx > 0 ? 'right' : 'left', Math.abs(dx) / DIST_X);
+    } else if (axis === 'up') {
+      card.style.transform = `translate(${dx * 0.15}px, ${Math.min(0, dy)}px)`;
+      setStamp('up', -Math.min(0, dy) / DIST_UP);
+    } else if (axis === 'down') {
+      card.style.transform = `translateY(${Math.max(0, dy) * 0.25}px)`;   // downward does nothing
+      setStamp(null, 0);
     }
   }
   function end(t, cancelled) {
@@ -78,11 +79,10 @@ export function makeSwipeCard(card, { vagueRight = true, onTap, onCommit, canInt
     if (cancelled) { reset(); return; }
     const dur = t - t0;
     if (!axis && dur < TAP_MS && Math.hypot(dx, dy) < TAP_MOVE) { reset(); onTap?.(); return; }
-    if (axis === 'x' && (dx > 0 ? 'right' : 'left') === vagueDir && (Math.abs(dx) > DIST_X || (Math.abs(dx) > FLICK_MIN && Math.abs(vx) > FLICK_V && Math.sign(vx) === Math.sign(dx)))) {
-      commit('vague'); return;
+    if (axis === 'x' && (Math.abs(dx) > DIST_X || (Math.abs(dx) > FLICK_MIN && Math.abs(vx) > FLICK_V && Math.sign(vx) === Math.sign(dx)))) {
+      commit(resultFor(dx > 0 ? 'right' : 'left')); return;
     }
-    if (axis === 'up' && (-dy > DIST_UP || (-dy > FLICK_MIN && vy < -FLICK_V))) { commit('know'); return; }
-    if (axis === 'down' && (dy > DIST_UP || (dy > FLICK_MIN && vy > FLICK_V))) { commit('dont'); return; }
+    if (axis === 'up' && (-dy > DIST_UP || (-dy > FLICK_MIN && vy < -FLICK_V))) { commit('vague'); return; }
     reset();
   }
 
@@ -113,10 +113,16 @@ export function makeSwipeCard(card, { vagueRight = true, onTap, onCommit, canInt
 }
 
 // card HTML skeleton with direction labels
-export function swipeCardHTML(inner, vagueRight = true) {
+export function swipeCardHTML(inner, knowRight = true) {
   return `<div class="fcard">
-    <span class="stamp s-up k-know">わかる</span>
-    <span class="stamp s-down k-dont">わからない</span>
-    <span class="stamp ${vagueRight ? 's-right' : 's-left'} k-vague">曖昧</span>
+    <span class="stamp s-left ${knowRight ? 'k-dont' : 'k-know'}">${knowRight ? 'わからない' : 'わかる'}</span>
+    <span class="stamp s-right ${knowRight ? 'k-know' : 'k-dont'}">${knowRight ? 'わかる' : 'わからない'}</span>
+    <span class="stamp s-upv k-vague">曖昧</span>
     <div class="face">${inner}</div></div>`;
+}
+
+// Answer strip shown right after each judgment (so you can check the answer without tapping first)
+export function answerStripHTML(result, headword, meaning, revealed) {
+  const m = { know: ['○', 'わかる', 'ok'], vague: ['△', '曖昧', 'near'], dont: ['✕', 'わからない', 'ng'] }[result] || ['・', '', ''];
+  return `<div class="lastcard ${m[2]}"><span class="lmark">${m[0]}</span><span class="grow"><b>${headword}</b><span>${meaning}</span></span><small>${m[1]}${revealed ? '' : '・答え未表示'}</small></div>`;
 }

@@ -9,7 +9,7 @@ import { videoList, videoPlay } from './video.js';
 import { homeScreen, reviewScreen, grammarScreen, comingSoon } from './hub.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '0.8.0';
+export const APP_VERSION = '0.8.1';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -71,8 +71,8 @@ screens.settings = async (el) => {
     </div>
 
     <h2 class="sec">Quick Flashcards</h2>
-    <div class="card stack"><span class="small muted">スワイプ：↑わかる・↓わからない/スキップは固定。「曖昧」を左右どちらにするか（単語テストのカードにも適用）</span>
-      <div class="seg" id="swipe">${[['right', '右＝曖昧'], ['left', '左＝曖昧']].map(([v, l]) => `<button data-v="${v}" class="${swipe === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="card stack"><span class="small muted">スワイプの左右（↑は常に「曖昧」。単語テストのカードにも適用）</span>
+      <div class="seg" id="swipe">${[['right', '右＝わかる'], ['left', '左＝わかる']].map(([v, l]) => `<button data-v="${v}" class="${swipe === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
 
     <h2 class="sec">バックアップ</h2>
     <div class="card stack">
@@ -104,7 +104,7 @@ screens.settings = async (el) => {
     const v = e.target.dataset.v; if (!v) return;
     await setSetting('theme', v); await applyTheme(v); render();
   });
-  $('#swipe', el).addEventListener('click', async (e) => { const v = e.target.dataset.v; if (!v) return; await setSetting('swipeVague', v); toast('スワイプの向きを変更しました'); render(); });
+  $('#swipe', el).addEventListener('click', async (e) => { const v = e.target.dataset.v; if (!v) return; await setSetting('swipeKnow', v); toast('スワイプの向きを変更しました'); render(); });
   $('#bk-json', el).onclick = async () => {
     try { const r = await exportJSON(); if (r !== 'cancelled') { toast('バックアップを作成しました'); render(); } }
     catch (e) { toast('失敗: ' + e.message); }

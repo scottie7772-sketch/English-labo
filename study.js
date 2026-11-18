@@ -3,7 +3,7 @@ import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, speak } from './ui.js';
 import { SKILL_LABELS, LEVEL_LABELS, effLevel, filterLevel, levelText, loadAllMastery, loadWordMastery } from './mastery.js';
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
-import { makeSwipeCard, swipeCardHTML } from './swipecard.js';
+import { makeSwipeCard, swipeCardHTML, answerStripHTML } from './swipecard.js';
 import { icon } from './icons.js';
 
 // ---------- definitions ----------
@@ -288,7 +288,7 @@ export async function sessionScreen(el, params) {
 
   const undoStack = [];
   let busy = Promise.resolve();
-  const vagueRight = (await getSetting('swipeVague', 'right')) === 'right';
+  const knowRight = (await getSetting('swipeKnow', 'right')) === 'right';
 
   // ---- flashcard format: 1 swipe = judged, auto-advance (no feedback screen) ----
   function showFlash(q, w) {
@@ -308,11 +308,12 @@ export async function sessionScreen(el, params) {
         <div class="progress"><i id="prog"></i></div>
         <p class="small muted center" id="pos"></p>
         <div class="qstage" id="fstage"></div>
-        <p class="hint center">タップで答え ・ ↑わかる ・ ↓わからない ・ ${vagueRight ? '→' : '←'}曖昧</p>
+        <div class="laststrip" id="last"></div>
+        <p class="hint center">タップで答え ・ ${knowRight ? '← わからない ・ → わかる' : '← わかる ・ → わからない'} ・ ↑曖昧</p>
         <div class="qbtns3">
-          <button class="btn qb dont" data-r="dont"><b>↓</b>わからない</button>
-      <button class="btn qb vague" data-r="vague"><b>${vagueRight ? '→' : '←'}</b>曖昧</button>
-      <button class="btn qb know" data-r="know"><b>↑</b>わかる</button>
+          <button class="btn qb ${knowRight ? 'dont' : 'know'}" data-r="${knowRight ? 'dont' : 'know'}"><b>←</b>${knowRight ? 'わからない' : 'わかる'}</button>
+      <button class="btn qb vague" data-r="vague"><b>↑</b>曖昧</button>
+      <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}"><b>→</b>${knowRight ? 'わかる' : 'わからない'}</button>
           <button class="btn qb" id="undo">↩︎</button>
         </div>
         ${isAudio ? `<button class="btn" id="say" style="margin-top:8px">${icon('speaker', 20)} もう一度聞く</button>` : ''}
@@ -330,11 +331,11 @@ export async function sessionScreen(el, params) {
     $('#pos', el).textContent = `${answeredN + 1} / ${s.queue.length}`;
     $('#undo', el).disabled = !undoStack.length;
     const stage = $('#fstage', el);
-    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(front, vagueRight));
+    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(front, knowRight));
     const card = stage.firstElementChild;
     const st = { flipped: false, revealed: false, t0: performance.now() };
     st.ctl = makeSwipeCard(card, {
-      vagueRight,
+      knowRight,
       onTap: () => {
         st.flipped = !st.flipped;
         card.classList.add('flipping');
@@ -346,6 +347,7 @@ export async function sessionScreen(el, params) {
         const ms = Math.round(performance.now() - st.t0);
         const correct = result !== 'dont', hint = result === 'vague';
         s.answered[q.qid] = { correct, near: false, hint, answer: { know: 'わかる', vague: '曖昧', dont: 'わからない' }[result], grade: result, revealed: st.revealed, ms, at: Date.now() };
+        $('#last', el).innerHTML = answerStripHTML(result, esc(w.headword), esc(meanings.join('、')), st.revealed);
         s.cursor = idx + 1; s.activeMs += Math.min(ms, 120000); s.updatedAt = Date.now();
         const entry = { idx, qid: q.qid, wordId: w.id, snap: null, attemptIds: [], ms };
         undoStack.push(entry);
@@ -376,7 +378,7 @@ export async function sessionScreen(el, params) {
     s.status = 'active'; s.endedAt = null; s.updatedAt = Date.now();
     await db.put('sessions', s);
     idx = e.idx;
-    $('#fstage', el).innerHTML = '';
+    $('#fstage', el).innerHTML = ''; $('#last', el).innerHTML = '';
     show(); toast('取り消しました', 1000);
   }
 

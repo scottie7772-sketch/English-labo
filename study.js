@@ -29,14 +29,14 @@ const ORDERS = [['random', 'ランダム'], ['registered', '登録順'], ['weak'
 
 async function loadDefaults() { return { ...FACTORY_TEST_DEFAULTS, ...(await getSetting('testDefaults', {})) }; }
 
-const allMeanings = (w) => (w.senses || []).flatMap((s) => s.meanings || []);
+export const allMeanings = (w) => (w.senses || []).flatMap((s) => s.meanings || []);
 const allAccepted = (w) => [...new Set((w.senses || []).flatMap((s) => s.accepted || []))];
 function basisLevel(records, skills) { return Math.min(...skills.map((s) => filterLevel(effLevel(records?.[s])))); }
 function rawBasis(records, skills) { const l = skills.map((s) => effLevel(records?.[s])); return l.some((x) => x === 0) ? 0 : Math.min(...l); }
-function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+export function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 
 // ---------- candidate selection ----------
-async function selectWords(cfg) {
+export async function selectWords(cfg) {
   const [words, mastery, attempts, decks] = await Promise.all([db.all('words'), loadAllMastery(), db.all('attempts'), db.all('decks')]);
   const skills = basisSkills(cfg.direction, cfg.format);
   const needMeaning = cfg.direction !== 'audio2en';
@@ -66,7 +66,7 @@ async function selectWords(cfg) {
 }
 
 async function activeSession() {
-  const act = (await db.byIndex('sessions', 'status', 'active')).sort((a, b) => b.updatedAt - a.updatedAt);
+  const act = (await db.byIndex('sessions', 'status', 'active')).filter((x) => x.mode !== 'quick').sort((a, b) => b.updatedAt - a.updatedAt);
   return act[0] || null;
 }
 const remaining = (s) => s.queue.filter((q) => !s.answered[q.qid]).length;
@@ -83,6 +83,7 @@ export async function studySetup(el) {
     const n = cfg.count === 'all' ? sel.list.length : Math.min(sel.list.length, cfg.count === 'custom' ? cfg.customCount : cfg.count);
     el.innerHTML = `
       <header class="top"><h1>単語テスト</h1></header>
+      <a class="card quicklink" href="#quick">⚡ <b>Quick Flashcards</b><span class="small muted">　スワイプで高速に確認</span></a>
       ${active ? `
         <div class="card stack resume">
           <b>中断中のテスト</b>
@@ -177,7 +178,7 @@ async function createSession(cfg, sel, retryOf = null, wordIds = null) {
   const s = {
     id: uid('ss_'), status: 'active', config: { ...cfg }, retryOf,
     queue: list.slice(0, n).map((w) => ({ qid: uid('q_'), wordId: w.id, direction: cfg.direction, format: cfg.format, skills: sel.skills, levelAtStart: rawBasis(sel.mastery[w.id], sel.skills) })),
-    cursor: 0, answered: {}, startedAt: now, updatedAt: now, endedAt: null, activeMs: 0,
+    mode: 'test', cursor: 0, answered: {}, startedAt: now, updatedAt: now, endedAt: null, activeMs: 0,
   };
   await db.put('sessions', s);
   return s;

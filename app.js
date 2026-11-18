@@ -4,17 +4,20 @@ import { $, esc, toast, confirmDialog } from './ui.js';
 import { vocabList, wordDetail, vocabBulk, vocabCSV, vocabPaste, decksScreen } from './vocab.js';
 import { seedIfNeeded } from './words.js';
 import { studySetup, sessionScreen, resultScreen } from './study.js';
+import { quickSetup, quickRun, quickResult, getSwipe } from './quick.js';
+import { videoList, videoPlay } from './video.js';
 
-export const APP_VERSION = '0.3.0';
+export const APP_VERSION = '0.4.0';
 
 const MODULES = [
   { id: 'vocab', icon: '📚', name: 'Vocabulary', ja: '単語・熟語', phase: 1 },
   { id: 'study', icon: '🃏', name: 'Flashcards & Tests', ja: 'カード・テスト', phase: 1 },
+  { id: 'quick', icon: '⚡', name: 'Quick Flashcards', ja: 'スワイプで高速確認', phase: 1 },
   { id: 'log', icon: '📈', name: 'Learning Log', ja: '学習記録・復習', phase: 4 },
   { id: 'toeic', icon: '📝', name: 'TOEIC', ja: '文法問題', phase: 5 },
   { id: 'listening', icon: '🎧', name: 'Listening', ja: '短文保持', phase: 5 },
   { id: 'speaking', icon: '🗣️', name: 'Speaking', ja: '瞬間英作文', phase: 5 },
-  { id: 'video', icon: '🎬', name: 'Video Lab', ja: '動画・字幕', phase: 6 },
+  { id: 'video', icon: '🎬', name: 'Video Lab', ja: '動画・字幕', phase: 1 },
   { id: 'import', icon: '📷', name: 'Import', ja: 'OCR・取り込み', phase: 7 },
 ];
 const TABS = [
@@ -48,7 +51,7 @@ const screens = {};
 
 screens.home = async (el) => {
   const [wordCount, reviews, active, lastBackup] = await Promise.all([
-    db.count('words'), db.all('reviews'), db.byIndex('sessions', 'status', 'active'), getMeta('lastBackupAt', null),
+    db.count('words'), db.all('reviews'), db.byIndex('sessions', 'status', 'active').then((a) => a.filter((x) => x.mode !== 'quick')), getMeta('lastBackupAt', null),
   ]);
   const due = new Set(reviews.filter((r) => r.due <= Date.now()).map((r) => r.wordId)).size;
   const d = daysSince(lastBackup);
@@ -88,11 +91,12 @@ function placeholder(id) {
   };
 }
 for (const m of MODULES) screens[m.id] = placeholder(m.id);
-Object.assign(screens, { study: studySetup, session: sessionScreen, result: resultScreen, vocab: vocabList, word: wordDetail, 'vocab-bulk': vocabBulk, 'vocab-csv': vocabCSV, 'vocab-paste': vocabPaste, decks: decksScreen });
-const TAB_OF = { session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
+Object.assign(screens, { quick: quickSetup, 'quick-run': quickRun, 'quick-result': quickResult, video: videoList, 'video-play': videoPlay, study: studySetup, session: sessionScreen, result: resultScreen, vocab: vocabList, word: wordDetail, 'vocab-bulk': vocabBulk, 'vocab-csv': vocabCSV, 'vocab-paste': vocabPaste, decks: decksScreen });
+const TAB_OF = { quick: 'study', 'quick-run': 'study', 'quick-result': 'study', video: 'home', 'video-play': 'home', session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
 
 screens.settings = async (el) => {
   const theme = await getSetting('theme', 'system');
+  const swipe = await getSwipe();
   const lastBackup = await getMeta('lastBackupAt', null);
   const st = await storageInfo();
   const counts = {};
@@ -108,6 +112,10 @@ screens.settings = async (el) => {
         ${[['system', '自動'], ['light', 'ライト'], ['dark', 'ダーク']].map(([v, l]) => `<button data-v="${v}" class="${theme === v ? 'on' : ''}">${l}</button>`).join('')}
       </div>
     </div>
+
+    <h2 class="sec">Quick Flashcards</h2>
+    <div class="card stack"><span class="small muted">スワイプの向き</span>
+      <div class="seg" id="swipe">${[['right', '右＝覚えている'], ['left', '左＝覚えている']].map(([v, l]) => `<button data-v="${v}" class="${swipe === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
 
     <h2 class="sec">バックアップ</h2>
     <div class="card stack">
@@ -139,6 +147,7 @@ screens.settings = async (el) => {
     const v = e.target.dataset.v; if (!v) return;
     await setSetting('theme', v); await applyTheme(v); render();
   });
+  $('#swipe', el).addEventListener('click', async (e) => { const v = e.target.dataset.v; if (!v) return; await setSetting('quickSwipe', v); toast('スワイプの向きを変更しました'); render(); });
   $('#bk-json', el).onclick = async () => {
     try { const r = await exportJSON(); if (r !== 'cancelled') { toast('バックアップを作成しました'); render(); } }
     catch (e) { toast('失敗: ' + e.message); }

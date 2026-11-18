@@ -192,3 +192,56 @@ a.card.resume { color: var(--accent); font-weight: 600; margin-top: 10px; }
 .rrow .lvc { text-align: right; white-space: nowrap; }
 .block { display: block; }
 .row .btn.grow { flex: 1 1 0; width: auto; }
+
+/* ---------- Quick Flashcards ---------- */
+.quicklink { display: flex; align-items: center; gap: 4px; border-color: var(--accent); }
+.clock { font-variant-numeric: tabular-nums; font-size: 17px; }
+.cardbar { height: 3px; border-radius: 99px; overflow: hidden; }
+.cardbar i { display: block; height: 100%; background: #e3a21a; width: 0; transition: width .2s linear; }
+.qstage { position: relative; height: min(52vh, 420px); margin: 10px 0; }
+.fcard {
+  position: absolute; inset: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 22px;
+  display: flex; align-items: center; justify-content: center; text-align: center; padding: 20px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.12); touch-action: none; user-select: none; -webkit-user-select: none;
+  transition: transform .2s ease-out, opacity .2s, border-color .1s;
+}
+.fcard.flipping .face { opacity: 0; transform: scale(.96); }
+.face { transition: opacity .12s, transform .12s; display: flex; flex-direction: column; gap: 10px; align-items: center; max-height: 100%; overflow: auto; }
+.fc-en { font-size: 36px; font-weight: 700; letter-spacing: -.01em; }
+.fc-ja { font-size: 24px; font-weight: 600; line-height: 1.45; }
+.fc-ex { font-size: 14px; line-height: 1.5; text-align: left; border-left: 3px solid var(--line); padding-left: 10px; margin-top: 6px; }
+.stamp { position: absolute; top: 18px; font-weight: 800; font-size: 18px; padding: 4px 10px; border-radius: 8px; border: 3px solid; opacity: 0; transition: opacity .1s; }
+.stamp.know { color: #34a56f; right: 18px; } .stamp.dont { color: var(--danger); left: 18px; }
+.fcard.to-know { border-color: #34a56f; } .fcard.to-know .stamp.know { opacity: 1; }
+.fcard.to-dont { border-color: var(--danger); } .fcard.to-dont .stamp.dont { opacity: 1; }
+.qbtns { display: grid; grid-template-columns: 1fr 64px 1fr; gap: 10px; }
+.qb.know { color: #34a56f; border-color: #34a56f; } .qb.dont { color: var(--danger); border-color: var(--danger); }
+.pauseov { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 40; padding: 24px; }
+.pauseov .card { width: 100%; max-width: 360px; }
+.up { color: #34a56f; } .down { color: var(--danger); }
+
+/* ---------- Video Lab ---------- */
+.vrow { display: flex; align-items: center; gap: 12px; }
+.vic { font-size: 26px; }
+.vtitle { font-size: 18px !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60vw; }
+.vwrap { background: #000; border-radius: 14px; overflow: hidden; }
+.vwrap video { width: 100%; max-height: 42vh; display: block; background: #000; }
+.subbox { min-height: 64px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-top: 8px; padding: 10px 12px; text-align: center; }
+.subbox.empty { color: var(--muted); }
+.sen { font-size: 18px; font-weight: 600; line-height: 1.4; }
+.sja { font-size: 15px; color: var(--muted); margin-top: 4px; }
+.vctl { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; margin-top: 10px; }
+.vctl .btn { padding: 10px 4px; font-size: 15px; }
+.vctl2 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; }
+.tgl { font: inherit; font-size: 13px; padding: 9px 2px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); }
+.tgl.on { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+.cuelist { max-height: 46vh; overflow: auto; -webkit-overflow-scrolling: touch; position: relative; }
+.cue { display: flex; gap: 8px; align-items: flex-start; padding: 9px 6px; border-bottom: 1px solid var(--line); }
+.cue.cur { background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 8px; }
+.ct { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; width: 44px; padding-top: 3px; }
+.ctext { display: flex; flex-direction: column; gap: 2px; }
+.cen { font-size: 15px; } .cja { font-size: 13px; color: var(--muted); }
+.cbtn { font: inherit; font-size: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--accent); border-radius: 8px; padding: 4px 7px; white-space: nowrap; }
+.vref { display: block; padding: 4px 0; color: var(--accent); }
+.vref .block { color: var(--text); }
+[hidden] { display: none !important; }

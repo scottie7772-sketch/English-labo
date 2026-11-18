@@ -1,6 +1,6 @@
 // Network-first for app files (updates appear automatically when online), cache fallback for offline.
-const CACHE = 'ell-shell-v3';
-const SHELL = ['./', './index.html', './app.css', './app.js', './db.js', './backup.js', './ui.js', './mastery.js', './words.js', './vocab.js', './seed.js', './judge.js', './study.js', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
+const CACHE = 'ell-shell-v4';
+const SHELL = ['./', './index.html', './app.css', './app.js', './db.js', './backup.js', './ui.js', './mastery.js', './words.js', './vocab.js', './seed.js', './judge.js', './study.js', './quick.js', './video.js', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

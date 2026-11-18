@@ -2,6 +2,7 @@
 import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, speak, fmtDate } from './ui.js';
 import { SKILLS, SKILL_LABELS, LEVEL_LABELS, effLevel, status, source, overall, filterLevel, levelText, loadAllMastery, loadWordMastery, setManual, setLock, resetToAuto } from './mastery.js';
+import { videoNames } from './video.js';
 import { newWord, newSense, saveWord, toggleBookmark, deleteWord, existingHeadMap, headKey, splitList, parseBulk, csvToEntries, registerEntries } from './words.js';
 
 const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', preposition: '前置詞', conjunction: '接続詞', pronoun: '代名詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語' };
@@ -169,6 +170,8 @@ export async function wordDetail(el, params) {
   const lastAt = Math.max(0, ...allStats.map((s) => s.lastAt || 0)) || null;
   const ms = allStats.filter((s) => s.avgMs).map((s) => s.avgMs);
   const ov = overall(mastery);
+  const vrefs = isNew ? [] : (w.videoRefs?.length ? w.videoRefs : w.source?.type === 'video' ? [w.source] : []);
+  const vnames = vrefs.length ? await videoNames() : {};
 
   el.innerHTML = `
     <header class="top"><a href="${isNew ? '#vocab' : '#vocab'}" class="back">‹</a><h1>${isNew ? '単語を追加' : '単語の詳細'}</h1><span class="grow"></span>
@@ -215,6 +218,10 @@ export async function wordDetail(el, params) {
       <div class="kv"><span>登録日時</span><b>${fmtDate(w.createdAt)}</b></div>
       <div class="kv"><span>登録元</span><b>${esc(SOURCE_JA[w.source?.type] || w.source?.type || '—')}${w.source?.note ? '（' + esc(w.source.note) + '）' : ''}</b></div>
     </div>
+
+    ${vrefs.length ? `<h2 class="sec">元の動画</h2><div class="card stack">${vrefs.map((r) => vnames[r.videoId]
+      ? `<a class="vref" href="#video-play?id=${r.videoId}&t=${r.time}">▶︎ <b>${esc(vnames[r.videoId].name)}</b> <span class="muted small">${Math.floor(r.time / 60)}:${String(Math.floor(r.time % 60)).padStart(2, '0')}</span>${r.text ? `<span class="small block">${esc(r.text)}</span>` : ''}</a>`
+      : `<div class="small muted">（動画は削除済み）${esc(r.text || '')}</div>`).join('')}</div>` : ''}
 
     ${hist.length ? `<h2 class="sec">習得度の変更履歴</h2><div class="card">${hist.map((h) => `<div class="hrow"><span>${fmtDate(h.at)}・${SKILL_LABELS[h.skill]}</span><b>${esc(histText(h))}</b></div>`).join('')}</div>` : ''}
 

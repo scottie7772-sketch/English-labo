@@ -415,3 +415,6 @@ p.small.muted.center, #pos { font-size: var(--fs-s); font-weight: 700; }
 .qbtns3 .btn b { font-size: 20px; line-height: 1.1; }
 #toast { top: calc(env(safe-area-inset-top) + 12px); bottom: auto; font-size: var(--fs-s); font-weight: 600; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
 #toast { width: max-content; max-width: 88vw; text-align: center; }
+.stamp.s-up { top: auto; bottom: 18px; left: 50%; right: auto; transform: translateX(-50%); }
+.stamp.s-down { top: 18px; bottom: auto; left: 50%; right: auto; transform: translateX(-50%); }
+.fcard[data-dir="down"] .s-down { opacity: var(--s, 0); }

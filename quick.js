@@ -33,7 +33,7 @@ const counts = (s) => {
 async function activeQuick() {
   return (await db.byIndex('sessions', 'status', 'active')).filter((x) => x.mode === 'quick').sort((a, b) => b.updatedAt - a.updatedAt)[0] || null;
 }
-export const getSwipe = () => getSetting('quickSwipe', 'right'); // 'right' = 右スワイプで「覚えている」
+export const getSwipe = () => getSetting('swipeVague', 'right'); // 'right' = 右スワイプで「曖昧」（↑わかる・↓わからない は固定）
 
 // ================= Setup =================
 export async function quickSetup(el) {
@@ -75,7 +75,7 @@ export async function quickSetup(el) {
         ${cfg.cardTime === 'custom' ? `<label class="field"><span>秒</span><input type="number" id="cct" min="2" inputmode="numeric" value="${cfg.customCardTime}"></label>` : ''}
       </div>
 
-      <p class="hint center">${swipe === 'right' ? '→ わかる　↑ 曖昧　← わからない' : '← わかる　↑ 曖昧　→ わからない'}（<a class="link" href="#settings">左右は設定で入れ替え</a>）</p>
+      <p class="hint center">↑ わかる　↓ わからない・スキップ　${swipe === 'right' ? '→' : '←'} 曖昧（<a class="link" href="#settings">曖昧の左右は設定で変更</a>）</p>
       <div class="cta-bar"><div class="cta-count"><b>${n}</b><span>枚</span><small>対象 ${sel.list.length}語</small></div>
         <button class="btn primary cta" id="start" ${n ? '' : 'disabled'}>スタート</button></div>`;
     bind();
@@ -122,7 +122,7 @@ export async function quickRun(el, params) {
   const s = await db.get('sessions', params.get('id'));
   if (!s || s.status !== 'active') { go(s ? `#quick-result?id=${s.id}` : '#quick'); return; }
   const words = Object.fromEntries((await db.all('words')).map((w) => [w.id, w]));
-  const knowRight = (await getSwipe()) === 'right';
+  const vagueRight = (await getSwipe()) === 'right';
   const cfg = s.config, LIMIT = limitMs(cfg), CARD = cardLimitMs(cfg);
   const undo = [];
   let idx = nextIdx(0), running = true, cardMs = 0, last = performance.now(), busy = Promise.resolve(), ended = false;
@@ -140,11 +140,11 @@ export async function quickRun(el, params) {
     <div class="row between small muted" style="margin:6px 2px"><span id="pos"></span><span id="tally"></span></div>
     <div class="cardbar"><i id="cbar"></i></div>
     <div class="qstage" id="stage"></div>
-    <p class="hint center">タップで答え　${knowRight ? '← わからない　↑ 曖昧　わかる →' : '← わかる　↑ 曖昧　わからない →'}</p>
+    <p class="hint center">タップで答え　↑ わかる　↓ わからない・スキップ　${vagueRight ? '→' : '←'} 曖昧</p>
     <div class="qbtns3">
-      <button class="btn qb ${knowRight ? 'dont' : 'know'}" data-r="${knowRight ? 'dont' : 'know'}">${knowRight ? '<b>✕</b>わからない' : '<b>○</b>わかる'}</button>
-      <button class="btn qb vague" data-r="vague"><b>△</b>曖昧</button>
-      <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}">${knowRight ? '<b>○</b>わかる' : '<b>✕</b>わからない'}</button>
+      <button class="btn qb dont" data-r="dont"><b>↓</b>わからない</button>
+      <button class="btn qb vague" data-r="vague"><b>${vagueRight ? '→' : '←'}</b>曖昧</button>
+      <button class="btn qb know" data-r="know"><b>↑</b>わかる</button>
       <button class="btn qb" id="undo" aria-label="取り消し">↩︎</button>
     </div>
     <div class="pauseov" id="pov" hidden><div class="card center stack"><b>一時停止中</b><button class="btn primary" id="resume">再開</button><button class="btn" id="quit2">終了して結果へ</button></div></div>
@@ -176,11 +176,11 @@ export async function quickRun(el, params) {
   function showCard(i) {
     const q = s.queue[i], w = words[q.wordId];
     const f = faces(w);
-    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(f.front, knowRight));
+    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(f.front, vagueRight));
     const card = stage.firstElementChild;
     const state = { card, flipped: false, qid: q.qid, i };
     state.ctl = makeSwipeCard(card, {
-      knowRight,
+      vagueRight,
       canInteract: () => running && !ended,
       onTap: () => {
         state.flipped = !state.flipped;

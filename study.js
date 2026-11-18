@@ -257,7 +257,7 @@ export async function sessionScreen(el, params) {
 
   const undoStack = [];
   let busy = Promise.resolve();
-  const knowRight = (await getSetting('quickSwipe', 'right')) === 'right';
+  const vagueRight = (await getSetting('swipeVague', 'right')) === 'right';
 
   // ---- flashcard format: 1 swipe = judged, auto-advance (no feedback screen) ----
   function showFlash(q, w) {
@@ -277,11 +277,11 @@ export async function sessionScreen(el, params) {
         <div class="progress"><i id="prog"></i></div>
         <p class="small muted center" id="pos"></p>
         <div class="qstage" id="fstage"></div>
-        <p class="hint center">タップで答え　${knowRight ? '← わからない　↑ 曖昧　わかる →' : '← わかる　↑ 曖昧　わからない →'}</p>
+        <p class="hint center">タップで答え　↑ わかる　↓ わからない・スキップ　${vagueRight ? '→' : '←'} 曖昧</p>
         <div class="qbtns3">
-          <button class="btn qb ${knowRight ? 'dont' : 'know'}" data-r="${knowRight ? 'dont' : 'know'}">${knowRight ? '<b>✕</b>わからない' : '<b>○</b>わかる'}</button>
-          <button class="btn qb vague" data-r="vague"><b>△</b>曖昧</button>
-          <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}">${knowRight ? '<b>○</b>わかる' : '<b>✕</b>わからない'}</button>
+          <button class="btn qb dont" data-r="dont"><b>↓</b>わからない</button>
+      <button class="btn qb vague" data-r="vague"><b>${vagueRight ? '→' : '←'}</b>曖昧</button>
+      <button class="btn qb know" data-r="know"><b>↑</b>わかる</button>
           <button class="btn qb" id="undo">↩︎</button>
         </div>
         ${isAudio ? '<button class="btn" id="say" style="margin-top:8px">🔊 もう一度聞く</button>' : ''}
@@ -299,11 +299,11 @@ export async function sessionScreen(el, params) {
     $('#pos', el).textContent = `${answeredN + 1} / ${s.queue.length}`;
     $('#undo', el).disabled = !undoStack.length;
     const stage = $('#fstage', el);
-    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(front, knowRight));
+    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(front, vagueRight));
     const card = stage.firstElementChild;
     const st = { flipped: false, revealed: false, t0: performance.now() };
     st.ctl = makeSwipeCard(card, {
-      knowRight,
+      vagueRight,
       onTap: () => {
         st.flipped = !st.flipped;
         card.classList.add('flipping');
@@ -402,7 +402,8 @@ export async function sessionScreen(el, params) {
       $('#tf', ans).onsubmit = (e) => { e.preventDefault(); if (!inp.value.trim()) { inp.focus(); return; } submitTyping(inp.value); };
     } else if (q.format === 'choice') {
       const toEn = q.direction === 'ja2en';
-      const others = shuffle(allWords.filter((x) => x.id !== w.id && (toEn || allMeanings(x).length)));
+      // other meanings of the same headword would also be correct -> never use them as distractors
+      const others = shuffle(allWords.filter((x) => x.id !== w.id && x.headword.toLowerCase() !== w.headword.toLowerCase() && (toEn || allMeanings(x).length)));
       const same = others.filter((x) => x.isPhrase === w.isPhrase);
       const pool = [...same, ...others.filter((x) => x.isPhrase !== w.isPhrase)];
       const label = (x) => (toEn ? x.headword : allMeanings(x).slice(0, 3).join('、'));

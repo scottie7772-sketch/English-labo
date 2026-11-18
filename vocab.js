@@ -3,7 +3,7 @@ import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, speak, fmtDate } from './ui.js';
 import { SKILLS, SKILL_LABELS, LEVEL_LABELS, effLevel, status, source, overall, filterLevel, levelText, loadAllMastery, loadWordMastery, setManual, setLock, resetToAuto } from './mastery.js';
 import { videoNames } from './video.js';
-import { newWord, newSense, saveWord, toggleBookmark, deleteWord, existingHeadMap, headKey, splitList, parseBulk, csvToEntries, registerEntries } from './words.js';
+import { newWord, newSense, saveWord, toggleBookmark, deleteWord, headKey, splitList, parseBulk, csvToEntries, registerEntries, wordsByHead, findDuplicate, meaningsOf, splitWord } from './words.js';
 
 const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', preposition: '前置詞', conjunction: '接続詞', pronoun: '代名詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語' };
 const POS_OPTIONS = ['', 'noun', 'verb', 'adjective', 'adverb', 'phrasal verb', 'idiom', 'phrase', 'preposition', 'conjunction'];
@@ -50,6 +50,8 @@ export async function vocabList(el) {
     <p class="muted small" id="count"></p>
     <div id="list"></div>`;
 
+  const headCount = {};
+  words.forEach((w) => { const k = headKey(w.headword); headCount[k] = (headCount[k] || 0) + 1; });
   const listEl = $('#list', el);
   function draw() {
     const q = f.q.trim().toLowerCase();
@@ -81,7 +83,7 @@ export async function vocabList(el) {
       return `
       <div class="wcard" data-id="${w.id}">
         <a class="wmain" href="#word?id=${w.id}">
-          <b>${esc(w.headword)}</b>${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}
+          <b>${esc(w.headword)}</b>${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}${headCount[headKey(w.headword)] > 1 ? '<span class="tagp">多義</span>' : ''}
           <span class="mean">${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>
         </a>
         <div class="wact">
@@ -170,6 +172,7 @@ export async function wordDetail(el, params) {
   const lastAt = Math.max(0, ...allStats.map((s) => s.lastAt || 0)) || null;
   const ms = allStats.filter((s) => s.avgMs).map((s) => s.avgMs);
   const ov = overall(mastery);
+  const siblings = ((await wordsByHead()).get(headKey(w.headword)) || []).filter((x) => x.id !== w.id);
   const vrefs = isNew ? [] : (w.videoRefs?.length ? w.videoRefs : w.source?.type === 'video' ? [w.source] : []);
   const vnames = vrefs.length ? await videoNames() : {};
 
@@ -187,7 +190,9 @@ export async function wordDetail(el, params) {
 
       <h2 class="sec">意味・用法 <span class="muted small">（意味ごとに分けて管理）</span></h2>
       <div id="senses"></div>
-      <button type="button" class="btn ghost" id="addSense">＋ 別の意味・用法を追加</button>
+      ${isNew ? '' : `<div class="row"><a class="btn grow" href="#word?new=1&h=${encodeURIComponent(w.headword)}">＋ 別の意味を新しい項目で追加</a>${meaningsOf(w).length > 1 || (w.senses || []).length > 1 ? '<button type="button" class="btn grow" id="split">意味ごとに分ける</button>' : ''}</div>
+      <p class="hint">1つの項目＝1つの意味のまとまりです。似た訳（例：割り当てる／配分する）は同じ項目に並べ、意味が違うもの（例：妥協する／損なう）は別項目にします。</p>`}
+      ${siblings.length ? `<div class="card stack"><span class="small muted">同じ見出し語の他の意味</span>${siblings.map((x) => `<a class="link" href="#word?id=${x.id}">${esc(x.headword)}：${esc(meaningsOf(x).join('、') || '（意味未入力）')}</a>`).join('')}</div>` : ''}
 
       <h2 class="sec">分類</h2>
       <div class="card stack">
@@ -257,7 +262,7 @@ export async function wordDetail(el, params) {
     });
   }
   drawSenses();
-  $('#addSense', el).onclick = () => { readSenses(); senses.push(newSense()); drawSenses(); };
+  $('#split', el)?.addEventListener('click', () => splitDialog(w, el, params));
   sensesEl.addEventListener('click', (e) => { const i = e.target.dataset.rm; if (i != null) { readSenses(); senses.splice(+i, 1); drawSenses(); } });
   $('#say', el).onclick = () => speak($('[name=headword]', el).value);
 
@@ -267,9 +272,10 @@ export async function wordDetail(el, params) {
     const fd = new FormData(e.target);
     const head = fd.get('headword').trim();
     if (!head) return toast('英単語を入力してください');
-    const dup = (await existingHeadMap()).get(headKey(head));
-    if (dup && dup.id !== w.id) {
-      const ok = await confirmDialog({ title: '同じ見出し語があります', body: `<p>「${esc(dup.headword)}」はすでに登録されています。別の単語として登録しますか？</p><p class="hint">同じ単語の別の意味なら、既存の単語に「意味」を追加する方が管理しやすくなります。</p>`, okLabel: '登録する', cancelLabel: 'やめる' });
+    const newMeanings = senses.flatMap((x) => x.meanings);
+    const dup = findDuplicate(await wordsByHead(), head, newMeanings, w.id);
+    if (dup) {
+      const ok = await confirmDialog({ title: '同じ意味の項目があります', body: `<p>「${esc(dup.headword)}：${esc(meaningsOf(dup).join('、'))}」と意味が重なっています。それでも登録しますか？</p><p class="hint">意味が違う場合は、重ならない訳にしてください。同じ見出し語でも、意味が違えば別の項目として登録できます。</p>`, okLabel: '登録する', cancelLabel: 'やめる' });
       if (!ok) return;
     }
     w.headword = head; w.ipa = fd.get('ipa').trim();
@@ -303,6 +309,27 @@ export async function wordDetail(el, params) {
   };
 }
 
+function splitDialog(w, el, params) {
+  const ms = meaningsOf(w);
+  const dlg = $('#dialog');
+  dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>「${esc(w.headword)}」を意味ごとに分ける</h3>
+    <p class="hint">それぞれの訳を、どの項目に入れるか選びます。同じ番号の訳は同じ項目になります。例文・学習記録は項目1に残ります。</p>
+    ${ms.map((m, i) => `<div class="row between"><span>${esc(m)}</span><select data-i="${i}" style="width:auto">${ms.map((_, g) => `<option value="${g}" ${g === Math.min(i, 1) ? 'selected' : ''}>項目${g + 1}</option>`).join('')}</select></div>`).join('')}
+    <div class="row end"><button class="btn ghost" value="cancel">キャンセル</button><button class="btn primary" value="ok">分ける</button></div></form>`;
+  dlg.returnValue = '';
+  dlg.onclose = async () => {
+    if (dlg.returnValue !== 'ok') return;
+    const groups = [];
+    $$('select[data-i]', dlg).forEach((sel) => { const g = +sel.value; (groups[g] ||= []).push(ms[+sel.dataset.i]); });
+    const gs = groups.filter((g) => g?.length);
+    if (gs.length < 2 || !groups[0]?.length) return toast('項目1と、少なくとも1つの別項目に訳を入れてください');
+    const created = await splitWord(w.id, gs);
+    toast(`${created.length + 1}つの項目に分けました（新しい項目には例文を追加してください）`);
+    wordDetail(el, params);
+  };
+  dlg.showModal();
+}
+
 function skillRow(skill, m) {
   const lv = effLevel(m), src = source(m), st = status(m);
   const srcText = { locked: '🔒 手動固定', manual: '✋ 手動', auto: '自動判定', none: st === 'pending' ? `判定保留（回答${m.stats.attempts}回）` : '未評価' }[src];
@@ -319,7 +346,7 @@ function skillRow(skill, m) {
 }
 function histText(h) {
   const t = (l) => (l ? LEVEL_LABELS[l] : '未評価');
-  const r = { import: '移行時', list: '一覧から', lock: '固定', unlock: '固定解除', auto: '自動に戻す', manual: '' }[h.reason] ?? '';
+  const r = { import: '移行時', split: '分割時', list: '一覧から', lock: '固定', unlock: '固定解除', auto: '自動に戻す', manual: '' }[h.reason] ?? '';
   return `${t(h.from)} → ${t(h.to)}${h.locked ? ' 🔒' : ''}${r ? '（' + r + '）' : ''}`;
 }
 
@@ -342,13 +369,16 @@ export async function vocabBulk(el) {
 async function previewAndRegister(el, entries, src, extra = {}) {
   const out = $('#out', el);
   if (!entries.length) { out.innerHTML = '<div class="card warn">登録できる行がありません</div>'; return; }
-  const exist = await existingHeadMap();
-  const seen = new Set();
-  const rows = entries.map((e) => { const k = headKey(e.headword); const dup = exist.has(k) || seen.has(k); seen.add(k); return { ...e, dup }; });
+  const byHead = await wordsByHead();
+  const rows = entries.map((e) => {
+    const dup = !!findDuplicate(byHead, e.headword, e.meanings || []);
+    if (!dup) { const k = headKey(e.headword); if (!byHead.has(k)) byHead.set(k, []); byHead.get(k).push({ id: '_', headword: e.headword, senses: [{ meanings: e.meanings || [] }] }); }
+    return { ...e, dup };
+  });
   const n = rows.filter((r) => !r.dup).length;
   out.innerHTML = `
     <h2 class="sec">確認（${n}件を登録 / 重複${rows.length - n}件はスキップ）</h2>
-    <div class="card">${rows.map((r) => `<div class="prow ${r.dup ? 'dup' : ''}"><b>${esc(r.headword)}</b><span>${esc(r.meanings.join('、') || '（意味なし）')}</span>${r.dup ? '<em>登録済み</em>' : ''}</div>`).join('')}</div>
+    <div class="card">${rows.map((r) => `<div class="prow ${r.dup ? 'dup' : ''}"><b>${esc(r.headword)}</b><span>${esc(r.meanings.join('、') || '（意味なし）')}</span>${r.dup ? '<em>同じ意味で登録済み</em>' : ''}</div>`).join('')}</div>
     ${rows.some((r) => !r.dup && !r.meanings.length) ? '<p class="hint">意味がない単語は、あとで詳細画面から追加してください（意味がないとテストに出せません）。</p>' : ''}
     <button class="btn primary" id="reg" ${n ? '' : 'disabled'}>${n}件を登録</button>`;
   out.scrollIntoView({ behavior: 'smooth' });

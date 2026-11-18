@@ -1,26 +1,29 @@
 // Shared 3-direction swipe card (left / up / right) with tap-to-flip.
 // iPhone Safari + home-screen PWA: Touch Events (preventDefault) + touch-action:none; Pointer Events for mouse.
 //
-// makeSwipeCard(card, { knowRight, onTap, onCommit, canInteract })
+// Directions: ↑ up = わかる / ↓ down = わからない・スキップ / → right = 曖昧 (left if vagueRight=false).
+// The other horizontal side does nothing (card returns).
+// makeSwipeCard(card, { vagueRight, onTap, onCommit, canInteract })
 //   onCommit(result) is called exactly once per card: 'know' | 'vague' | 'dont'
 //   returns { commit(result) }  (for buttons)
 
 const TAP_MOVE = 10;        // px: below this it's a tap
 const TAP_MS = 450;
 const DIST_X = 80;          // px needed to commit left/right
-const DIST_UP = 70;         // px needed to commit up
+const DIST_UP = 70;         // px needed to commit up / down
 const FLICK_V = 0.55;       // px/ms: a fast flick commits with a shorter distance
 const FLICK_MIN = 35;
 
-export function makeSwipeCard(card, { knowRight = true, onTap, onCommit, canInteract = () => true }) {
+export function makeSwipeCard(card, { vagueRight = true, onTap, onCommit, canInteract = () => true }) {
   let id = null, x0 = 0, y0 = 0, t0 = 0, dx = 0, dy = 0, axis = null, done = false;
   let lastX = 0, lastY = 0, lastT = 0, vx = 0, vy = 0;
-  const resultFor = (dir) => (dir === 'up' ? 'vague' : (dir === 'right') === knowRight ? 'know' : 'dont');
-  const dirFor = (result) => (result === 'vague' ? 'up' : (result === 'know') === knowRight ? 'right' : 'left');
+  const vagueDir = vagueRight ? 'right' : 'left';
+  const resultFor = (dir) => (dir === 'up' ? 'know' : dir === 'down' ? 'dont' : dir === vagueDir ? 'vague' : null);
+  const dirFor = (result) => (result === 'know' ? 'up' : result === 'dont' ? 'down' : vagueDir);
 
   function setStamp(dir, strength) {
     card.dataset.dir = dir || '';
-    card.dataset.res = dir ? resultFor(dir) : '';
+    card.dataset.res = (dir && resultFor(dir)) || '';
     card.style.setProperty('--s', String(Math.min(1, strength)));
   }
   function reset() {
@@ -35,8 +38,9 @@ export function makeSwipeCard(card, { knowRight = true, onTap, onCommit, canInte
     const dir = dirFor(result);
     card.style.transition = 'transform .2s ease-in, opacity .2s ease-in';
     const tx = dir === 'right' ? window.innerWidth : dir === 'left' ? -window.innerWidth : dx;
-    const ty = dir === 'up' ? -window.innerHeight * 0.8 : dy;
-    card.style.transform = `translate(${tx}px, ${ty}px) rotate(${dir === 'up' ? 0 : (tx > 0 ? 18 : -18)}deg)`;
+    const ty = dir === 'up' ? -window.innerHeight * 0.9 : dir === 'down' ? window.innerHeight * 0.9 : dy;
+    const vert = dir === 'up' || dir === 'down';
+    card.style.transform = `translate(${vert ? dx * 0.3 : tx}px, ${ty}px) rotate(${vert ? 0 : (tx > 0 ? 18 : -18)}deg)`;
     card.style.opacity = '0';
     setStamp(dir, 1);
     onCommit(result);                       // caller shows the next card right away (underneath)
@@ -59,15 +63,12 @@ export function makeSwipeCard(card, { knowRight = true, onTap, onCommit, canInte
     // lock the axis once the finger has clearly moved (prevents diagonal mis-detection)
     if (!axis && Math.hypot(dx, dy) > TAP_MOVE) axis = Math.abs(dx) >= Math.abs(dy) ? 'x' : dy < 0 ? 'up' : 'down';
     if (axis === 'x') {
-      card.style.transform = `translate(${dx}px, ${dy * 0.15}px) rotate(${dx / 16}deg)`;
-      setStamp(dx > 0 ? 'right' : 'left', Math.abs(dx) / DIST_X);
-    } else if (axis === 'up') {
-      const uy = Math.min(0, dy);
-      card.style.transform = `translate(${dx * 0.15}px, ${uy}px)`;
-      setStamp('up', -uy / DIST_UP);
-    } else if (axis === 'down') {
-      card.style.transform = `translateY(${Math.max(0, dy) * 0.25}px)`; // downward does nothing
-      setStamp(null, 0);
+      const side = dx > 0 ? 'right' : 'left';
+      if (side === vagueDir) { card.style.transform = `translate(${dx}px, ${dy * 0.15}px) rotate(${dx / 16}deg)`; setStamp(side, Math.abs(dx) / DIST_X); }
+      else { card.style.transform = `translateX(${dx * 0.2}px)`; setStamp(null, 0); }   // the other side does nothing
+    } else if (axis === 'up' || axis === 'down') {
+      card.style.transform = `translate(${dx * 0.15}px, ${dy}px)`;
+      setStamp(dy < 0 ? 'up' : 'down', Math.abs(dy) / DIST_UP);
     }
   }
   function end(t, cancelled) {
@@ -77,10 +78,11 @@ export function makeSwipeCard(card, { knowRight = true, onTap, onCommit, canInte
     if (cancelled) { reset(); return; }
     const dur = t - t0;
     if (!axis && dur < TAP_MS && Math.hypot(dx, dy) < TAP_MOVE) { reset(); onTap?.(); return; }
-    if (axis === 'x' && (Math.abs(dx) > DIST_X || (Math.abs(dx) > FLICK_MIN && Math.abs(vx) > FLICK_V && Math.sign(vx) === Math.sign(dx)))) {
-      commit(resultFor(dx > 0 ? 'right' : 'left')); return;
+    if (axis === 'x' && (dx > 0 ? 'right' : 'left') === vagueDir && (Math.abs(dx) > DIST_X || (Math.abs(dx) > FLICK_MIN && Math.abs(vx) > FLICK_V && Math.sign(vx) === Math.sign(dx)))) {
+      commit('vague'); return;
     }
-    if (axis === 'up' && (-dy > DIST_UP || (-dy > FLICK_MIN && vy < -FLICK_V))) { commit('vague'); return; }
+    if (axis === 'up' && (-dy > DIST_UP || (-dy > FLICK_MIN && vy < -FLICK_V))) { commit('know'); return; }
+    if (axis === 'down' && (dy > DIST_UP || (dy > FLICK_MIN && vy > FLICK_V))) { commit('dont'); return; }
     reset();
   }
 
@@ -111,10 +113,10 @@ export function makeSwipeCard(card, { knowRight = true, onTap, onCommit, canInte
 }
 
 // card HTML skeleton with direction labels
-export function swipeCardHTML(inner, knowRight = true) {
+export function swipeCardHTML(inner, vagueRight = true) {
   return `<div class="fcard">
-    <span class="stamp s-left ${knowRight ? 'k-dont' : 'k-know'}">${knowRight ? 'わからない' : 'わかる'}</span>
-    <span class="stamp s-right ${knowRight ? 'k-know' : 'k-dont'}">${knowRight ? 'わかる' : 'わからない'}</span>
-    <span class="stamp s-up k-vague">曖昧</span>
+    <span class="stamp s-up k-know">わかる</span>
+    <span class="stamp s-down k-dont">わからない</span>
+    <span class="stamp ${vagueRight ? 's-right' : 's-left'} k-vague">曖昧</span>
     <div class="face">${inner}</div></div>`;
 }

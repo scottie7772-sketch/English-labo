@@ -2,12 +2,12 @@ import { openDB, db, getSetting, setSetting, getMeta, uid, storageInfo, requestP
 import { exportJSON, exportCSV, validateBackup, restoreBackup, STORE_LABELS } from './backup.js';
 import { $, esc, toast, confirmDialog } from './ui.js';
 import { vocabList, wordDetail, vocabBulk, vocabCSV, vocabPaste, decksScreen } from './vocab.js';
-import { seedIfNeeded } from './words.js';
+import { seedIfNeeded, splitSeedIfNeeded } from './words.js';
 import { studySetup, sessionScreen, resultScreen } from './study.js';
 import { quickSetup, quickRun, quickResult, getSwipe } from './quick.js';
 import { videoList, videoPlay } from './video.js';
 
-export const APP_VERSION = '0.6.0';
+export const APP_VERSION = '0.7.0';
 
 const MODULES = [
   { id: 'vocab', icon: '📚', name: 'Vocabulary', ja: '単語・熟語', phase: 1 },
@@ -114,8 +114,8 @@ screens.settings = async (el) => {
     </div>
 
     <h2 class="sec">Quick Flashcards</h2>
-    <div class="card stack"><span class="small muted">スワイプの向き（上は常に「曖昧」。単語テストのフラッシュカードにも適用）</span>
-      <div class="seg" id="swipe">${[['right', '右＝わかる'], ['left', '左＝わかる']].map(([v, l]) => `<button data-v="${v}" class="${swipe === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="card stack"><span class="small muted">スワイプ：↑わかる・↓わからない/スキップは固定。「曖昧」を左右どちらにするか（単語テストのカードにも適用）</span>
+      <div class="seg" id="swipe">${[['right', '右＝曖昧'], ['left', '左＝曖昧']].map(([v, l]) => `<button data-v="${v}" class="${swipe === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
 
     <h2 class="sec">バックアップ</h2>
     <div class="card stack">
@@ -147,7 +147,7 @@ screens.settings = async (el) => {
     const v = e.target.dataset.v; if (!v) return;
     await setSetting('theme', v); await applyTheme(v); render();
   });
-  $('#swipe', el).addEventListener('click', async (e) => { const v = e.target.dataset.v; if (!v) return; await setSetting('quickSwipe', v); toast('スワイプの向きを変更しました'); render(); });
+  $('#swipe', el).addEventListener('click', async (e) => { const v = e.target.dataset.v; if (!v) return; await setSetting('swipeVague', v); toast('スワイプの向きを変更しました'); render(); });
   $('#bk-json', el).onclick = async () => {
     try { const r = await exportJSON(); if (r !== 'cancelled') { toast('バックアップを作成しました'); render(); } }
     catch (e) { toast('失敗: ' + e.message); }
@@ -227,6 +227,7 @@ async function boot() {
   catch (e) { $('#main').innerHTML = `<div class="card warn">データベースを開けません: ${esc(e.message)}<br>プライベートブラウズでは保存できません。</div>`; return; }
   await applyTheme();
   try { const n = await seedIfNeeded(); if (n) setTimeout(() => toast(`初期単語${n}語を追加しました（苦手として登録）`, 4000), 300); } catch (e) { console.error('seed', e); }
+  try { const n = await splitSeedIfNeeded(); if (n) setTimeout(() => toast(`多義語を意味ごとに分け、${n}項目を追加しました`, 4500), 4600); } catch (e) { console.error('split', e); }
   renderTabs();
   addEventListener('hashchange', () => { render(); scrollTo(0, 0); });
   await render();

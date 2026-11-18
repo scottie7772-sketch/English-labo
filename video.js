@@ -1,7 +1,7 @@
 // Phase 6: Video Lab (local videos + SRT/VTT subtitles + word registration linked to video position)
 import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go } from './ui.js';
-import { headKey, existingHeadMap, newWord, newSense, saveWord, splitList } from './words.js';
+import { headKey, wordsByHead, findDuplicate, newWord, newSense, saveWord, splitList } from './words.js';
 
 // ---------- subtitles ----------
 const TIME = /((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})\s*-->\s*((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})/;
@@ -280,7 +280,7 @@ export async function videoPlay(el, params) {
       const head = $('#wh', dlg).value.trim();
       if (!head) return toast('語を選んでください');
       const ref = { videoId: v.id, cueId: c.id, time: c.start, text: c.en };
-      const exist = (await existingHeadMap()).get(headKey(head));
+      const exist = findDuplicate(await wordsByHead(), head, splitList($('#wm', dlg).value));
       if (exist) {
         exist.videoRefs = [...(exist.videoRefs || []).filter((r) => r.cueId !== c.id), ref];
         const s0 = exist.senses[0];

@@ -125,14 +125,35 @@ export function entryToWord(e, source, extra = {}) {
   });
 }
 
-// Register entries; duplicates (same headword) are skipped. Returns {added, skipped, ids}
+// ---- One item = headword + ONE meaning group (similar translations may share an item) ----
+// Same headword with a different meaning = a separate item. Duplicate = same headword and an overlapping meaning.
+export const meaningsOf = (w) => (w.senses || []).flatMap((s) => s.meanings || []);
+const normM = (m) => String(m).replace(/[\s　（）()〜~・、,]/g, '');
+export function meaningsOverlap(a, b) {
+  if (!a.length || !b.length) return true;            // no meaning given -> treat as the same item
+  const B = new Set(b.map(normM));
+  return a.some((m) => B.has(normM(m)));
+}
+export async function wordsByHead() {
+  const map = new Map();
+  for (const w of await db.all('words')) { const k = headKey(w.headword); if (!map.has(k)) map.set(k, []); map.get(k).push(w); }
+  return map;
+}
+// returns the existing item that duplicates (headword, meanings), or null
+export function findDuplicate(byHead, headword, meanings, exceptId = null) {
+  return (byHead.get(headKey(headword)) || []).find((w) => w.id !== exceptId && meaningsOverlap(meanings, meaningsOf(w))) || null;
+}
+
+// Register entries; duplicates (same headword AND overlapping meaning) are skipped. Returns {added, skipped, ids}
 export async function registerEntries(entries, source, extra = {}) {
-  const exist = await existingHeadMap();
-  const seen = new Set(); const words = []; let skipped = 0;
+  const byHead = await wordsByHead();
+  const words = []; let skipped = 0;
   for (const e of entries) {
     const k = headKey(e.headword);
-    if (!k || exist.has(k) || seen.has(k)) { skipped++; continue; }
-    seen.add(k); words.push(entryToWord(e, source, extra));
+    if (!k || findDuplicate(byHead, e.headword, e.meanings || [])) { skipped++; continue; }
+    const w = entryToWord(e, source, extra);
+    if (!byHead.has(k)) byHead.set(k, []);
+    byHead.get(k).push(w); words.push(w);
   }
   if (words.length) await db.putMany('words', words);
   return { added: words.length, skipped, ids: words.map((w) => w.id) };
@@ -146,4 +167,76 @@ export async function seedIfNeeded() {
   for (const id of ids) await setManual(id, SKILLS, 2, { lock: false, reason: 'import' });
   await setMeta('seed:v1', Date.now());
   return ids.length;
+}
+
+// ---- Split one item into several meaning groups (keeps the original item, its history and examples) ----
+// groups: [[meanings for the original], [meanings for new item 1], ...]; newExamples[i] optional [{en, ja}]
+export async function splitWord(wordId, groups, { newExamples = [], note = '意味ごとに分割' } = {}) {
+  const { SKILLS, mid, effLevel } = await import('./mastery.js');
+  const w = await db.get('words', wordId);
+  if (!w || groups.length < 2) return [];
+  const pos = w.senses?.[0]?.pos || '';
+  w.senses = [{ ...(w.senses?.[0] || newSense()), meanings: groups[0] }];
+  w.updatedAt = Date.now();
+  const created = [];
+  const now = Date.now();
+  for (let i = 1; i < groups.length; i++) {
+    const nw = newWord({ headword: w.headword, senses: [newSense({ pos, meanings: groups[i], examples: newExamples[i] || [] })],
+      tags: [...(w.tags || [])], deckIds: [...(w.deckIds || [])], bookmarked: w.bookmarked, source: { ...(w.source || {}), note } });
+    nw.splitFrom = w.id;
+    created.push(nw);
+  }
+  // new items start from the same level as the original (manual, not locked: the next auto judgment replaces it)
+  const recs = [], hist = [];
+  for (const s of SKILLS) {
+    const m = await db.get('mastery', mid(w.id, s));
+    const lv = effLevel(m);
+    if (!lv) continue;
+    for (const nw of created) {
+      recs.push({ id: mid(nw.id, s), wordId: nw.id, skill: s, autoLevel: 0, autoAt: null, manualLevel: lv, manualAt: now, locked: false,
+        stats: { attempts: 0, correct: 0, streak: 0, recent: [], avgMs: null, hints: 0, lastAt: null } });
+      hist.push({ wordId: nw.id, skill: s, from: 0, to: lv, locked: false, reason: 'split', at: now });
+    }
+  }
+  await db.tx(['words', 'mastery', 'masteryChanges'], 'readwrite', (t) => {
+    t.objectStore('words').put(w);
+    created.forEach((x) => t.objectStore('words').put(x));
+    recs.forEach((r) => t.objectStore('mastery').put(r));
+    hist.forEach((h) => t.objectStore('masteryChanges').add(h));
+  });
+  return created;
+}
+
+// One-time split of the initial words that mixed different meanings (only if the user has not edited their meanings)
+const SEED_SPLITS = [
+  ['modest', '控えめな / 適度の / 質素な', [['適度の'], ['控えめな'], ['質素な']], [null,
+    [{ en: 'He was modest about his achievements.', ja: '彼は自分の業績について控えめだった。' }],
+    [{ en: 'They live in a modest house near the station.', ja: '彼らは駅の近くの質素な家に住んでいる。' }]]],
+  ['correspond', 'やり取りする / 一致する / 相当する', [['一致する', '相当する'], ['やり取りする']], [null,
+    [{ en: 'I have corresponded with her by email for years.', ja: '彼女とは何年もメールでやり取りしている。' }]]],
+  ['compromise', '損なう / 危険にさらす / 妥協する', [['損なう', '危険にさらす'], ['妥協する']], [null,
+    [{ en: 'Both sides agreed to compromise on the price.', ja: '双方は価格について妥協することに合意した。' }]]],
+  ['straightforward', '簡単な / わかりやすい / 正直な', [['簡単な', 'わかりやすい'], ['正直な']], [null,
+    [{ en: 'He is a straightforward person who says what he thinks.', ja: '彼は思ったことをそのまま言う正直な人だ。' }]]],
+  ['distraction', '邪魔 / 気を散らすもの / 気晴らし', [['邪魔', '気を散らすもの'], ['気晴らし']], [null,
+    [{ en: 'Reading is a welcome distraction from work.', ja: '読書は仕事からのありがたい気晴らしだ。' }]]],
+  ['trustee', '理事 / 管財人 / 受託者', [['理事'], ['管財人', '受託者']], [null,
+    [{ en: 'The bank acts as trustee for the fund.', ja: 'その銀行が基金の受託者を務めている。' }]]],
+  ['acquaintance', '知人 / 面識', [['知人'], ['面識']], [null,
+    [{ en: 'I made his acquaintance at a conference.', ja: '私はある会議で彼と面識を得た。' }]]],
+  ['dispatch', '派遣する / 発送する', [['発送する'], ['派遣する']], [null,
+    [{ en: 'The company dispatched an engineer to repair the machine.', ja: '会社は機械の修理に技術者を派遣した。' }]]],
+];
+export async function splitSeedIfNeeded() {
+  if (await getMeta('split:v1', false)) return 0;
+  let n = 0;
+  const byHead = await wordsByHead();
+  for (const [head, orig, groups, ex] of SEED_SPLITS) {
+    const w = (byHead.get(head) || []).find((x) => x.source?.type === 'seed' && meaningsOf(x).join(' / ') === orig);
+    if (!w) continue;                                   // edited or deleted by the user -> leave it alone
+    const created = await splitWord(w.id, groups, { newExamples: ex, note: '初期語を意味ごとに分割（例文はAI作成・未検証）' });
+    n += created.length;
+  }
+  await setMeta('split:v1', Date.now());
+  return n;
 }

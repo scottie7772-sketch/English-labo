@@ -2,7 +2,8 @@
 import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, speak } from './ui.js';
 import { SKILL_LABELS, LEVEL_LABELS, effLevel, filterLevel, levelText, loadAllMastery, loadWordMastery } from './mastery.js';
-import { recordAnswer } from './judge.js';
+import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
+import { makeSwipeCard, swipeCardHTML } from './swipecard.js';
 
 // ---------- definitions ----------
 export const DIRS = {
@@ -254,6 +255,100 @@ export async function sessionScreen(el, params) {
   let idx = s.queue.findIndex((q) => !s.answered[q.qid] && words[q.wordId]);
   if (idx < 0) return finish();
 
+  const undoStack = [];
+  let busy = Promise.resolve();
+  const knowRight = (await getSetting('quickSwipe', 'right')) === 'right';
+
+  // ---- flashcard format: 1 swipe = judged, auto-advance (no feedback screen) ----
+  function showFlash(q, w) {
+    const meanings = allMeanings(w);
+    const answeredN = Object.keys(s.answered).length;
+    const left = remaining(s);
+    const isAudio = q.direction.startsWith('audio');
+    const en = `<div class="fc-en">${esc(w.headword)}</div>`, ja = `<div class="fc-ja">${esc(meanings.join('、'))}</div>`;
+    const ex = (w.senses || []).flatMap((x) => x.examples || []).find((x) => x.en);
+    const exH = ex ? `<div class="fc-ex">${esc(ex.en)}${ex.ja ? `<br><span class="muted">${esc(ex.ja)}</span>` : ''}</div>` : '';
+    const front = q.direction === 'ja2en' ? ja : q.direction === 'en2ja' ? en : '<div class="fc-ja">🔊</div><div class="q-sub">音声を聞いて意味を思い出す</div>';
+    const back = q.direction === 'ja2en' ? `${ja}${en}${exH}` : `${en}${ja}${exH}`;
+    if (!$('#fstage', el)) {
+      el.innerHTML = `
+        <div class="qrun">
+        <header class="top qtop"><button class="link" id="quit">中断</button><span class="grow center small muted">${DIRS[q.direction].label}・${FORMATS.flash}</span><span class="small muted" id="left"></span></header>
+        <div class="progress"><i id="prog"></i></div>
+        <p class="small muted center" id="pos"></p>
+        <div class="qstage" id="fstage"></div>
+        <p class="hint center">タップで答え　${knowRight ? '← わからない　↑ 曖昧　わかる →' : '← わかる　↑ 曖昧　わからない →'}</p>
+        <div class="qbtns3">
+          <button class="btn qb ${knowRight ? 'dont' : 'know'}" data-r="${knowRight ? 'dont' : 'know'}">${knowRight ? '✕ わからない' : '○ わかる'}</button>
+          <button class="btn qb vague" data-r="vague">△ 曖昧</button>
+          <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}">${knowRight ? '○ わかる' : '✕ わからない'}</button>
+          <button class="btn qb" id="undo">↩︎</button>
+        </div>
+        ${isAudio ? '<button class="btn" id="say" style="margin-top:8px">🔊 もう一度聞く</button>' : ''}
+        </div>`;
+      document.body.classList.add('noscroll');
+      const off = () => { document.body.classList.remove('noscroll'); removeEventListener('hashchange', off); };
+      addEventListener('hashchange', off);
+      $('#quit', el).onclick = () => { toast(`中断しました（残り${remaining(s)}問）。学習タブから再開できます`); go('#study'); };
+      $('#undo', el).onclick = flashUndo;
+      el.querySelectorAll('.qb[data-r]').forEach((b) => (b.onclick = () => { const c = el._flashCur; if (c && !c.ctl.done) c.ctl.commit(b.dataset.r); }));
+      $('#say', el)?.addEventListener('click', () => speak(words[s.queue[idx]?.wordId]?.headword));
+    }
+    $('#left', el).textContent = `残り ${left}`;
+    $('#prog', el).style.width = `${(answeredN / s.queue.length) * 100}%`;
+    $('#pos', el).textContent = `${answeredN + 1} / ${s.queue.length}`;
+    $('#undo', el).disabled = !undoStack.length;
+    const stage = $('#fstage', el);
+    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(front, knowRight));
+    const card = stage.firstElementChild;
+    const st = { flipped: false, revealed: false, t0: performance.now() };
+    st.ctl = makeSwipeCard(card, {
+      knowRight,
+      onTap: () => {
+        st.flipped = !st.flipped;
+        card.classList.add('flipping');
+        setTimeout(() => { $('.face', card).innerHTML = st.flipped ? back : front; card.classList.remove('flipping'); }, 90);
+        if (st.flipped) { st.revealed = true; if (q.direction === 'ja2en') speak(w.headword); }
+      },
+      onCommit: (result) => {
+        if (s.answered[q.qid]) return;               // double-registration guard
+        const ms = Math.round(performance.now() - st.t0);
+        const correct = result !== 'dont', hint = result === 'vague';
+        s.answered[q.qid] = { correct, near: false, hint, answer: { know: 'わかる', vague: '曖昧', dont: 'わからない' }[result], grade: result, revealed: st.revealed, ms, at: Date.now() };
+        s.cursor = idx + 1; s.activeMs += Math.min(ms, 120000); s.updatedAt = Date.now();
+        const entry = { idx, qid: q.qid, wordId: w.id, snap: null, attemptIds: [], ms };
+        undoStack.push(entry);
+        const nextIdx = s.queue.findIndex((x) => !s.answered[x.qid] && words[x.wordId]);
+        if (nextIdx < 0) { s.status = 'done'; s.endedAt = Date.now(); }
+        busy = busy.then(async () => {
+          entry.snap = await snapshotMastery(w.id, q.skills);
+          const out = await recordAnswer({ sessionId: s.id, qid: q.qid, wordId: w.id, direction: q.direction, format: 'flash', self: true, revealed: st.revealed, grade: result,
+            prompt: q.direction === 'ja2en' ? meanings.join('、') : w.headword, answer: s.answered[q.qid]?.answer, ms, results: q.skills.map((sk) => ({ skill: sk, correct, hint })) });
+          entry.attemptIds = out._attemptIds;
+          await db.put('sessions', s);
+        }).catch((e) => toast('保存に失敗: ' + e.message));
+        idx = nextIdx;
+        if (nextIdx < 0) busy.then(() => go(`#result?id=${s.id}`));
+        else show();
+      },
+    });
+    el._flashCur = st;
+    if (isAudio) speak(w.headword);
+  }
+
+  async function flashUndo() {
+    const e = undoStack.pop(); if (!e) return;
+    await busy;
+    if (e.snap) await undoAnswer(e.wordId, e.snap, e.attemptIds);
+    delete s.answered[e.qid];
+    s.activeMs -= Math.min(e.ms, 120000);
+    s.status = 'active'; s.endedAt = null; s.updatedAt = Date.now();
+    await db.put('sessions', s);
+    idx = e.idx;
+    $('#fstage', el).innerHTML = '';
+    show(); toast('取り消しました', 1000);
+  }
+
   function finish() {
     s.status = 'done'; s.endedAt = Date.now(); s.updatedAt = Date.now();
     db.put('sessions', s).then(() => go(`#result?id=${s.id}`));
@@ -262,6 +357,7 @@ export async function sessionScreen(el, params) {
   async function show() {
     const q = s.queue[idx];
     const w = words[q.wordId];
+    if (q.format === 'flash') return showFlash(q, w);
     const cfg = s.config;
     const answeredN = Object.keys(s.answered).length;
     const left = remaining(s);

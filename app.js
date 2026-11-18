@@ -7,7 +7,7 @@ import { studySetup, sessionScreen, resultScreen } from './study.js';
 import { quickSetup, quickRun, quickResult, getSwipe } from './quick.js';
 import { videoList, videoPlay } from './video.js';
 
-export const APP_VERSION = '0.4.0';
+export const APP_VERSION = '0.5.0';
 
 const MODULES = [
   { id: 'vocab', icon: '📚', name: 'Vocabulary', ja: '単語・熟語', phase: 1 },
@@ -114,8 +114,8 @@ screens.settings = async (el) => {
     </div>
 
     <h2 class="sec">Quick Flashcards</h2>
-    <div class="card stack"><span class="small muted">スワイプの向き</span>
-      <div class="seg" id="swipe">${[['right', '右＝覚えている'], ['left', '左＝覚えている']].map(([v, l]) => `<button data-v="${v}" class="${swipe === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="card stack"><span class="small muted">スワイプの向き（上は常に「曖昧」。単語テストのフラッシュカードにも適用）</span>
+      <div class="seg" id="swipe">${[['right', '右＝わかる'], ['left', '左＝わかる']].map(([v, l]) => `<button data-v="${v}" class="${swipe === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
 
     <h2 class="sec">バックアップ</h2>
     <div class="card stack">

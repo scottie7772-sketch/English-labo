@@ -10,6 +10,8 @@ export const RULES = {
   slowWeight: 0.75,        // correct but slow counts as 0.75
   slowMs: { typing: 12000, choice: 7000, flash: 8000, swipe: 6000 },
   spacedDays: 7,           // Level 5 needs a correct answer after a gap of >= 7 days
+  selfRevealedWeight: 0.8, // 答えを見てから「わかる」(記録は区別。重みは同じ：答え合わせは通常の使い方なので減点しない。ここで調整可)
+  vagueWeight: 0.4,        // 「曖昧」= 部分的に正解扱い（連続正答はリセット）
   selfWeight: 0.8,         // self-report "覚えている" (Quick Flashcards) counts as 0.8 -> self-report alone tops out at Level 4
   levels: [                // checked top to bottom
     { level: 5, minP: 0.9, minStreak: 4, needSpaced: true },
@@ -34,15 +36,17 @@ export function judge(stats) {
 }
 
 // Update one skill record with one answer. Returns {before, after}
-function applyAnswer(m, { correct, hint, ms, format, at, self }) {
+function applyAnswer(m, { correct, hint, ms, format, at, self, revealed, grade }) {
   const s = m.stats;
   const before = effLevel(m);
   const gapDays = s.lastAt ? (at - s.lastAt) / 86400000 : 0;
   const slow = ms > (RULES.slowMs[format] || 10000);
   let w = correct ? (hint ? RULES.hintWeight : slow ? RULES.slowWeight : 1) : 0;
-  if (self && correct) w = Math.min(w, RULES.selfWeight);
+  if (self && correct) w = Math.min(w, revealed ? RULES.selfRevealedWeight : RULES.selfWeight);
+  if (grade === 'vague') w = RULES.vagueWeight;
   s.attempts = (s.attempts || 0) + 1;
-  if (correct) s.correct = (s.correct || 0) + 1;
+  if (correct && grade !== 'vague') s.correct = (s.correct || 0) + 1;
+  if (grade === 'vague') s.vague = (s.vague || 0) + 1;
   s.streak = correct && !hint ? (s.streak || 0) + 1 : 0;
   s.recent = [...(s.recent || []), w].slice(-RULES.window);
   s.avgMs = s.avgMs ? Math.round(s.avgMs * 0.7 + ms * 0.3) : ms;
@@ -58,15 +62,15 @@ function applyAnswer(m, { correct, hint, ms, format, at, self }) {
 }
 
 // results: [{skill, correct, hint}] for one question. Writes mastery + attempts atomically.
-export async function recordAnswer({ sessionId, qid, wordId, direction, format, prompt, answer, ms, results, mode = 'vocab-test', self = false }) {
+export async function recordAnswer({ sessionId, qid, wordId, direction, format, prompt, answer, ms, results, mode = 'vocab-test', self = false, revealed = null, grade = null }) {
   const at = Date.now();
   const out = {}, recs = [], atts = [];
   // read first, then write synchronously in one transaction (safe on iOS Safari)
   for (const r of results) {
     const rec = (await db.get('mastery', mid(wordId, r.skill))) || emptyMastery(wordId, r.skill);
-    const { before, after } = applyAnswer(rec, { correct: r.correct, hint: r.hint, ms, format, at, self });
+    const { before, after } = applyAnswer(rec, { correct: r.correct, hint: r.hint, ms, format, at, self, revealed, grade });
     recs.push(rec);
-    atts.push({ sessionId, qid, wordId, skill: r.skill, direction, format, mode, self, prompt, answer, correct: r.correct, ms, hint: !!r.hint, levelBefore: before, levelAfter: after, at });
+    atts.push({ sessionId, qid, wordId, skill: r.skill, direction, format, mode, self, revealed, grade, prompt, answer, correct: r.correct, ms, hint: !!r.hint, levelBefore: before, levelAfter: after, at });
     out[r.skill] = { before, after };
   }
   const attemptIds = [];

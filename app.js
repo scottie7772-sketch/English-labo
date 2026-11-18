@@ -1,12 +1,13 @@
 import { openDB, db, getSetting, setSetting, getMeta, uid, storageInfo, requestPersist, DB_VERSION } from './db.js';
 import { exportJSON, exportCSV, validateBackup, restoreBackup, STORE_LABELS } from './backup.js';
+import { $, esc, toast, confirmDialog } from './ui.js';
+import { vocabList, wordDetail, vocabBulk, vocabCSV, vocabPaste, decksScreen } from './vocab.js';
+import { seedIfNeeded } from './words.js';
 
-export const APP_VERSION = '0.1.0';
-const $ = (sel, root = document) => root.querySelector(sel);
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+export const APP_VERSION = '0.2.0';
 
 const MODULES = [
-  { id: 'vocab', icon: '📚', name: 'Vocabulary', ja: '単語・熟語', phase: 2 },
+  { id: 'vocab', icon: '📚', name: 'Vocabulary', ja: '単語・熟語', phase: 1 },
   { id: 'study', icon: '🃏', name: 'Flashcards & Tests', ja: 'カード・テスト', phase: 3 },
   { id: 'log', icon: '📈', name: 'Learning Log', ja: '学習記録・復習', phase: 4 },
   { id: 'toeic', icon: '📝', name: 'TOEIC', ja: '文法問題', phase: 5 },
@@ -22,35 +23,6 @@ const TABS = [
   { route: 'log', icon: '📈', label: '記録' },
   { route: 'settings', icon: '⚙️', label: '設定' },
 ];
-
-// ---------- UI helpers ----------
-export function toast(msg, ms = 2600) {
-  const el = $('#toast');
-  el.textContent = msg; el.hidden = false;
-  clearTimeout(toast._t); toast._t = setTimeout(() => { el.hidden = true; }, ms);
-}
-
-// options: { title, body(html), okLabel, danger, requireText }
-export function confirmDialog({ title, body = '', okLabel = 'OK', danger = false, requireText = null }) {
-  return new Promise((resolve) => {
-    const dlg = $('#dialog');
-    dlg.innerHTML = `
-      <form method="dialog" class="dlg">
-        <h3>${esc(title)}</h3>
-        <div class="dlg-body">${body}</div>
-        ${requireText ? `<label class="field"><span>確認のため「${esc(requireText)}」と入力</span><input name="confirm" autocomplete="off" autocapitalize="off"></label>` : ''}
-        <div class="row end">
-          <button value="cancel" class="btn ghost">キャンセル</button>
-          <button value="ok" class="btn ${danger ? 'danger' : 'primary'}" ${requireText ? 'disabled' : ''}>${esc(okLabel)}</button>
-        </div>
-      </form>`;
-    const ok = dlg.querySelector('button[value=ok]');
-    if (requireText) dlg.querySelector('input').addEventListener('input', (e) => { ok.disabled = e.target.value.trim() !== requireText; });
-    dlg.onclose = () => resolve(dlg.returnValue === 'ok');
-    dlg.returnValue = '';
-    dlg.showModal();
-  });
-}
 
 function fmtBytes(n) {
   if (n == null) return '不明';
@@ -115,6 +87,8 @@ function placeholder(id) {
   };
 }
 for (const m of MODULES) screens[m.id] = placeholder(m.id);
+Object.assign(screens, { vocab: vocabList, word: wordDetail, 'vocab-bulk': vocabBulk, 'vocab-csv': vocabCSV, 'vocab-paste': vocabPaste, decks: decksScreen });
+const TAB_OF = { word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
 
 screens.settings = async (el) => {
   const theme = await getSetting('theme', 'system');
@@ -222,13 +196,15 @@ async function addSampleWords() {
 
 // ---------- Router ----------
 function currentRoute() { return (location.hash.slice(1) || 'home').split('?')[0]; }
+function currentParams() { return new URLSearchParams(location.hash.split('?')[1] || ''); }
 
 async function render() {
   const route = screens[currentRoute()] ? currentRoute() : 'home';
   const main = $('#main');
-  try { await screens[route](main); }
+  try { await screens[route](main, currentParams()); }
   catch (e) { main.innerHTML = `<div class="card warn">エラー: ${esc(e.message)}</div>`; console.error(e); }
-  document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.route === route || (route !== 'home' && a.dataset.route === route)));
+  const tab = TAB_OF[route] || route;
+  document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.route === tab));
 }
 
 function renderTabs() {
@@ -239,6 +215,7 @@ async function boot() {
   try { await openDB(); }
   catch (e) { $('#main').innerHTML = `<div class="card warn">データベースを開けません: ${esc(e.message)}<br>プライベートブラウズでは保存できません。</div>`; return; }
   await applyTheme();
+  try { const n = await seedIfNeeded(); if (n) setTimeout(() => toast(`初期単語${n}語を追加しました（苦手として登録）`, 4000), 300); } catch (e) { console.error('seed', e); }
   renderTabs();
   addEventListener('hashchange', () => { render(); scrollTo(0, 0); });
   await render();

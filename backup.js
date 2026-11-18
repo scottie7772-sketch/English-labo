@@ -1,4 +1,5 @@
 import { db, STORES, DB_VERSION, setMeta } from './db.js';
+import { effLevel } from './mastery.js';
 
 export const APP_ID = 'english-learning-lab';
 const EXCLUDE_FIELDS = { videos: ['blob'] }; // video files are too large for JSON
@@ -71,9 +72,9 @@ export async function wordsCSV() {
   const words = await db.all('words');
   const mastery = await db.all('mastery');
   const reviews = await db.all('reviews');
-  const mBy = {}; mastery.forEach((m) => { (mBy[m.wordId] ||= {})[m.skill] = m.locked ? m.manualLevel : m.autoLevel; });
+  const mBy = {}; mastery.forEach((m) => { (mBy[m.wordId] ||= {})[m.skill] = effLevel(m) || ''; });
   const rBy = {}; reviews.forEach((r) => { if (!rBy[r.wordId] || r.due < rBy[r.wordId]) rBy[r.wordId] = r.due; });
-  const head = ['headword', 'is_phrase', 'pos', 'meanings', 'example_en', 'example_ja', 'tags', 'bookmarked', 'recognition', 'recall', 'listening', 'spelling', 'next_review', 'source', 'created_at'];
+  const head = ['headword', 'is_phrase', 'pos', 'meanings', 'example_en', 'example_ja', 'tags', 'bookmarked', 'recognition', 'recall', 'listening', 'spelling', 'next_review', 'source', 'created_at', 'ipa', 'accepted'];
   const lines = [head.join(',')];
   for (const w of words) {
     const s0 = w.senses?.[0] || {};
@@ -82,7 +83,7 @@ export async function wordsCSV() {
       w.headword, w.isPhrase ? 1 : 0, s0.pos, (w.senses || []).flatMap((s) => s.meanings || []),
       s0.examples?.[0]?.en, s0.examples?.[0]?.ja, w.tags, w.bookmarked ? 1 : 0,
       m.recognition ?? '', m.recall ?? '', m.listening ?? '', m.spelling ?? '',
-      rBy[w.id] ? new Date(rBy[w.id]).toISOString().slice(0, 10) : '', w.source?.type, w.createdAt ? new Date(w.createdAt).toISOString() : '',
+      rBy[w.id] ? new Date(rBy[w.id]).toISOString().slice(0, 10) : '', w.source?.type, w.createdAt ? new Date(w.createdAt).toISOString() : '', w.ipa, s0.accepted,
     ].map(csvCell).join(','));
   }
   return '﻿' + lines.join('\r\n');

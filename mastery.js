@@ -2,7 +2,7 @@
 import { db } from './db.js';
 
 export const SKILLS = ['recognition', 'recall', 'listening', 'spelling'];
-export const SKILL_LABELS = { recognition: '英→和', recall: '和→英', listening: '音声→意味', spelling: 'スペル' };
+export const SKILL_LABELS = { recognition: '英→日', recall: '日→英', listening: '音声→意味', spelling: 'スペル' };
 export const LEVEL_LABELS = { 1: '未習得', 2: '苦手', 3: '学習中', 4: 'ほぼ習得', 5: '習得済み' };
 
 export const mid = (wordId, skill) => `${wordId}:${skill}`;

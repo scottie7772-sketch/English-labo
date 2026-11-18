@@ -1,6 +1,7 @@
 // Phase 6: Video Lab (local videos + SRT/VTT subtitles + word registration linked to video position)
 import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go } from './ui.js';
+import { icon } from './icons.js';
 import { headKey, wordsByHead, findDuplicate, newWord, newSense, saveWord, splitList } from './words.js';
 
 // ---------- subtitles ----------
@@ -69,13 +70,13 @@ export async function videoList(el) {
   const cueCount = {};
   for (const c of await db.all('cues')) cueCount[c.videoId] = (cueCount[c.videoId] || 0) + 1;
   el.innerHTML = `
-    <header class="top"><a href="#home" class="back">‹</a><h1>🎬 Video Lab</h1></header>
+    <header class="top"><a href="#home" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>🎬 Video Lab</h1></header>
     <label class="btn primary" for="vfile">＋ 動画を追加（写真・ファイル）</label>
     <input type="file" id="vfile" accept="video/*" hidden>
     <p class="hint" style="margin-top:6px">30秒〜5分程度の動画向け。動画はこのiPhoneの中だけに保存され、外部には送信されません。JSONバックアップに動画本体は含まれません（字幕は含まれます）。</p>
     <div id="vl">${vids.map((v) => `
       <a class="card vrow" href="#video-play?id=${v.id}">
-        <span class="vic">🎞️</span>
+        <span class="vic">${icon('video', 26)}</span>
         <span class="grow"><b>${esc(v.name)}</b><span class="small muted block">${v.duration ? fmtT(v.duration).replace(/\.\d$/, '') : ''}・${fmtSize(v.size || 0)}・字幕 ${cueCount[v.id] || 0}行${v.hasBlob ? '' : '・<span class="danger-text">動画ファイルなし</span>'}</span></span>
         <span class="muted">›</span>
       </a>`).join('') || '<div class="card center muted">まだ動画がありません</div>'}</div>
@@ -115,14 +116,14 @@ const SPEEDS = [0.5, 0.75, 0.9, 1, 1.25, 1.5];
 export async function videoPlay(el, params) {
   setCleanup(null);
   const v = await db.get('videos', params.get('id'));
-  if (!v) { el.innerHTML = `<header class="top"><a href="#video" class="back">‹</a><h1>動画が見つかりません</h1></header><div class="card muted">削除された可能性があります。</div>`; return; }
+  if (!v) { el.innerHTML = `<header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>動画が見つかりません</h1></header><div class="card muted">削除された可能性があります。</div>`; return; }
   let cues = await cuesOf(v.id);
   let showEn = await getSetting('video.en', true), showJa = await getSetting('video.ja', true);
   let loop = null, ab = null, curId = null, rafId = 0, saveT = 0;
   const url = v.blob ? URL.createObjectURL(v.blob) : '';
 
   el.innerHTML = `
-    <header class="top"><a href="#video" class="back">‹</a><h1 class="vtitle">${esc(v.name)}</h1><span class="grow"></span><button class="icon-btn" id="menu">⋯</button></header>
+    <header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1 class="vtitle">${esc(v.name)}</h1><span class="grow"></span><button class="icon-btn" id="menu">⋯</button></header>
     <div class="vwrap">${url ? `<video id="vid" src="${url}" playsinline webkit-playsinline preload="metadata"></video>` : '<div class="card warn">動画ファイルがありません（バックアップから復元した場合は、動画をもう一度追加してください）</div>'}</div>
     <div class="subbox" id="sub"></div>
     <div class="vctl">

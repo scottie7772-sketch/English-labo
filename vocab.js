@@ -3,6 +3,7 @@ import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, speak, fmtDate } from './ui.js';
 import { SKILLS, SKILL_LABELS, LEVEL_LABELS, effLevel, status, source, overall, filterLevel, levelText, loadAllMastery, loadWordMastery, setManual, setLock, resetToAuto } from './mastery.js';
 import { videoNames } from './video.js';
+import { icon } from './icons.js';
 import { newWord, newSense, saveWord, toggleBookmark, deleteWord, headKey, splitList, parseBulk, csvToEntries, registerEntries, wordsByHead, findDuplicate, meaningsOf, splitWord } from './words.js';
 
 const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', preposition: '前置詞', conjunction: '接続詞', pronoun: '代名詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語' };
@@ -30,7 +31,7 @@ export async function vocabList(el) {
 
   el.innerHTML = `
     <header class="top"><h1>単語・熟語</h1><span class="grow"></span>
-      <button class="icon-btn" id="add" aria-label="追加">＋</button></header>
+      <button class="icon-btn" id="add" aria-label="追加">${icon('plus', 26)}</button></header>
     <div class="searchbar"><input id="q" type="search" placeholder="検索（英語・日本語）" value="${esc(f.q)}" autocapitalize="off" autocorrect="off"></div>
     <details class="card filters" ${hasFilter(f) ? 'open' : ''}>
       <summary>絞り込み <span class="muted small" id="fsum"></span></summary>
@@ -87,7 +88,7 @@ export async function vocabList(el) {
           <span class="mean">${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>
         </a>
         <div class="wact">
-          <button class="icon-btn spk" data-say="${esc(w.headword)}" aria-label="発音">🔊</button>
+          <button class="icon-btn spk" data-say="${esc(w.headword)}" aria-label="発音">${icon('speaker', 22)}</button>
           <span class="grow"></span>
           <label class="lvsel">${chip(lv, mastery[w.id])}
             <select data-lv="${w.id}" aria-label="習得度">
@@ -147,10 +148,10 @@ async function addMenu() {
   dlg.innerHTML = `
     <form method="dialog" class="dlg stack">
       <h3>単語を追加</h3>
-      <a class="btn" href="#word?new=1">✏️ 1語ずつ追加</a>
-      <a class="btn" href="#vocab-bulk">📋 まとめて追加（1行1語）</a>
-      <a class="btn" href="#vocab-paste">📰 英文を貼り付けて選ぶ</a>
-      <a class="btn" href="#vocab-csv">📄 CSVファイルから</a>
+      <a class="btn" href="#word?new=1">1語ずつ追加</a>
+      <a class="btn" href="#vocab-bulk">まとめて追加（1行1語）</a>
+      <a class="btn" href="#vocab-paste">英文を貼り付けて選ぶ</a>
+      <a class="btn" href="#vocab-csv">CSVファイルから</a>
       <button class="btn ghost" value="cancel">閉じる</button>
     </form>`;
   dlg.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => dlg.close()));
@@ -161,7 +162,7 @@ async function addMenu() {
 export async function wordDetail(el, params) {
   const isNew = params.get('new') === '1';
   const w = isNew ? newWord({ headword: params.get('h') || '', source: { type: params.get('src') || 'manual' } }) : await db.get('words', params.get('id'));
-  if (!w) { el.innerHTML = `<header class="top"><a href="#vocab" class="back">‹</a><h1>見つかりません</h1></header>`; return; }
+  if (!w) { el.innerHTML = `<header class="top"><a href="#vocab" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>見つかりません</h1></header>`; return; }
   const decks = await db.all('decks');
   const mastery = isNew ? {} : await loadWordMastery(w.id);
   const hist = isNew ? [] : (await db.byIndex('masteryChanges', 'wordId', w.id)).sort((a, b) => b.at - a.at).slice(0, 20);
@@ -177,14 +178,14 @@ export async function wordDetail(el, params) {
   const vnames = vrefs.length ? await videoNames() : {};
 
   el.innerHTML = `
-    <header class="top"><a href="${isNew ? '#vocab' : '#vocab'}" class="back">‹</a><h1>${isNew ? '単語を追加' : '単語の詳細'}</h1><span class="grow"></span>
+    <header class="top"><a href="${isNew ? '#vocab' : '#vocab'}" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>${isNew ? '単語を追加' : '単語の詳細'}</h1><span class="grow"></span>
       ${isNew ? '' : `<button class="bm big ${w.bookmarked ? 'on' : ''}" id="bm">${bmIcon(w.bookmarked)}</button>`}</header>
 
     <form id="f" class="stack" autocomplete="off">
       <div class="card stack">
         <label class="field"><span>英単語・熟語</span>
           <div class="row"><input name="headword" value="${esc(w.headword)}" required autocapitalize="off" autocorrect="off" spellcheck="false" class="big-input">
-          <button type="button" class="icon-btn" id="say">🔊</button></div></label>
+          <button type="button" class="icon-btn" id="say" aria-label="発音">${icon('speaker', 22)}</button></div></label>
         <label class="field"><span>発音記号（任意）</span><input name="ipa" value="${esc(w.ipa)}" autocapitalize="off"></label>
       </div>
 
@@ -225,7 +226,7 @@ export async function wordDetail(el, params) {
     </div>
 
     ${vrefs.length ? `<h2 class="sec">元の動画</h2><div class="card stack">${vrefs.map((r) => vnames[r.videoId]
-      ? `<a class="vref" href="#video-play?id=${r.videoId}&t=${r.time}">▶︎ <b>${esc(vnames[r.videoId].name)}</b> <span class="muted small">${Math.floor(r.time / 60)}:${String(Math.floor(r.time % 60)).padStart(2, '0')}</span>${r.text ? `<span class="small block">${esc(r.text)}</span>` : ''}</a>`
+      ? `<a class="vref" href="#video-play?id=${r.videoId}&t=${r.time}">${icon('play', 14)} <b>${esc(vnames[r.videoId].name)}</b> <span class="muted small">${Math.floor(r.time / 60)}:${String(Math.floor(r.time % 60)).padStart(2, '0')}</span>${r.text ? `<span class="small block">${esc(r.text)}</span>` : ''}</a>`
       : `<div class="small muted">（動画は削除済み）${esc(r.text || '')}</div>`).join('')}</div>` : ''}
 
     ${hist.length ? `<h2 class="sec">習得度の変更履歴</h2><div class="card">${hist.map((h) => `<div class="hrow"><span>${fmtDate(h.at)}・${SKILL_LABELS[h.skill]}</span><b>${esc(histText(h))}</b></div>`).join('')}</div>` : ''}
@@ -353,7 +354,7 @@ function histText(h) {
 // ================= Bulk add =================
 export async function vocabBulk(el) {
   el.innerHTML = `
-    <header class="top"><a href="#vocab" class="back">‹</a><h1>まとめて追加</h1></header>
+    <header class="top"><a href="#vocab" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>まとめて追加</h1></header>
     <div class="card stack">
       <p class="small muted">1行に1語。英語と意味の間はカンマ（,）かタブ。意味が複数なら「/」で区切ります。</p>
       <textarea id="t" rows="10" placeholder="postpone, 延期する&#10;take over, 引き継ぐ / 乗っ取る&#10;in advance, 前もって" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
@@ -392,7 +393,7 @@ async function previewAndRegister(el, entries, src, extra = {}) {
 // ================= CSV import =================
 export async function vocabCSV(el) {
   el.innerHTML = `
-    <header class="top"><a href="#vocab" class="back">‹</a><h1>CSVから追加</h1></header>
+    <header class="top"><a href="#vocab" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>CSVから追加</h1></header>
     <div class="card stack">
       <p class="small muted">1行目に見出しがあれば列名で読み取ります（headword / meanings / pos / example_en / example_ja / tags / bookmarked。「英語」「意味」など日本語の列名も可）。見出しがない場合は「英語, 意味, 例文, 例文訳」の順とみなします。</p>
       <label class="btn" for="file">📂 CSVファイルを選ぶ</label>
@@ -410,7 +411,7 @@ export async function vocabCSV(el) {
 // ================= Paste text & select =================
 export async function vocabPaste(el) {
   el.innerHTML = `
-    <header class="top"><a href="#vocab" class="back">‹</a><h1>英文から選んで追加</h1></header>
+    <header class="top"><a href="#vocab" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>英文から選んで追加</h1></header>
     <div class="card stack">
       <textarea id="t" rows="6" placeholder="英文を貼り付け" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
       <button class="btn" id="go">単語を選ぶ</button>
@@ -455,7 +456,7 @@ export async function decksScreen(el) {
   const [decks, words] = await Promise.all([db.all('decks'), db.all('words')]);
   decks.sort((a, b) => a.createdAt - b.createdAt);
   el.innerHTML = `
-    <header class="top"><a href="#vocab" class="back">‹</a><h1>単語集</h1></header>
+    <header class="top"><a href="#vocab" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>単語集</h1></header>
     <form class="card row" id="new"><input name="name" placeholder="新しい単語集の名前" class="grow" required><button class="btn primary sm">作成</button></form>
     <div id="dl">${decks.map((d) => `
       <div class="card row between" data-id="${d.id}">

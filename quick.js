@@ -5,8 +5,9 @@ import { LEVEL_LABELS, SKILL_LABELS } from './mastery.js';
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
 import { selectWords, shuffle, allMeanings } from './study.js';
 import { makeSwipeCard, swipeCardHTML } from './swipecard.js';
+import { icon } from './icons.js';
 
-const QDIRS = { en2ja: { label: '英→和', skill: 'recognition' }, ja2en: { label: '和→英', skill: 'recall' } };
+const QDIRS = { en2ja: { label: '英→日', skill: 'recognition' }, ja2en: { label: '日→英', skill: 'recall' } };
 const ORDERS = [['random', 'ランダム'], ['registered', '登録順'], ['weak', '苦手順']];
 const COUNTS = [10, 20, 30, 50, 'all', 'custom'];
 const TIMES = [0, 3, 5, 10, 15, 'custom'];          // minutes, 0 = no limit
@@ -49,7 +50,7 @@ export async function quickSetup(el) {
     const n = cfg.count === 'all' ? sel.list.length : Math.min(sel.list.length, cfg.count === 'custom' ? cfg.customCount : cfg.count);
     const chips = (id, arr, cur, lab) => `<div class="chips" id="${id}">${arr.map((v) => `<button data-v="${v}" class="${String(cur) === String(v) ? 'on' : ''}">${lab(v)}</button>`).join('')}</div>`;
     el.innerHTML = `
-      <header class="top"><a href="#study" class="back">‹</a><h1>⚡ Quick Flashcards</h1></header>
+      <header class="top"><a href="#study" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>Quick Flashcards</h1></header>
       ${active ? `<div class="card stack resume"><b>途中のカード</b><span class="small muted">${QDIRS[active.config.direction].label}　残り ${counts(active).unanswered - counts(active).timeout} 枚</span>
         <div class="row"><a class="btn primary grow" href="#quick-run?id=${active.id}">続きから</a><button class="btn sm" id="end">終了して結果へ</button></div></div>` : ''}
       <h2 class="sec">出題方向</h2>
@@ -140,7 +141,7 @@ export async function quickRun(el, params) {
     <div class="row between small muted" style="margin:6px 2px"><span id="pos"></span><span id="tally"></span></div>
     <div class="cardbar"><i id="cbar"></i></div>
     <div class="qstage" id="stage"></div>
-    <p class="hint center">タップで答え　↑ わかる　↓ わからない・スキップ　${vagueRight ? '→' : '←'} 曖昧</p>
+    <p class="hint center">タップで答え ・ ↑わかる ・ ↓わからない ・ ${vagueRight ? '→' : '←'}曖昧</p>
     <div class="qbtns3">
       <button class="btn qb dont" data-r="dont"><b>↓</b>わからない</button>
       <button class="btn qb vague" data-r="vague"><b>${vagueRight ? '→' : '←'}</b>曖昧</button>
@@ -300,7 +301,8 @@ export async function quickResult(el, params) {
       <b class="${d >= 0 ? 'up' : 'down'}">（${d >= 0 ? '+' : ''}${d}）</b></div>`;
   }
   el.innerHTML = `
-    <header class="top"><a href="#quick" class="back">‹</a><h1>結果</h1></header>
+    <header class="top"><a href="#quick" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>結果</h1></header>
+    <div class="donemark">${icon('check', 30)}<span>${c.know + c.vague + c.dont}枚 完了</span></div>
     <div class="stats stats4">
       <div class="stat"><b class="up">${c.know}</b><span>わかる</span></div>
       <div class="stat"><b class="mid">${c.vague}</b><span>曖昧</span></div>
@@ -328,4 +330,14 @@ export async function quickResult(el, params) {
   const again = async (ids) => { const ns = await createQuick({ ...s.config, count: 'all' }, shuffle(ids.map((id) => words[id])), s.id); go(`#quick-run?id=${ns.id}`); };
   $('#again', el)?.addEventListener('click', () => again(dontIds));
   $('#again2', el)?.addEventListener('click', () => again(weakIds));
+}
+
+// One-tap start from Home / Review
+export async function startQuick(overrides = {}) {
+  const cfg = { ...QUICK_DEFAULTS, ...(await getSetting('quickLast', {})), ...overrides };
+  const sel = await selectWords({ direction: cfg.direction, format: 'flash', levels: cfg.levels, order: cfg.order, bookmarkedOnly: cfg.bookmarkedOnly, recentWrong: cfg.recentWrong, tag: cfg.tag, deck: cfg.deck });
+  if (!sel.list.length) { toast('対象の単語がありません'); return; }
+  for (const x of await db.byIndex('sessions', 'status', 'active')) if (x.mode === 'quick') { x.status = 'done'; x.endedAt = Date.now(); await db.put('sessions', x); }
+  const s = await createQuick(cfg, sel.list);
+  go(`#quick-run?id=${s.id}`);
 }

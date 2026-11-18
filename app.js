@@ -6,26 +6,17 @@ import { seedIfNeeded, splitSeedIfNeeded } from './words.js';
 import { studySetup, sessionScreen, resultScreen } from './study.js';
 import { quickSetup, quickRun, quickResult, getSwipe } from './quick.js';
 import { videoList, videoPlay } from './video.js';
+import { homeScreen, reviewScreen, grammarScreen, comingSoon } from './hub.js';
+import { icon } from './icons.js';
 
-export const APP_VERSION = '0.7.0';
+export const APP_VERSION = '0.8.0';
 
-const MODULES = [
-  { id: 'vocab', icon: '📚', name: 'Vocabulary', ja: '単語・熟語', phase: 1 },
-  { id: 'study', icon: '🃏', name: 'Flashcards & Tests', ja: 'カード・テスト', phase: 1 },
-  { id: 'quick', icon: '⚡', name: 'Quick Flashcards', ja: 'スワイプで高速確認', phase: 1 },
-  { id: 'log', icon: '📈', name: 'Learning Log', ja: '学習記録・復習', phase: 4 },
-  { id: 'toeic', icon: '📝', name: 'TOEIC', ja: '文法問題', phase: 5 },
-  { id: 'listening', icon: '🎧', name: 'Listening', ja: '短文保持', phase: 5 },
-  { id: 'speaking', icon: '🗣️', name: 'Speaking', ja: '瞬間英作文', phase: 5 },
-  { id: 'video', icon: '🎬', name: 'Video Lab', ja: '動画・字幕', phase: 1 },
-  { id: 'import', icon: '📷', name: 'Import', ja: 'OCR・取り込み', phase: 7 },
-];
 const TABS = [
-  { route: 'home', icon: '🏠', label: 'ホーム' },
-  { route: 'vocab', icon: '📚', label: '単語' },
-  { route: 'study', icon: '🃏', label: '学習' },
-  { route: 'log', icon: '📈', label: '記録' },
-  { route: 'settings', icon: '⚙️', label: '設定' },
+  { route: 'home', icon: 'home', label: 'ホーム' },
+  { route: 'vocab', icon: 'book', label: '単語' },
+  { route: 'study', icon: 'cards', label: '学習' },
+  { route: 'review', icon: 'review', label: '復習' },
+  { route: 'settings', icon: 'gear', label: '設定' },
 ];
 
 function fmtBytes(n) {
@@ -39,63 +30,29 @@ function fmtDate(ts) { return ts ? new Date(ts).toLocaleString('ja-JP', { month:
 
 // ---------- Theme ----------
 async function applyTheme(mode) {
-  mode = mode || await getSetting('theme', 'system');
+  mode = mode || await getSetting('theme', 'dark');
   const dark = mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-  $('meta[name=theme-color]')?.setAttribute('content', dark ? '#16181d' : '#f6f5f2');
+  $('meta[name=theme-color]')?.setAttribute('content', dark ? '#121418' : '#f3f4f6');
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => applyTheme());
 
 // ---------- Screens ----------
 const screens = {};
 
-screens.home = async (el) => {
-  const [wordCount, reviews, active, lastBackup] = await Promise.all([
-    db.count('words'), db.all('reviews'), db.byIndex('sessions', 'status', 'active').then((a) => a.filter((x) => x.mode !== 'quick')), getMeta('lastBackupAt', null),
-  ]);
-  const due = new Set(reviews.filter((r) => r.due <= Date.now()).map((r) => r.wordId)).size;
-  const d = daysSince(lastBackup);
-  const warn = wordCount > 0 && (d == null || d >= 7);
-  el.innerHTML = `
-    <header class="top"><h1>English Learning Lab</h1></header>
-    ${warn ? `<a class="card warn" href="#settings">⚠️ ${d == null ? 'まだバックアップがありません' : `最終バックアップから${d}日経過`}。設定から保存してください。</a>` : ''}
-    <section class="stats">
-      <div class="stat"><b>${wordCount}</b><span>登録語数</span></div>
-      <div class="stat"><b>${due}</b><span>今日の復習</span></div>
-      <div class="stat"><b>${active.length}</b><span>中断中</span></div>
-    </section>
-    ${active.length ? `<a class="card resume" href="#session?id=${active.sort((a, b) => b.updatedAt - a.updatedAt)[0].id}">▶︎ 中断中のテストを再開（残り ${active[0].queue.filter((q) => !active[0].answered[q.qid]).length}問）</a>` : `<a class="btn primary" href="#study" style="margin-top:10px">単語テストを始める</a>`}
-    <h2 class="sec">学習メニュー</h2>
-    <section class="grid">
-      ${MODULES.map((m) => `
-        <a class="tile" href="#${m.id}">
-          <span class="ic">${m.icon}</span>
-          <span class="nm">${m.name}</span>
-          <span class="ja">${m.ja}</span>
-          ${m.phase > 1 ? `<span class="badge">Phase ${m.phase}</span>` : ''}
-        </a>`).join('')}
-    </section>`;
-};
-
-function placeholder(id) {
-  return async (el) => {
-    const m = MODULES.find((x) => x.id === id);
-    const extra = id === 'vocab' ? `<p class="muted">現在の登録語数: ${await db.count('words')}</p>` : '';
-    el.innerHTML = `
-      <header class="top"><a href="#home" class="back">‹</a><h1>${m.icon} ${m.name}</h1></header>
-      <div class="card center">
-        <p><b>${m.ja}</b></p>
-        <p class="muted">この機能は Phase ${m.phase} で実装します。<br>データの保存先（IndexedDB）はすでに用意済みです。</p>
-        ${extra}
-      </div>`;
-  };
-}
-for (const m of MODULES) screens[m.id] = placeholder(m.id);
+screens.home = homeScreen;
+screens.review = reviewScreen;
+screens.log = reviewScreen;
+screens.grammar = grammarScreen;
+screens.toeic = grammarScreen;
+screens.listening = comingSoon('リスニング', 'headphones', '短い英文を聞いて内容を答える練習は、まだ実装していません。');
+screens.speaking = comingSoon('瞬間英作文', 'mic', '日本語から英語を組み立てる練習は、まだ実装していません。');
+screens.import = comingSoon('Import', 'import', '画像やスクリーンショットから英語を取り込む機能は、まだ実装していません。今は単語帳の「まとめて追加」「CSV」「英文から選ぶ」が使えます。');
 Object.assign(screens, { quick: quickSetup, 'quick-run': quickRun, 'quick-result': quickResult, video: videoList, 'video-play': videoPlay, study: studySetup, session: sessionScreen, result: resultScreen, vocab: vocabList, word: wordDetail, 'vocab-bulk': vocabBulk, 'vocab-csv': vocabCSV, 'vocab-paste': vocabPaste, decks: decksScreen });
-const TAB_OF = { quick: 'study', 'quick-run': 'study', 'quick-result': 'study', video: 'home', 'video-play': 'home', session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
+const TAB_OF = { log: 'review', grammar: 'home', toeic: 'home', listening: 'home', speaking: 'home', import: 'home', quick: 'study', 'quick-run': 'study', 'quick-result': 'study', video: 'home', 'video-play': 'home', session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
 
 screens.settings = async (el) => {
-  const theme = await getSetting('theme', 'system');
+  const theme = await getSetting('theme', 'dark');
   const swipe = await getSwipe();
   const lastBackup = await getMeta('lastBackupAt', null);
   const st = await storageInfo();
@@ -109,7 +66,7 @@ screens.settings = async (el) => {
     <h2 class="sec">表示</h2>
     <div class="card">
       <div class="seg" id="theme">
-        ${[['system', '自動'], ['light', 'ライト'], ['dark', 'ダーク']].map(([v, l]) => `<button data-v="${v}" class="${theme === v ? 'on' : ''}">${l}</button>`).join('')}
+        ${[['dark', 'ダーク'], ['light', 'ライト'], ['system', '端末に合わせる']].map(([v, l]) => `<button data-v="${v}" class="${theme === v ? 'on' : ''}">${l}</button>`).join('')}
       </div>
     </div>
 
@@ -120,11 +77,11 @@ screens.settings = async (el) => {
     <h2 class="sec">バックアップ</h2>
     <div class="card stack">
       <p class="muted">最終バックアップ: ${fmtDate(lastBackup)}</p>
-      <button class="btn primary" id="bk-json">💾 JSONバックアップを保存</button>
+      <button class="btn primary" id="bk-json">JSONバックアップを保存</button>
       <p class="hint">共有シートが開いたら「"ファイル"に保存」→ iCloud Drive を選ぶと安全です。動画ファイル本体は含まれません（字幕は含まれます）。</p>
-      <label class="btn" for="bk-file">📂 バックアップから復元</label>
+      <label class="btn" for="bk-file">バックアップから復元</label>
       <input type="file" id="bk-file" accept=".json,application/json" hidden>
-      <button class="btn" id="bk-csv">📄 単語一覧をCSVで書き出し</button>
+      <button class="btn" id="bk-csv">単語一覧をCSVで書き出し</button>
     </div>
 
     <h2 class="sec">データ</h2>
@@ -219,7 +176,7 @@ async function render() {
 }
 
 function renderTabs() {
-  $('#tabs').innerHTML = TABS.map((t) => `<a href="#${t.route}" data-route="${t.route}"><span>${t.icon}</span><small>${t.label}</small></a>`).join('');
+  $('#tabs').innerHTML = TABS.map((t) => `<a href="#${t.route}" data-route="${t.route}">${icon(t.icon, 24)}<small>${t.label}</small></a>`).join('');
 }
 
 async function boot() {

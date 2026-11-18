@@ -4,11 +4,12 @@ import { $, $$, esc, toast, confirmDialog, go, speak } from './ui.js';
 import { SKILL_LABELS, LEVEL_LABELS, effLevel, filterLevel, levelText, loadAllMastery, loadWordMastery } from './mastery.js';
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
 import { makeSwipeCard, swipeCardHTML } from './swipecard.js';
+import { icon } from './icons.js';
 
 // ---------- definitions ----------
 export const DIRS = {
-  ja2en:    { label: '和→英', desc: '日本語を見て英語', formats: ['typing', 'flash', 'choice'] },
-  en2ja:    { label: '英→和', desc: '英語を見て意味', formats: ['flash', 'choice'] },
+  ja2en:    { label: '日→英', desc: '日本語を見て英語', formats: ['typing', 'flash', 'choice'] },
+  en2ja:    { label: '英→日', desc: '英語を見て意味', formats: ['flash', 'choice'] },
   audio2ja: { label: '音声→意味', desc: '音声だけ聞いて意味', formats: ['flash', 'choice'] },
   audio2en: { label: '音声→英語', desc: '聞こえた英語を入力', formats: ['typing'] },
 };
@@ -25,7 +26,7 @@ export const FACTORY_TEST_DEFAULTS = Object.freeze({
   caseSensitive: false, bookmarkedOnly: false, phraseOnly: false, recentWrong: false, lowAcc: false, tag: '', deck: '',
 });
 const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', preposition: '前置詞', conjunction: '接続詞', pronoun: '代名詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語' };
-const COUNTS = [5, 10, 20, 30, 50, 'all', 'custom'];
+
 const ORDERS = [['random', 'ランダム'], ['registered', '登録順'], ['weak', '苦手度順'], ['due', '復習期限順']];
 
 async function loadDefaults() { return { ...FACTORY_TEST_DEFAULTS, ...(await getSetting('testDefaults', {})) }; }
@@ -73,66 +74,84 @@ async function activeSession() {
 const remaining = (s) => s.queue.filter((q) => !s.answered[q.qid]).length;
 
 // ================= Setup screen =================
+// 学習範囲のプリセット（基本設定）。詳細設定で変えると「カスタム」になる
+const RANGES = [
+  ['weak', '苦手・未習得', { levels: [1, 2], bookmarkedOnly: false, recentWrong: false }],
+  ['all', 'すべて', { levels: [], bookmarkedOnly: false, recentWrong: false }],
+  ['bookmark', 'ブックマーク', { levels: [], bookmarkedOnly: true, recentWrong: false }],
+  ['recent', '最近の誤答', { levels: [], bookmarkedOnly: false, recentWrong: true }],
+];
+function rangeOf(cfg) {
+  if (cfg.phraseOnly || cfg.lowAcc || cfg.tag || cfg.deck) return 'custom';
+  const r = RANGES.find(([, , v]) => JSON.stringify(v.levels) === JSON.stringify(cfg.levels) && !!v.bookmarkedOnly === !!cfg.bookmarkedOnly && !!v.recentWrong === !!cfg.recentWrong);
+  return r ? r[0] : 'custom';
+}
+const FMT_SHORT = { typing: 'タイピング', flash: 'カード', choice: '4択' };
+const BASIC_COUNTS = [10, 20, 'all', 'custom'];
+
 export async function studySetup(el) {
-  const cfg = await loadDefaults();           // 4.6: opening the screen always starts from the saved defaults
+  const cfg = await loadDefaults();           // 前回使った設定（スタート時に自動保存）。4.6 の初期値は「初期設定に戻す」で復元
   const active = await activeSession();
   let sel = await selectWords(cfg);
+  let detailsOpen = false;
 
   function draw() {
     const fmts = DIRS[cfg.direction].formats;
     if (!fmts.includes(cfg.format)) cfg.format = fmts[0];
     const n = cfg.count === 'all' ? sel.list.length : Math.min(sel.list.length, cfg.count === 'custom' ? cfg.customCount : cfg.count);
+    const range = rangeOf(cfg);
     el.innerHTML = `
-      <header class="top"><h1>単語テスト</h1></header>
-      <a class="card quicklink" href="#quick">⚡ <b>Quick Flashcards</b><span class="small muted">　スワイプで高速に確認</span></a>
+      <header class="top"><h1>単語テスト</h1><span class="grow"></span><a class="pill-link" href="#quick">${icon('bolt', 18)}Quick</a></header>
       ${active ? `
-        <div class="card stack resume">
-          <b>中断中のテスト</b>
-          <span class="small muted">${DIRS[active.config.direction].label}・${FORMATS[active.config.format]}　残り ${remaining(active)} / ${active.queue.length} 問</span>
-          <div class="row"><a class="btn primary grow" href="#session?id=${active.id}">続きから再開</a><button class="btn sm" id="abandon">破棄</button></div>
+        <div class="resume-bar">
+          <span class="grow"><b>中断中のテスト</b><small>${DIRS[active.config.direction].label}・${FMT_SHORT[active.config.format]}　残り ${remaining(active)}/${active.queue.length}問</small></span>
+          <button class="btn sm ghost" id="abandon">破棄</button><a class="btn sm primary" href="#session?id=${active.id}">再開</a>
         </div>` : ''}
 
-      <h2 class="sec">出題方向</h2>
-      <div class="card"><div class="seg wrap" data-k="direction">${Object.entries(DIRS).map(([k, d]) => `<button data-v="${k}" class="${cfg.direction === k ? 'on' : ''}">${d.label}</button>`).join('')}</div>
-        <p class="hint" style="margin-top:8px">${DIRS[cfg.direction].desc}</p></div>
-
-      <h2 class="sec">出題形式</h2>
-      <div class="card"><div class="seg" data-k="format">${fmts.map((f) => `<button data-v="${f}" class="${cfg.format === f ? 'on' : ''}">${{ typing: 'タイピング', flash: 'カード', choice: '4択' }[f]}</button>`).join('')}</div>
-        ${cfg.format === 'typing' ? `<label class="chk" style="margin-top:10px"><input type="checkbox" id="case" ${cfg.caseSensitive ? 'checked' : ''}> 大文字・小文字を区別する</label>` : ''}</div>
-
-      <h2 class="sec">習得度（複数可）<span class="muted small">基準：${sel.skills.map((s) => SKILL_LABELS[s]).join('・')}</span></h2>
-      <div class="card"><div class="chips" id="levels">${[1, 2, 3, 4, 5].map((l) => `<button data-l="${l}" class="${cfg.levels.includes(l) ? 'on' : ''}">${LEVEL_LABELS[l]}</button>`).join('')}</div>
-        <p class="hint" style="margin-top:8px">何も選ばないと全単語。未評価（学習履歴なし）の単語は「未習得」に含まれます。</p></div>
-
-      <h2 class="sec">絞り込み</h2>
-      <div class="card stack">
-        <label class="chk"><input type="checkbox" data-c="bookmarkedOnly" ${cfg.bookmarkedOnly ? 'checked' : ''}> ブックマークのみ</label>
-        <label class="chk"><input type="checkbox" data-c="phraseOnly" ${cfg.phraseOnly ? 'checked' : ''}> 熟語のみ</label>
-        <label class="chk"><input type="checkbox" data-c="recentWrong" ${cfg.recentWrong ? 'checked' : ''}> 最近7日間に間違えた単語のみ</label>
-        <label class="chk"><input type="checkbox" data-c="lowAcc" ${cfg.lowAcc ? 'checked' : ''}> この方向・形式の正答率が60%未満のみ</label>
-        <div class="row"><select id="tag" class="grow"><option value="">タグ：すべて</option>${sel.tags.map((t) => `<option ${cfg.tag === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
-          <select id="deck" class="grow"><option value="">単語集：すべて</option>${sel.decks.map((d) => `<option value="${d.id}" ${cfg.deck === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></div>
+      <div class="setlist">
+        <div class="setrow"><span class="setlabel">学習範囲</span>
+          <div class="chips" id="range">${RANGES.map(([k, l]) => `<button data-v="${k}" class="${range === k ? 'on' : ''}">${l}</button>`).join('')}${range === 'custom' ? '<button class="on" disabled>カスタム</button>' : ''}</div></div>
+        <div class="setrow"><span class="setlabel">出題方向</span>
+          <div class="seg wrap" data-k="direction">${Object.entries(DIRS).map(([k, d]) => `<button data-v="${k}" class="${cfg.direction === k ? 'on' : ''}">${d.label}</button>`).join('')}</div></div>
+        <div class="setrow"><span class="setlabel">回答方法</span>
+          <div class="seg" data-k="format">${['choice', 'flash', 'typing'].map((f) => `<button data-v="${f}" class="${cfg.format === f ? 'on' : ''}" ${fmts.includes(f) ? '' : 'disabled'}>${FMT_SHORT[f]}</button>`).join('')}</div></div>
+        <div class="setrow"><span class="setlabel">問題数</span>
+          <div class="chips" id="count">${BASIC_COUNTS.map((c) => `<button data-v="${c}" class="${String(cfg.count) === String(c) || (c === 'custom' && ![10, 20, 'all'].includes(cfg.count)) ? 'on' : ''}">${c === 'all' ? '全問' : c === 'custom' ? 'カスタム' : c + '問'}</button>`).join('')}</div>
+          ${cfg.count === 'custom' || ![10, 20, 'all'].includes(cfg.count) ? `<input type="number" id="custom" min="1" inputmode="numeric" value="${typeof cfg.count === 'number' ? cfg.count : cfg.customCount}" class="numin">` : ''}</div>
       </div>
 
-      <h2 class="sec">問題数・出題順</h2>
-      <div class="card stack">
-        <div class="chips" id="count">${COUNTS.map((c) => `<button data-v="${c}" class="${String(cfg.count) === String(c) ? 'on' : ''}">${c === 'all' ? '全問' : c === 'custom' ? '任意' : c + '問'}</button>`).join('')}</div>
-        ${cfg.count === 'custom' ? `<label class="field"><span>問題数</span><input type="number" id="custom" min="1" inputmode="numeric" value="${cfg.customCount}"></label>` : ''}
-        <div class="seg wrap" data-k="order">${ORDERS.map(([v, l]) => `<button data-v="${v}" class="${cfg.order === v ? 'on' : ''}" ${v === 'due' ? 'disabled' : ''}>${l}</button>`).join('')}</div>
-        <p class="hint">復習期限順は Phase 4（復習スケジュール）で使えるようになります。</p>
-      </div>
+      <details class="card details" id="det" ${detailsOpen ? 'open' : ''}><summary>詳細設定<span class="muted small">　習得度・絞り込み・出題順</span></summary>
+        <div class="fgrp"><span>習得度（複数可・基準：${sel.skills.map((x) => SKILL_LABELS[x]).join('・')}）</span>
+          <div class="chips" id="levels">${[1, 2, 3, 4, 5].map((l) => `<button data-l="${l}" class="${cfg.levels.includes(l) ? 'on' : ''}">${LEVEL_LABELS[l]}</button>`).join('')}</div>
+          <p class="hint">未選択＝全単語。学習履歴のない単語は「未習得」に含まれます。</p></div>
+        <div class="fgrp"><span>絞り込み</span>
+          <label class="chk"><input type="checkbox" data-c="bookmarkedOnly" ${cfg.bookmarkedOnly ? 'checked' : ''}> ブックマークのみ</label>
+          <label class="chk"><input type="checkbox" data-c="phraseOnly" ${cfg.phraseOnly ? 'checked' : ''}> 熟語のみ</label>
+          <label class="chk"><input type="checkbox" data-c="recentWrong" ${cfg.recentWrong ? 'checked' : ''}> 最近7日間に間違えた単語のみ</label>
+          <label class="chk"><input type="checkbox" data-c="lowAcc" ${cfg.lowAcc ? 'checked' : ''}> この方向・形式の正答率が60%未満のみ</label>
+          <div class="row"><select id="tag" class="grow"><option value="">タグ：すべて</option>${sel.tags.map((t) => `<option ${cfg.tag === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
+            <select id="deck" class="grow"><option value="">単語集：すべて</option>${sel.decks.map((d) => `<option value="${d.id}" ${cfg.deck === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></div></div>
+        <div class="fgrp"><span>出題順</span>
+          <div class="seg wrap" data-k="order">${ORDERS.map(([v, l]) => `<button data-v="${v}" class="${cfg.order === v ? 'on' : ''}" ${v === 'due' ? 'disabled' : ''}>${l}${v === 'due' ? '（準備中）' : ''}</button>`).join('')}</div></div>
+        ${cfg.format === 'typing' ? `<div class="fgrp"><label class="chk"><input type="checkbox" id="case" ${cfg.caseSensitive ? 'checked' : ''}> 大文字・小文字を区別する</label></div>` : ''}
+        <button class="btn ghost" id="resetDef">初期設定に戻す</button>
+        <p class="hint">設定は「スタート」を押したときに保存され、次回もそのまま使われます。</p>
+      </details>
 
-      <div class="row" style="margin-top:16px"><button class="btn grow" id="saveDef">この設定をデフォルトに保存</button><button class="btn grow" id="resetDef">初期設定に戻す</button></div>
       <div class="cta-bar"><div class="cta-count"><b>${n}</b><span>問</span><small>対象 ${sel.list.length}語 / 全${sel.total}語${sel.noMeaning ? `・意味未入力${sel.noMeaning}語は除外` : ''}</small></div>
         <button class="btn primary cta" id="start" ${n ? '' : 'disabled'}>スタート</button></div>`;
     bind();
   }
 
-  async function refresh() { sel = await selectWords(cfg); draw(); }
+  async function refresh() { detailsOpen = $('#det', el)?.open || false; sel = await selectWords(cfg); draw(); }
 
   function bind() {
+    $('#range', el).addEventListener('click', (e) => {
+      const v = e.target.dataset.v; const r = RANGES.find((x) => x[0] === v); if (!r) return;
+      Object.assign(cfg, r[2], { levels: [...r[2].levels], phraseOnly: false, lowAcc: false, tag: '', deck: '' }); refresh();
+    });
     el.querySelectorAll('.seg[data-k]').forEach((s) => s.addEventListener('click', (e) => {
-      const v = e.target.dataset.v; if (!v || e.target.disabled) return;
+      const b = e.target.closest('button'); const v = b?.dataset.v; if (!v || b.disabled) return;
       cfg[s.dataset.k] = v; refresh();
     }));
     $('#levels', el).addEventListener('click', (e) => {
@@ -142,18 +161,17 @@ export async function studySetup(el) {
     });
     $('#count', el).addEventListener('click', (e) => {
       const v = e.target.dataset.v; if (!v) return;
-      cfg.count = v === 'all' || v === 'custom' ? v : +v; draw();
+      cfg.count = v === 'all' || v === 'custom' ? v : +v; detailsOpen = $('#det', el).open; draw();
     });
-    $('#custom', el)?.addEventListener('change', (e) => { cfg.customCount = Math.max(1, +e.target.value || 1); draw(); });
+    $('#custom', el)?.addEventListener('change', (e) => { cfg.count = 'custom'; cfg.customCount = Math.max(1, +e.target.value || 1); detailsOpen = $('#det', el).open; draw(); });
     $('#case', el)?.addEventListener('change', (e) => { cfg.caseSensitive = e.target.checked; });
     el.querySelectorAll('[data-c]').forEach((c) => c.addEventListener('change', () => { cfg[c.dataset.c] = c.checked; refresh(); }));
     $('#tag', el).onchange = (e) => { cfg.tag = e.target.value; refresh(); };
     $('#deck', el).onchange = (e) => { cfg.deck = e.target.value; refresh(); };
-    $('#saveDef', el).onclick = async () => { await setSetting('testDefaults', { ...cfg }); toast('次回からこの設定で始まります'); };
     $('#resetDef', el).onclick = async () => {
       await db.delete('settings', 'testDefaults');
       Object.assign(cfg, FACTORY_TEST_DEFAULTS, { levels: [...FACTORY_TEST_DEFAULTS.levels] });
-      toast('初期設定（和→英・タイピング・未習得/苦手・全問・ランダム）に戻しました');
+      toast('初期設定（日→英・タイピング・未習得/苦手・全問・ランダム）に戻しました');
       refresh();
     };
     $('#abandon', el)?.addEventListener('click', async () => {
@@ -163,12 +181,25 @@ export async function studySetup(el) {
     $('#start', el).onclick = async () => {
       if (active && !(await confirmDialog({ title: '新しく始めますか？', body: '<p>中断中のテストは破棄されます（回答済みの記録は残ります）。</p>', okLabel: '新しく始める' }))) return;
       if (active) { active.status = 'abandoned'; active.updatedAt = Date.now(); await db.put('sessions', active); }
+      await setSetting('testDefaults', { ...cfg });          // 前回の設定として保存
       const s = await createSession(cfg, sel);
       go(`#session?id=${s.id}`);
     };
   }
   draw();
 }
+
+// One-tap start from Home / Review (does not change the saved settings)
+export async function startTest(overrides = {}) {
+  const act = await activeSession();
+  if (act) { act.status = 'abandoned'; act.updatedAt = Date.now(); await db.put('sessions', act); }
+  const cfg = { ...(await loadDefaults()), ...overrides };
+  const sel = await selectWords(cfg);
+  if (!sel.list.length) { toast('対象の単語がありません'); return; }
+  const s = await createSession(cfg, sel);
+  go(`#session?id=${s.id}`);
+}
+export { loadDefaults, activeSession };
 
 // Queue is fixed at start: later mastery changes never add/remove questions (4.6)
 async function createSession(cfg, sel, retryOf = null, wordIds = null) {
@@ -246,7 +277,7 @@ function hintText(target, level) {
 // ================= Session screen =================
 export async function sessionScreen(el, params) {
   const s = await db.get('sessions', params.get('id'));
-  if (!s) { el.innerHTML = `<header class="top"><a href="#study" class="back">‹</a><h1>見つかりません</h1></header>`; return; }
+  if (!s) { el.innerHTML = `<header class="top"><a href="#study" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>見つかりません</h1></header>`; return; }
   if (s.status !== 'active') { go(`#result?id=${s.id}`); return; }
   const words = Object.fromEntries((await db.all('words')).map((w) => [w.id, w]));
   const allWords = Object.values(words);
@@ -268,7 +299,7 @@ export async function sessionScreen(el, params) {
     const en = `<div class="fc-en">${esc(w.headword)}</div>`, ja = `<div class="fc-ja">${esc(meanings.join('、'))}</div>`;
     const ex = (w.senses || []).flatMap((x) => x.examples || []).find((x) => x.en);
     const exH = ex ? `<div class="fc-ex">${esc(ex.en)}${ex.ja ? `<br><span class="muted">${esc(ex.ja)}</span>` : ''}</div>` : '';
-    const front = q.direction === 'ja2en' ? ja : q.direction === 'en2ja' ? en : '<div class="fc-ja">🔊</div><div class="q-sub">音声を聞いて意味を思い出す</div>';
+    const front = q.direction === 'ja2en' ? ja : q.direction === 'en2ja' ? en : '<div class="fc-ja">' + icon('speaker', 44) + '</div><div class="q-sub">音声を聞いて意味を思い出す</div>';
     const back = q.direction === 'ja2en' ? `${ja}${en}${exH}` : `${en}${ja}${exH}`;
     if (!$('#fstage', el)) {
       el.innerHTML = `
@@ -277,14 +308,14 @@ export async function sessionScreen(el, params) {
         <div class="progress"><i id="prog"></i></div>
         <p class="small muted center" id="pos"></p>
         <div class="qstage" id="fstage"></div>
-        <p class="hint center">タップで答え　↑ わかる　↓ わからない・スキップ　${vagueRight ? '→' : '←'} 曖昧</p>
+        <p class="hint center">タップで答え ・ ↑わかる ・ ↓わからない ・ ${vagueRight ? '→' : '←'}曖昧</p>
         <div class="qbtns3">
           <button class="btn qb dont" data-r="dont"><b>↓</b>わからない</button>
       <button class="btn qb vague" data-r="vague"><b>${vagueRight ? '→' : '←'}</b>曖昧</button>
       <button class="btn qb know" data-r="know"><b>↑</b>わかる</button>
           <button class="btn qb" id="undo">↩︎</button>
         </div>
-        ${isAudio ? '<button class="btn" id="say" style="margin-top:8px">🔊 もう一度聞く</button>' : ''}
+        ${isAudio ? `<button class="btn" id="say" style="margin-top:8px">${icon('speaker', 20)} もう一度聞く</button>` : ''}
         </div>`;
       document.body.classList.add('noscroll');
       const off = () => { document.body.classList.remove('noscroll'); removeEventListener('hashchange', off); };
@@ -371,8 +402,8 @@ export async function sessionScreen(el, params) {
     const promptHTML = q.direction === 'ja2en'
       ? `<div class="q-ja">${esc(meanings.join('、'))}</div>${pos || ctx ? `<div class="q-sub">${esc([pos, ctx].filter(Boolean).join('　'))}</div>` : ''}${w.isPhrase ? '<div class="q-sub">（熟語）</div>' : ''}`
       : q.direction === 'en2ja'
-        ? `<div class="q-en">${esc(w.headword)}</div><button class="icon-btn" id="say">🔊</button>`
-        : `<button class="play" id="say">🔊</button><div class="q-sub">タップでもう一度</div>`;
+        ? `<div class="q-en">${esc(w.headword)}</div><button class="icon-btn" id="say" aria-label="発音">${icon('speaker', 24)}</button>`
+        : `<button class="play" id="say" aria-label="もう一度聞く">${icon('speaker', 40)}</button><div class="q-sub">タップでもう一度</div>`;
 
     el.innerHTML = `
       <header class="qhead"><button class="xbtn" id="quit" aria-label="中断">✕</button><span class="qlabel">${DIRS[q.direction].label}・${FORMATS[q.format]}</span><span class="qleft">残り ${left}</span></header>
@@ -481,20 +512,23 @@ export async function sessionScreen(el, params) {
       const lvl = Object.entries(changes).map(([sk, c]) => `<span>${SKILL_LABELS[sk]} ${esc(levelText(c.before, c.before ? 'rated' : 'unrated'))} → ${esc(levelText(c.after, 'pending'))}</span>`).join('');
       $('#fb', el).innerHTML = `
         <div class="card fb ${cls}">
-          <div class="verdict">${verdict}</div>
-          <div class="row"><b class="fb-en">${esc(w.headword)}</b><button class="icon-btn" id="say2">🔊</button></div>
+          <div class="verdict">${icon(correct ? 'check' : near ? 'warn' : 'close', 20)}${verdict}</div>
+          <div class="row"><b class="fb-en">${esc(w.headword)}</b><button class="icon-btn" id="say2" aria-label="発音">${icon('speaker', 22)}</button></div>
           ${diff}
-          ${acc.length ? `<div class="small"><span class="muted">別解：</span>${esc(acc.join(' / '))}</div>` : ''}
-          <div class="small"><span class="muted">意味：</span>${esc(meanings.join('、'))}</div>
+          <div class="fb-mean">${esc(meanings.join('、'))}</div>
           ${ex ? `<div class="ex"><div>${esc(ex.en)}</div>${ex.ja ? `<div class="muted small">${esc(ex.ja)}</div>` : ''}</div>` : ''}
-          <div class="small muted lvchg">${(ms / 1000).toFixed(1)}秒　${lvl}</div>
+          <details class="fb-more"><summary>詳しく</summary>
+            ${acc.length ? `<div class="small"><span class="muted">別解：</span>${esc(acc.join(' / '))}</div>` : ''}
+            <div class="small muted">回答時間 ${(ms / 1000).toFixed(1)}秒</div>
+            <div class="small muted lvchg">${lvl}</div>
+          </details>
         </div>
         <button class="btn primary" id="next">${last ? '結果を見る' : '次へ'}</button>`;
       $('#say2', el).onclick = () => speak(w.headword);
       const next = $('#next', el);
       next.onclick = () => (last ? go(`#result?id=${s.id}`) : show());
       next.focus({ preventScroll: true });
-      $('#fb', el).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      $('#fb', el).scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' });
     }
   }
   show();
@@ -503,7 +537,7 @@ export async function sessionScreen(el, params) {
 // ================= Result screen =================
 export async function resultScreen(el, params) {
   const s = await db.get('sessions', params.get('id'));
-  if (!s) { el.innerHTML = `<header class="top"><a href="#study" class="back">‹</a><h1>見つかりません</h1></header>`; return; }
+  if (!s) { el.innerHTML = `<header class="top"><a href="#study" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>見つかりません</h1></header>`; return; }
   const words = Object.fromEntries((await db.all('words')).map((w) => [w.id, w]));
   const mastery = await loadAllMastery();
   const rows = s.queue.filter((q) => s.answered[q.qid]).map((q) => ({ q, a: s.answered[q.qid], w: words[q.wordId] }));
@@ -514,7 +548,8 @@ export async function resultScreen(el, params) {
   const lt = (l, r) => (l ? LEVEL_LABELS[l] : r ? '判定保留' : '未評価');
 
   el.innerHTML = `
-    <header class="top"><a href="#study" class="back">‹</a><h1>テスト結果</h1></header>
+    <header class="top"><a href="#study" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>テスト結果</h1></header>
+    ${s.status === 'done' ? `<div class="donemark">${icon('check', 30)}<span>${rows.length}問 完了</span></div>` : ''}
     <div class="stats">
       <div class="stat"><b>${pct}%</b><span>正答率</span></div>
       <div class="stat"><b>${ok}/${rows.length}</b><span>正解</span></div>

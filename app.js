@@ -7,9 +7,15 @@ import { studySetup, sessionScreen, resultScreen } from './study.js';
 import { quickSetup, quickRun, quickResult, getSwipe } from './quick.js';
 import { videoList, videoPlay } from './video.js';
 import { homeScreen, reviewScreen, grammarScreen, comingSoon } from './hub.js';
+import { loadLang, setLang, langSwitchHTML, enabledLangs, setEnabled, LANGS } from './langs.js';
+import { seedContent } from './content.js';
+import { speakingScreen, speakingRun } from './speaking.js';
+import { listeningScreen, listeningRun } from './listening.js';
+import { lessonScreen, lessonRun } from './lesson.js';
+import { gamesScreen, gameRun } from './games.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '0.9.0';
+export const APP_VERSION = '1.0.0';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -45,11 +51,10 @@ screens.review = reviewScreen;
 screens.log = reviewScreen;
 screens.grammar = grammarScreen;
 screens.toeic = grammarScreen;
-screens.listening = comingSoon('リスニング', 'headphones', '短い英文を聞いて内容を答える練習は、まだ実装していません。');
-screens.speaking = comingSoon('瞬間英作文', 'mic', '日本語から英語を組み立てる練習は、まだ実装していません。');
+Object.assign(screens, { listening: listeningScreen, 'listening-run': listeningRun, speaking: speakingScreen, 'speaking-run': speakingRun, lesson: lessonScreen, 'lesson-run': lessonRun, games: gamesScreen, game: gameRun });
 screens.import = comingSoon('Import', 'import', '画像やスクリーンショットから英語を取り込む機能は、まだ実装していません。今は単語帳の「まとめて追加」「CSV」「英文から選ぶ」が使えます。');
 Object.assign(screens, { quick: quickSetup, 'quick-run': quickRun, 'quick-result': quickResult, video: videoList, 'video-play': videoPlay, study: studySetup, session: sessionScreen, result: resultScreen, vocab: vocabList, word: wordDetail, 'vocab-bulk': vocabBulk, 'vocab-csv': vocabCSV, 'vocab-paste': vocabPaste, decks: decksScreen });
-const TAB_OF = { log: 'review', grammar: 'home', toeic: 'home', listening: 'home', speaking: 'home', import: 'home', quick: 'study', 'quick-run': 'study', 'quick-result': 'study', video: 'home', 'video-play': 'home', session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
+const TAB_OF = { 'listening-run': 'home', 'speaking-run': 'home', lesson: 'home', 'lesson-run': 'home', games: 'home', game: 'home', log: 'review', grammar: 'home', toeic: 'home', listening: 'home', speaking: 'home', import: 'home', quick: 'study', 'quick-run': 'study', 'quick-result': 'study', video: 'home', 'video-play': 'home', session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
 
 screens.settings = async (el) => {
   const theme = await getSetting('theme', 'dark');
@@ -69,6 +74,11 @@ screens.settings = async (el) => {
         ${[['dark', 'ダーク'], ['light', 'ライト'], ['system', '端末に合わせる']].map(([v, l]) => `<button data-v="${v}" class="${theme === v ? 'on' : ''}">${l}</button>`).join('')}
       </div>
     </div>
+
+    <h2 class="sec">学習する言語</h2>
+    <div class="card stack"><span class="small muted">使う言語（画面上部の EN / ES / 華 で切り替え）。言語ごとに単語・習得度・復習予定は別々に管理されます。</span>
+      <div class="chips" id="langs">${Object.values(LANGS).map((l) => `<button data-v="${l.code}" class="${enabledLangs().includes(l.code) ? 'on' : ''}" ${l.code === 'en' ? 'disabled' : ''}>${l.name}</button>`).join('')}</div>
+      <p class="hint">スペイン語は中南米（メキシコ）基準。華語は繁体字・ピンイン。初期の単語・問題はAI作成で未検証です。読み上げは端末に入っている声を使います（設定 → アクセシビリティ → 読み上げコンテンツ → 声 で追加できます）。</p></div>
 
     <h2 class="sec">単語帳（カード）</h2>
     <div class="card stack"><span class="small muted">スワイプの左右（↑は常に「曖昧」。単語テストのカードにも適用）</span>
@@ -104,6 +114,7 @@ screens.settings = async (el) => {
     const v = e.target.dataset.v; if (!v) return;
     await setSetting('theme', v); await applyTheme(v); render();
   });
+  $('#langs', el).onclick = async (e) => { const v = e.target.dataset.v; if (!v || v === 'en') return; const cur = enabledLangs().filter((c) => c !== 'en'); await setEnabled(cur.includes(v) ? cur.filter((c) => c !== v) : [...cur, v]); render(); };
   $('#swipe', el).addEventListener('click', async (e) => { const v = e.target.dataset.v; if (!v) return; await setSetting('swipeKnow', v); toast('スワイプの向きを変更しました'); render(); });
   $('#bk-json', el).onclick = async () => {
     try { const r = await exportJSON(); if (r !== 'cancelled') { toast('バックアップを作成しました'); render(); } }
@@ -170,7 +181,12 @@ async function render() {
   const main = $('#main');
   try { await screens[route](main, currentParams()); }
   catch (e) { main.innerHTML = `<div class="card warn">エラー: ${esc(e.message)}</div>`; console.error(e); }
-  document.body.classList.toggle('focus', ['session', 'quick-run'].includes(route));
+  document.body.classList.toggle('focus', ['session', 'quick-run', 'speaking-run', 'listening-run', 'lesson-run', 'game'].includes(route));
+  // language switch in the header of screens that depend on the learning language
+  if (['home', 'vocab', 'study', 'quick', 'review', 'lesson', 'speaking', 'listening', 'games'].includes(route)) {
+    const h = main.querySelector('header.top');
+    if (h && !h.querySelector('.langsw')) { const tmp = document.createElement('div'); tmp.innerHTML = langSwitchHTML(); const sw = tmp.firstElementChild; if (sw) { const grow = h.querySelector('.grow'); grow ? grow.after(sw) : h.appendChild(sw); } }
+  }
   const tab = TAB_OF[route] || route;
   document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.route === tab));
 }
@@ -185,6 +201,12 @@ async function boot() {
   await applyTheme();
   try { const n = await seedIfNeeded(); if (n) setTimeout(() => toast(`初期単語${n}語を追加しました（苦手として登録）`, 4000), 300); } catch (e) { console.error('seed', e); }
   try { const n = await splitSeedIfNeeded(); if (n) setTimeout(() => toast(`多義語を意味ごとに分け、${n}項目を追加しました`, 4500), 4600); } catch (e) { console.error('split', e); }
+  await loadLang();
+  seedContent().then((n) => { if (n) { toast(`教材の単語${n}語を追加しました（AI作成・未検証）`, 3500); if (['home', 'vocab'].includes(currentRoute())) render(); } }).catch((e) => console.error('content', e));
+  document.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-langsw]'); if (!b) return;
+    await setLang(b.dataset.langsw); render();
+  });
   renderTabs();
   addEventListener('hashchange', () => { render(); scrollTo(0, 0); });
   await render();

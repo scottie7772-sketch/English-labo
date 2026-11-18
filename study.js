@@ -5,13 +5,14 @@ import { SKILL_LABELS, LEVEL_LABELS, effLevel, filterLevel, levelText, loadAllMa
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
 import { makeSwipeCard, swipeCardHTML, answerStripHTML } from './swipecard.js';
 import { icon } from './icons.js';
+import { L, curLang, langOf, compareAnswer, numToMarks } from './langs.js';
 
 // ---------- definitions ----------
 export const DIRS = {
-  ja2en:    { label: '日→英', desc: '日本語を見て英語', formats: ['typing', 'flash', 'choice'] },
-  en2ja:    { label: '英→日', desc: '英語を見て意味', formats: ['flash', 'choice'] },
+  ja2en:    { get label() { return `日→${L().ch}`; }, get desc() { return `日本語を見て${L().name}`; }, formats: ['typing', 'flash', 'choice'] },
+  en2ja:    { get label() { return `${L().ch}→日`; }, get desc() { return `${L().name}を見て意味`; }, formats: ['flash', 'choice'] },
   audio2ja: { label: '音声→意味', desc: '音声だけ聞いて意味', formats: ['flash', 'choice'] },
-  audio2en: { label: '音声→英語', desc: '聞こえた英語を入力', formats: ['typing'] },
+  audio2en: { get label() { return `音声→${L().name}`; }, get desc() { return `聞こえた${L().name}を入力`; }, formats: ['typing'] },
 };
 export const FORMATS = { typing: 'タイピング', flash: 'フラッシュカード', choice: '四択' };
 // which mastery skills a question measures (filter uses the lowest of these)
@@ -39,7 +40,8 @@ export function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = 
 
 // ---------- candidate selection ----------
 export async function selectWords(cfg) {
-  const [words, mastery, attempts, decks] = await Promise.all([db.all('words'), loadAllMastery(), db.all('attempts'), db.all('decks')]);
+  const [words0, mastery, attempts, decks] = await Promise.all([db.all('words'), loadAllMastery(), db.all('attempts'), db.all('decks')]);
+  const words = words0.filter((w) => langOf(w) === curLang());
   const skills = basisSkills(cfg.direction, cfg.format);
   const needMeaning = cfg.direction !== 'audio2en';
   const weekAgo = Date.now() - 7 * 86400000;
@@ -210,7 +212,7 @@ async function createSession(cfg, sel, retryOf = null, wordIds = null) {
   const s = {
     id: uid('ss_'), status: 'active', config: { ...cfg }, retryOf,
     queue: list.slice(0, n).map((w) => ({ qid: uid('q_'), wordId: w.id, direction: cfg.direction, format: cfg.format, skills: sel.skills, levelAtStart: rawBasis(sel.mastery[w.id], sel.skills) })),
-    mode: 'test', cursor: 0, answered: {}, startedAt: now, updatedAt: now, endedAt: null, activeMs: 0,
+    mode: 'test', lang: curLang(), cursor: 0, answered: {}, startedAt: now, updatedAt: now, endedAt: null, activeMs: 0,
   };
   await db.put('sessions', s);
   return s;
@@ -234,10 +236,17 @@ export function lev(a, b) {
   return prev[n];
 }
 // returns { result: 'correct'|'near'|'wrong', target }
-export function checkTyping(input, answers, caseSensitive) {
+export function checkTyping(input, answers, caseSensitive, lang = 'en') {
   const inp = normalize(input, caseSensitive);
   if (!inp) return { result: 'wrong', target: answers[0], dist: Infinity };
   let best = { d: Infinity, a: answers[0] };
+  let nearBy = null;
+  for (const a of answers) {
+    const c = compareAnswer(input, a, lang, { caseSensitive });
+    if (c === 'exact') return { result: 'correct', target: a, dist: 0 };
+    if (c && !nearBy) nearBy = { result: 'near', reason: c, target: a, dist: 1 };
+  }
+  if (nearBy) return nearBy;
   for (const a of answers) {
     const na = normalize(a, caseSensitive);
     if (na === inp || loose(na) === loose(inp)) return { result: 'correct', target: a, dist: 0 };
@@ -280,7 +289,7 @@ export async function sessionScreen(el, params) {
   if (!s) { el.innerHTML = `<header class="top"><a href="#study" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>見つかりません</h1></header>`; return; }
   if (s.status !== 'active') { go(`#result?id=${s.id}`); return; }
   const words = Object.fromEntries((await db.all('words')).map((w) => [w.id, w]));
-  const allWords = Object.values(words);
+  const allWords = Object.values(words).filter((x) => langOf(x) === (s.lang || 'en'));
 
   // skip questions whose word was deleted meanwhile
   let idx = s.queue.findIndex((q) => !s.answered[q.qid] && words[q.wordId]);
@@ -474,8 +483,8 @@ export async function sessionScreen(el, params) {
 
     function submitTyping(value) {
       if (revealed) return; revealed = true;
-      const answers = [w.headword, ...allAccepted(w)];
-      const r = checkTyping(value, answers, s.config.caseSensitive);
+      const answers = [w.headword, ...allAccepted(w), ...(langOf(w) === 'zh-TW' && w.ipa ? [w.ipa] : [])];
+      const r = checkTyping(value, answers, s.config.caseSensitive, langOf(w));
       const hint = hintLevel > 0;
       let results;
       if (q.direction === 'ja2en') {
@@ -485,10 +494,10 @@ export async function sessionScreen(el, params) {
       } else results = [{ skill: 'spelling', correct: r.result === 'correct', hint }];
       $('#inp', ans).disabled = true;
       $$('button', ans).forEach((b) => (b.disabled = true));
-      commit({ correct: r.result === 'correct', near: r.result === 'near', hint, answer: value, target: r.target, results });
+      commit({ correct: r.result === 'correct', near: r.result === 'near', reason: r.reason, hint, answer: value, target: r.target, results });
     }
 
-    async function commit({ correct, near, hint, answer, target, results, ms }) {
+    async function commit({ correct, near, reason, hint, answer, target, results, ms }) {
       ms = Math.round(ms ?? performance.now() - t0);
       const changes = await recordAnswer({ sessionId: s.id, qid: q.qid, wordId: w.id, direction: q.direction, format: q.format, prompt: q.direction === 'ja2en' ? meanings.join('、') : w.headword, answer, ms, results });
       s.answered[q.qid] = { correct, near, hint, answer, ms, at: Date.now() };
@@ -496,11 +505,11 @@ export async function sessionScreen(el, params) {
       const nextIdx = s.queue.findIndex((x) => !s.answered[x.qid] && words[x.wordId]);
       if (nextIdx < 0) { s.status = 'done'; s.endedAt = Date.now(); }
       await db.put('sessions', s);
-      renderFeedback({ correct, near, hint, answer, target, ms, changes, last: nextIdx < 0 });
+      renderFeedback({ correct, near, reason, hint, answer, target, ms, changes, last: nextIdx < 0 });
       idx = nextIdx;
     }
 
-    function renderFeedback({ correct, near, hint, answer, target, ms, changes, last }) {
+    function renderFeedback({ correct, near, reason, hint, answer, target, ms, changes, last }) {
       const acc = allAccepted(w);
       const ex = (w.senses || []).flatMap((x) => x.examples || []).find((x) => x.en);
       let diff = '';
@@ -510,13 +519,13 @@ export async function sessionScreen(el, params) {
           diff = `<div class="diff"><div><span class="small muted">あなた</span> <code>${d.you}</code></div><div><span class="small muted">正しい</span> <code>${d.ok}</code></div></div>`;
         } else diff = `<div class="small"><span class="muted">あなた：</span>${esc(answer)}</div>`;
       }
-      const verdict = correct ? (hint ? '正解（ヒントあり）' : '正解') : near ? '惜しい（スペルミス）' : '不正解';
+      const verdict = correct ? (hint ? '正解（ヒントあり）' : '正解') : near ? (reason === 'accent' ? '惜しい（アクセント記号）' : reason === 'tone' ? '惜しい（声調）' : '惜しい（スペルミス）') : '不正解';
       const cls = correct ? 'ok' : near ? 'near' : 'ng';
       const lvl = Object.entries(changes).map(([sk, c]) => `<span>${SKILL_LABELS[sk]} ${esc(levelText(c.before, c.before ? 'rated' : 'unrated'))} → ${esc(levelText(c.after, 'pending'))}</span>`).join('');
       $('#fb', el).innerHTML = `
         <div class="card fb ${cls}">
           <div class="verdict">${icon(correct ? 'check' : near ? 'warn' : 'close', 20)}${verdict}</div>
-          <div class="row"><b class="fb-en">${esc(w.headword)}</b><button class="icon-btn" id="say2" aria-label="発音">${icon('speaker', 22)}</button></div>
+          <div class="row"><b class="fb-en tl">${esc(w.headword)}</b>${w.ipa ? `<span class="small muted">${esc(langOf(w) === 'zh-TW' ? numToMarks(w.ipa) : w.ipa)}</span>` : ''}<button class="icon-btn" id="say2" aria-label="発音">${icon('speaker', 22)}</button></div>
           ${diff}
           <div class="fb-mean">${esc(meanings.join('、'))}</div>
           ${ex ? `<div class="ex"><div>${esc(ex.en)}</div>${ex.ja ? `<div class="muted small">${esc(ex.ja)}</div>` : ''}</div>` : ''}

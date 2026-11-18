@@ -9,7 +9,8 @@ import { toggleBookmark } from './words.js';
 import { makeSwipeCard, swipeCardHTML, answerStripHTML } from './swipecard.js';
 import { icon } from './icons.js';
 
-const QDIRS = { en2ja: { label: '英→日', skill: 'recognition' }, ja2en: { label: '日→英', skill: 'recall' } };
+import { L, curLang, langOf, numToMarks } from './langs.js';
+const QDIRS = { en2ja: { get label() { return `${L().ch}→日`; }, skill: 'recognition' }, ja2en: { get label() { return `日→${L().ch}`; }, skill: 'recall' } };
 const RANGES = [
   ['auto', 'おまかせ', '習得済み以外'], ['unlearned', '未学習', ''], ['weak', '苦手', ''], ['learning', '学習中', ''],
   ['mastered', '習得済み', 'ほぼ習得以上'], ['bookmark', 'ブックマーク', ''], ['all', 'すべて', ''],
@@ -38,14 +39,15 @@ const counts = (s) => {
   return { know: n('know'), vague: n('vague'), dont: n('dont'), timeout: n('timeout'), unanswered: n('timeout') };
 };
 async function activeQuick() {
-  return (await db.byIndex('sessions', 'status', 'active')).filter((x) => x.mode === 'quick').sort((a, b) => b.updatedAt - a.updatedAt)[0] || null;
+  return (await db.byIndex('sessions', 'status', 'active')).filter((x) => x.mode === 'quick' && (x.lang || 'en') === curLang()).sort((a, b) => b.updatedAt - a.updatedAt)[0] || null;
 }
 export const getSwipe = () => getSetting('swipeKnow', 'right');
 async function loadCfg() { return { ...QUICK_DEFAULTS, ...(await getSetting('quickCfg', {})) }; }
 
 // ---------- word list for a range + order ----------
 async function buildList(cfg, extra = {}) {
-  const [words, mastery] = await Promise.all([db.all('words'), loadAllMastery()]);
+  const [words0, mastery] = await Promise.all([db.all('words'), loadAllMastery()]);
+  const words = words0.filter((w) => langOf(w) === curLang());
   const skill = QDIRS[cfg.direction].skill;
   const lv = (w) => filterLevel(effLevel(mastery[w.id]?.[skill]));
   const attempts = (w) => mastery[w.id]?.[skill]?.stats?.attempts || 0;
@@ -141,7 +143,7 @@ async function createQuick(cfg, units, retryOf = null) {
   const now = Date.now();
   const checked = (cfg.units || [0]).filter((i) => units[i]);
   const s = {
-    id: uid('qs_'), mode: 'quick', status: 'active', config: { ...cfg }, retryOf,
+    id: uid('qs_'), mode: 'quick', lang: curLang(), status: 'active', config: { ...cfg }, retryOf,
     units, checked: checked.length ? checked : [0],
     play: { u: 0, pos: 0 },                 // u = index into checked, pos = index in that unit
     queue: [], answered: {}, startedAt: now, updatedAt: now, endedAt: null, elapsedMs: 0, activeMs: 0, laps: 0,
@@ -230,7 +232,7 @@ export async function quickRun(el, params) {
     const pos = [...new Set((w.senses || []).map((x) => POS_JA[x.pos] || x.pos).filter(Boolean))].join('・');
     const ex = (w.senses || []).flatMap((x) => x.examples || []).find((x) => x.en);
     const posTag = pos ? `<div class="q-sub">${esc(pos)}</div>` : '';
-    const en = `<div class="fc-en">${esc(w.headword)}</div>`;
+    const en = `<div class="fc-en">${esc(w.headword)}</div>${w.ipa && langOf(w) === 'zh-TW' ? `<div class="fc-read">${esc(numToMarks(w.ipa))}</div>` : ''}`;
     const ja = `<div class="fc-ja">${mean}</div>`;
     const exH = ex ? `<div class="fc-ex">${esc(ex.en)}${ex.ja ? `<br><span class="muted">${esc(ex.ja)}</span>` : ''}</div>` : '';
     const tapHint = '<div class="tap-hint">タップで答えを表示</div>';

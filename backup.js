@@ -74,7 +74,7 @@ export async function wordsCSV() {
   const reviews = await db.all('reviews');
   const mBy = {}; mastery.forEach((m) => { (mBy[m.wordId] ||= {})[m.skill] = effLevel(m) || ''; });
   const rBy = {}; reviews.forEach((r) => { if (!rBy[r.wordId] || r.due < rBy[r.wordId]) rBy[r.wordId] = r.due; });
-  const head = ['headword', 'is_phrase', 'pos', 'meanings', 'example_en', 'example_ja', 'tags', 'bookmarked', 'recognition', 'recall', 'listening', 'spelling', 'next_review', 'source', 'created_at', 'ipa', 'accepted'];
+  const head = ['headword', 'is_phrase', 'pos', 'meanings', 'example_en', 'example_ja', 'tags', 'bookmarked', 'recognition', 'recall', 'listening', 'spelling', 'next_review', 'source', 'created_at', 'ipa', 'accepted', 'lang', 'gender'];
   const lines = [head.join(',')];
   for (const w of words) {
     const s0 = w.senses?.[0] || {};
@@ -83,7 +83,7 @@ export async function wordsCSV() {
       w.headword, w.isPhrase ? 1 : 0, s0.pos, (w.senses || []).flatMap((s) => s.meanings || []),
       s0.examples?.[0]?.en, s0.examples?.[0]?.ja, w.tags, w.bookmarked ? 1 : 0,
       m.recognition ?? '', m.recall ?? '', m.listening ?? '', m.spelling ?? '',
-      rBy[w.id] ? new Date(rBy[w.id]).toISOString().slice(0, 10) : '', w.source?.type, w.createdAt ? new Date(w.createdAt).toISOString() : '', w.ipa, s0.accepted,
+      rBy[w.id] ? new Date(rBy[w.id]).toISOString().slice(0, 10) : '', w.source?.type, w.createdAt ? new Date(w.createdAt).toISOString() : '', w.ipa, s0.accepted, w.lang || 'en', s0.gender || '',
     ].map(csvCell).join(','));
   }
   return '﻿' + lines.join('\r\n');

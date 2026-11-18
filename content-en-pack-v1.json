@@ -1,0 +1,2272 @@
+{
+ "format": "ell-content",
+ "version": 1,
+ "title": "初期教材パック v1（AI作成・未検証）",
+ "createdAt": "2026-11-18",
+ "note": "Claudeが作成。内容は未検証。確認したものから『確認済み』にしてください。 examples[].answer は例文中で空欄にする語（分離する句動詞は複数）。",
+ "swipeSets": {
+  "A": {
+   "up": "up",
+   "down": "down",
+   "left": "in",
+   "right": "out",
+   "upLeft": "on",
+   "upRight": "over",
+   "downLeft": "through",
+   "downRight": "off"
+  },
+  "B": {
+   "up": "around",
+   "down": "across",
+   "left": "back",
+   "right": "away",
+   "upLeft": "for",
+   "upRight": "after",
+   "downLeft": "into",
+   "downRight": "about"
+  }
+ },
+ "items": [
+  {
+   "headword": "put off",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "put",
+    "particles": [
+     "off"
+    ]
+   },
+   "meanings": [
+    "延期する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "We put off the meeting until Friday.",
+     "ja": "私たちは会議を金曜日まで延期した。",
+     "answer": [
+      "put off"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "会議の予定を",
+    "set": "A",
+    "accept": [
+     [
+      "push",
+      "back"
+     ]
+    ]
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "put on",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "put",
+    "particles": [
+     "on"
+    ]
+   },
+   "meanings": [
+    "（服などを）身につける",
+    "着る"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Put on your coat. It's cold outside.",
+     "ja": "コートを着なさい。外は寒いよ。",
+     "answer": [
+      "Put on"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "put away",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "put",
+    "particles": [
+     "away"
+    ]
+   },
+   "meanings": [
+    "片付ける",
+    "しまう"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Please put away your documents before you leave.",
+     "ja": "帰る前に書類を片付けてください。",
+     "answer": [
+      "put away"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "B",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "put through",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "put",
+    "particles": [
+     "through"
+    ]
+   },
+   "meanings": [
+    "（電話を）つなぐ"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Could you put me through to the sales department?",
+     "ja": "営業部につないでいただけますか。",
+     "answer": [
+      "put",
+      "through"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "電話で",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "take off",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "take",
+    "particles": [
+     "off"
+    ]
+   },
+   "meanings": [
+    "離陸する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "The plane took off on time.",
+     "ja": "飛行機は定刻に離陸した。",
+     "answer": [
+      "took off"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "飛行機が",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "take off",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "take",
+    "particles": [
+     "off"
+    ]
+   },
+   "meanings": [
+    "（服・靴などを）脱ぐ"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Please take off your shoes at the door.",
+     "ja": "玄関で靴を脱いでください。",
+     "answer": [
+      "take off"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "靴を",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "take over",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "take",
+    "particles": [
+     "over"
+    ]
+   },
+   "meanings": [
+    "引き継ぐ"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "She will take over the project next month.",
+     "ja": "彼女が来月そのプロジェクトを引き継ぐ。",
+     "answer": [
+      "take over"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "仕事を",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "get over",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "get",
+    "particles": [
+     "over"
+    ]
+   },
+   "meanings": [
+    "乗り越える",
+    "（病気などから）回復する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "It took him two weeks to get over the cold.",
+     "ja": "彼が風邪から回復するのに2週間かかった。",
+     "answer": [
+      "get over"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "get through",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "get",
+    "particles": [
+     "through"
+    ]
+   },
+   "meanings": [
+    "乗り切る",
+    "やり遂げる"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "We got through a very busy week.",
+     "ja": "私たちはとても忙しい1週間を乗り切った。",
+     "answer": [
+      "got through"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "大変な時期を",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "turn down",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "turn",
+    "particles": [
+     "down"
+    ]
+   },
+   "meanings": [
+    "断る"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "She turned down the job offer.",
+     "ja": "彼女はその仕事の申し出を断った。",
+     "answer": [
+      "turned down"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "申し出を",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "turn down",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "turn",
+    "particles": [
+     "down"
+    ]
+   },
+   "meanings": [
+    "（音量・温度などを）下げる"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Could you turn down the music a little?",
+     "ja": "音楽の音量を少し下げてもらえますか。",
+     "answer": [
+      "turn down"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "音量を",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "turn up",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "turn",
+    "particles": [
+     "up"
+    ]
+   },
+   "meanings": [
+    "（音量・温度などを）上げる"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Turn up the volume. I can't hear it.",
+     "ja": "音量を上げて。聞こえないよ。",
+     "answer": [
+      "Turn up"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "音量を",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "turn up",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "turn",
+    "particles": [
+     "up"
+    ]
+   },
+   "meanings": [
+    "現れる",
+    "姿を見せる"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "He turned up thirty minutes late.",
+     "ja": "彼は30分遅れて現れた。",
+     "answer": [
+      "turned up"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": [
+     [
+      "show",
+      "up"
+     ]
+    ]
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "show up",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "show",
+    "particles": [
+     "up"
+    ]
+   },
+   "meanings": [
+    "現れる",
+    "姿を見せる"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Only five people showed up for the meeting.",
+     "ja": "会議に来たのは5人だけだった。",
+     "answer": [
+      "showed up"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": [
+     [
+      "turn",
+      "up"
+     ]
+    ]
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "look after",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "look",
+    "particles": [
+     "after"
+    ]
+   },
+   "meanings": [
+    "世話をする",
+    "面倒を見る"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Can you look after my cat this weekend?",
+     "ja": "今週末、うちの猫の世話をしてくれる？",
+     "answer": [
+      "look after"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "B",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "look into",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "look",
+    "particles": [
+     "into"
+    ]
+   },
+   "meanings": [
+    "調査する",
+    "調べる"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "The manager will look into the problem.",
+     "ja": "部長がその問題を調査する。",
+     "answer": [
+      "look into"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "問題を",
+    "set": "B",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "look around",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "look",
+    "particles": [
+     "around"
+    ]
+   },
+   "meanings": [
+    "見て回る"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "We have an hour to look around the museum.",
+     "ja": "博物館を見て回る時間が1時間ある。",
+     "answer": [
+      "look around"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "B",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "carry out",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "carry",
+    "particles": [
+     "out"
+    ]
+   },
+   "meanings": [
+    "実施する",
+    "実行する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "We need to carry out a customer survey.",
+     "ja": "顧客調査を実施する必要がある。",
+     "answer": [
+      "carry out"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "bring up",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "bring",
+    "particles": [
+     "up"
+    ]
+   },
+   "meanings": [
+    "（話題を）持ち出す"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "She brought up the budget issue at the meeting.",
+     "ja": "彼女は会議で予算の問題を持ち出した。",
+     "answer": [
+      "brought up"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "話題を",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "bring up",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "bring",
+    "particles": [
+     "up"
+    ]
+   },
+   "meanings": [
+    "育てる"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "He was brought up in Osaka.",
+     "ja": "彼は大阪で育てられた。",
+     "answer": [
+      "brought up"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "子どもを",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "pick up",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "pick",
+    "particles": [
+     "up"
+    ]
+   },
+   "meanings": [
+    "（車で）迎えに行く"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "I'll pick you up at the station at six.",
+     "ja": "6時に駅まで迎えに行くよ。",
+     "answer": [
+      "pick",
+      "up"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "車で",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "pick up",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "pick",
+    "particles": [
+     "up"
+    ]
+   },
+   "meanings": [
+    "拾い上げる",
+    "手に取る"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "He picked up the pen from the floor.",
+     "ja": "彼は床からペンを拾い上げた。",
+     "answer": [
+      "picked up"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "set up",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "set",
+    "particles": [
+     "up"
+    ]
+   },
+   "meanings": [
+    "設立する",
+    "立ち上げる"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "They set up a new office in Fukuoka.",
+     "ja": "彼らは福岡に新しい事務所を設立した。",
+     "answer": [
+      "set up"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "会社・事務所を",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "fill out",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "fill",
+    "particles": [
+     "out"
+    ]
+   },
+   "meanings": [
+    "（用紙に）記入する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Please fill out this form.",
+     "ja": "この用紙に記入してください。",
+     "answer": [
+      "fill out"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": [
+     [
+      "fill",
+      "in"
+     ]
+    ]
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "find out",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "find",
+    "particles": [
+     "out"
+    ]
+   },
+   "meanings": [
+    "（事実を）知る",
+    "突き止める"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "I found out the truth yesterday.",
+     "ja": "昨日、真実を知った。",
+     "answer": [
+      "found out"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "figure out",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "figure",
+    "particles": [
+     "out"
+    ]
+   },
+   "meanings": [
+    "理解する",
+    "（解決策を）見つける"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "I can't figure out how to use this machine.",
+     "ja": "この機械の使い方がわからない。",
+     "answer": [
+      "figure out"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "run out",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "run",
+    "particles": [
+     "out"
+    ]
+   },
+   "meanings": [
+    "尽きる",
+    "なくなる"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Time is running out.",
+     "ja": "時間がなくなってきている。",
+     "answer": [
+      "running out"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "call off",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "call",
+    "particles": [
+     "off"
+    ]
+   },
+   "meanings": [
+    "中止する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "The game was called off because of the rain.",
+     "ja": "試合は雨のため中止になった。",
+     "answer": [
+      "called off"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "予定を",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "call back",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "call",
+    "particles": [
+     "back"
+    ]
+   },
+   "meanings": [
+    "折り返し電話する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "I'll call you back in ten minutes.",
+     "ja": "10分後に折り返し電話します。",
+     "answer": [
+      "call",
+      "back"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "電話で",
+    "set": "B",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "go over",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "go",
+    "particles": [
+     "over"
+    ]
+   },
+   "meanings": [
+    "見直す",
+    "検討する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Let's go over the report before the meeting.",
+     "ja": "会議の前に報告書を見直しましょう。",
+     "answer": [
+      "go over"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "come across",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "come",
+    "particles": [
+     "across"
+    ]
+   },
+   "meanings": [
+    "偶然見つける",
+    "偶然出会う"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "I came across an old photo in the drawer.",
+     "ja": "引き出しの中で古い写真を偶然見つけた。",
+     "answer": [
+      "came across"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "B",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "run into",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "run",
+    "particles": [
+     "into"
+    ]
+   },
+   "meanings": [
+    "偶然会う"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "I ran into an old friend at the station.",
+     "ja": "駅で昔の友人に偶然会った。",
+     "answer": [
+      "ran into"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "人に",
+    "set": "B",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "hand in",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "hand",
+    "particles": [
+     "in"
+    ]
+   },
+   "meanings": [
+    "提出する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Please hand in your report by Friday.",
+     "ja": "金曜日までに報告書を提出してください。",
+     "answer": [
+      "hand in"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": [
+     [
+      "turn",
+      "in"
+     ]
+    ]
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "hand out",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "hand",
+    "particles": [
+     "out"
+    ]
+   },
+   "meanings": [
+    "配る"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "She handed out the materials to everyone.",
+     "ja": "彼女は全員に資料を配った。",
+     "answer": [
+      "handed out"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "give up",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "give",
+    "particles": [
+     "up"
+    ]
+   },
+   "meanings": [
+    "あきらめる",
+    "やめる"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Don't give up so easily.",
+     "ja": "そんなに簡単にあきらめないで。",
+     "answer": [
+      "give up"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "back up",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "back",
+    "particles": [
+     "up"
+    ]
+   },
+   "meanings": [
+    "（データの）バックアップを取る"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Always back up your files.",
+     "ja": "ファイルのバックアップは必ず取ってください。",
+     "answer": [
+      "back up"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "データを",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "break down",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "break",
+    "particles": [
+     "down"
+    ]
+   },
+   "meanings": [
+    "故障する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "My car broke down on the highway.",
+     "ja": "高速道路で車が故障した。",
+     "answer": [
+      "broke down"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "機械が",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "sign up",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "sign",
+    "particles": [
+     "up"
+    ]
+   },
+   "meanings": [
+    "申し込む",
+    "登録する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "I signed up for an English course.",
+     "ja": "英語の講座に申し込んだ。",
+     "answer": [
+      "signed up"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "drop off",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "drop",
+    "particles": [
+     "off"
+    ]
+   },
+   "meanings": [
+    "（車から人を）降ろす",
+    "（物を）届ける"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "I'll drop you off at the station.",
+     "ja": "駅で降ろしてあげるよ。",
+     "answer": [
+      "drop",
+      "off"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "車で",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "work out",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "work",
+    "particles": [
+     "out"
+    ]
+   },
+   "meanings": [
+    "運動する",
+    "トレーニングする"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "I work out at the gym twice a week.",
+     "ja": "週に2回ジムで運動している。",
+     "answer": [
+      "work out"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "ジムで",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "work out",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "work",
+    "particles": [
+     "out"
+    ]
+   },
+   "meanings": [
+    "うまくいく",
+    "解決する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Don't worry. Everything will work out.",
+     "ja": "心配しないで。全部うまくいくよ。",
+     "answer": [
+      "work out"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "物事が",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "lay off",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "lay",
+    "particles": [
+     "off"
+    ]
+   },
+   "meanings": [
+    "一時解雇する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "The factory laid off fifty workers.",
+     "ja": "その工場は50人の従業員を一時解雇した。",
+     "answer": [
+      "laid off"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "会社が",
+    "set": "A",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "throw away",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "throw",
+    "particles": [
+     "away"
+    ]
+   },
+   "meanings": [
+    "捨てる"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Don't throw away the receipt.",
+     "ja": "レシートを捨てないで。",
+     "answer": [
+      "throw away"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "B",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "apply for",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "apply",
+    "particles": [
+     "for"
+    ]
+   },
+   "meanings": [
+    "申し込む",
+    "応募する"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "She applied for the position last week.",
+     "ja": "彼女は先週その職に応募した。",
+     "answer": [
+      "applied for"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "仕事に",
+    "set": "B",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "headword": "ask for",
+   "kind": "phrasal",
+   "phrasal": {
+    "verb": "ask",
+    "particles": [
+     "for"
+    ]
+   },
+   "meanings": [
+    "求める",
+    "頼む"
+   ],
+   "pos": "phrasal verb",
+   "examples": [
+    {
+     "en": "Don't hesitate to ask for help.",
+     "ja": "遠慮なく助けを求めてください。",
+     "answer": [
+      "ask for"
+     ]
+    }
+   ],
+   "swipe": {
+    "scene": "",
+    "set": "B",
+    "accept": []
+   },
+   "tags": [
+    "句動詞",
+    "初期教材"
+   ],
+   "origin": "ai",
+   "review": "unverified"
+  }
+ ],
+ "puzzles": [
+  {
+   "level": 1,
+   "unit": "chunk",
+   "ja": "彼女はそのプロジェクトを担当しています。",
+   "tiles": [
+    "She",
+    "is",
+    "responsible for",
+    "the project"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2,
+     3
+    ]
+   ],
+   "extra": [],
+   "explain": "be responsible for ～ = ～を担当している・～に責任がある",
+   "category": "grammar",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 1,
+   "unit": "chunk",
+   "ja": "会議は金曜日まで延期された。",
+   "tiles": [
+    "The meeting",
+    "was put off",
+    "until Friday"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2
+    ]
+   ],
+   "extra": [],
+   "explain": "put off = 延期する。受け身 was put off",
+   "category": "phrasal",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 1,
+   "unit": "chunk",
+   "ja": "事前に登録してください。",
+   "tiles": [
+    "Please",
+    "register",
+    "in advance"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2
+    ]
+   ],
+   "extra": [],
+   "explain": "in advance = 前もって・事前に",
+   "category": "grammar",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 1,
+   "unit": "chunk",
+   "ja": "彼は時間どおりに到着した。",
+   "tiles": [
+    "He",
+    "arrived",
+    "on time"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2
+    ]
+   ],
+   "extra": [],
+   "explain": "on time = 時間どおりに（in time は「間に合って」）",
+   "category": "grammar",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 1,
+   "unit": "chunk",
+   "ja": "この用紙に記入してください。",
+   "tiles": [
+    "Please",
+    "fill out",
+    "this form"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2
+    ]
+   ],
+   "extra": [],
+   "explain": "fill out ～ = （用紙）に記入する。fill in も可",
+   "category": "phrasal",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 1,
+   "unit": "chunk",
+   "ja": "私たちがその問題を調査します。",
+   "tiles": [
+    "We",
+    "will look into",
+    "the problem"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2
+    ]
+   ],
+   "extra": [],
+   "explain": "look into ～ = ～を調査する",
+   "category": "phrasal",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 1,
+   "unit": "chunk",
+   "ja": "彼女は仕事の申し出を断った。",
+   "tiles": [
+    "She",
+    "turned down",
+    "the job offer"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2
+    ]
+   ],
+   "extra": [],
+   "explain": "turn down ～ = ～を断る",
+   "category": "phrasal",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 1,
+   "unit": "chunk",
+   "ja": "飛行機は予定どおりに離陸した。",
+   "tiles": [
+    "The plane",
+    "took off",
+    "on schedule"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2
+    ]
+   ],
+   "extra": [],
+   "explain": "take off = 離陸する、on schedule = 予定どおりに",
+   "category": "phrasal",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 2,
+   "unit": "chunk",
+   "ja": "ご質問があればお知らせください。",
+   "tiles": [
+    "Please",
+    "let us know",
+    "if you have",
+    "any questions"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2,
+     3
+    ]
+   ],
+   "extra": [],
+   "explain": "let us know = 知らせる。メールの定型表現",
+   "category": "grammar",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 2,
+   "unit": "chunk",
+   "ja": "その製品は来月発売される予定です。",
+   "tiles": [
+    "The product",
+    "is scheduled to",
+    "be released",
+    "next month"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2,
+     3
+    ]
+   ],
+   "extra": [],
+   "explain": "be scheduled to do = ～する予定だ",
+   "category": "grammar",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 3,
+   "unit": "word",
+   "ja": "駅で昔の友人に偶然会った。",
+   "tiles": [
+    "I",
+    "ran",
+    "into",
+    "an",
+    "old",
+    "friend",
+    "at",
+    "the",
+    "station"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ]
+   ],
+   "extra": [
+    "on"
+   ],
+   "explain": "run into ～ = ～に偶然会う",
+   "category": "phrasal",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 3,
+   "unit": "word",
+   "ja": "彼らは福岡に新しい事務所を設立した。",
+   "tiles": [
+    "They",
+    "set",
+    "up",
+    "a",
+    "new",
+    "office",
+    "in",
+    "Fukuoka"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ]
+   ],
+   "extra": [
+    "at"
+   ],
+   "explain": "set up = 設立する。都市名の前は in",
+   "category": "phrasal",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 3,
+   "unit": "word",
+   "ja": "金曜日までに報告書を提出してください。",
+   "tiles": [
+    "Please",
+    "hand",
+    "in",
+    "the",
+    "report",
+    "by",
+    "Friday"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6
+    ]
+   ],
+   "extra": [
+    "until"
+   ],
+   "explain": "by = ～までに（期限）。until = ～までずっと（継続）",
+   "category": "phrasal",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 3,
+   "unit": "word",
+   "ja": "彼女は9時からここで働いている。",
+   "tiles": [
+    "She",
+    "has",
+    "been",
+    "working",
+    "here",
+    "since",
+    "nine"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6
+    ]
+   ],
+   "extra": [
+    "from"
+   ],
+   "explain": "現在完了進行形＋since（起点）。from は完了形と組みにくい",
+   "category": "grammar",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 3,
+   "unit": "word",
+   "ja": "紙を使い切ってしまった。",
+   "tiles": [
+    "We",
+    "have",
+    "run",
+    "out",
+    "of",
+    "paper"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5
+    ]
+   ],
+   "extra": [
+    "off"
+   ],
+   "explain": "run out of ～ = ～を使い果たす",
+   "category": "phrasal",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 3,
+   "unit": "word",
+   "ja": "会議の前に報告書を見直しましょう。",
+   "tiles": [
+    "Let's",
+    "go",
+    "over",
+    "the",
+    "report",
+    "before",
+    "the",
+    "meeting"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ]
+   ],
+   "extra": [
+    "after"
+   ],
+   "explain": "go over ～ = ～を見直す・検討する",
+   "category": "phrasal",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 3,
+   "unit": "word",
+   "ja": "窓口でチケットを受け取ってください。",
+   "tiles": [
+    "Please",
+    "pick",
+    "up",
+    "your",
+    "tickets",
+    "at",
+    "the",
+    "counter"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ]
+   ],
+   "extra": [
+    "in"
+   ],
+   "explain": "pick up = 受け取る。地点の at",
+   "category": "phrasal",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "level": 3,
+   "unit": "word",
+   "ja": "高速道路で車が故障した。",
+   "tiles": [
+    "My",
+    "car",
+    "broke",
+    "down",
+    "on",
+    "the",
+    "highway"
+   ],
+   "answers": [
+    [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6
+    ]
+   ],
+   "extra": [
+    "in"
+   ],
+   "explain": "break down = 故障する。道路の上は on",
+   "category": "phrasal",
+   "origin": "ai",
+   "review": "unverified"
+  }
+ ],
+ "visual": [
+  {
+   "verb": "jump",
+   "prep": "over",
+   "landmark": "fence",
+   "path": "over",
+   "phrase": "jump over the fence",
+   "ja": "柵を飛び越える",
+   "compareGroup": "jump",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "jump",
+   "prep": "into",
+   "landmark": "pool",
+   "path": "into",
+   "phrase": "jump into the pool",
+   "ja": "プールに飛び込む",
+   "compareGroup": "jump",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "jump",
+   "prep": "onto",
+   "landmark": "stage",
+   "path": "onto",
+   "phrase": "jump onto the stage",
+   "ja": "舞台に飛び乗る",
+   "compareGroup": "jump",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "jump",
+   "prep": "off",
+   "landmark": "wall",
+   "path": "off",
+   "phrase": "jump off the wall",
+   "ja": "塀から飛び降りる",
+   "compareGroup": "jump",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "jump",
+   "prep": "across",
+   "landmark": "stream",
+   "path": "across",
+   "phrase": "jump across the stream",
+   "ja": "小川を飛び越えて向こうへ渡る",
+   "compareGroup": "jump",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "walk",
+   "prep": "through",
+   "landmark": "tunnel",
+   "path": "through",
+   "phrase": "walk through the tunnel",
+   "ja": "トンネルを通り抜ける",
+   "compareGroup": "walk",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "walk",
+   "prep": "across",
+   "landmark": "bridge",
+   "path": "across",
+   "phrase": "walk across the bridge",
+   "ja": "橋を歩いて渡る",
+   "compareGroup": "walk",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "walk",
+   "prep": "around",
+   "landmark": "lake",
+   "path": "around",
+   "phrase": "walk around the lake",
+   "ja": "湖の周りを歩く",
+   "compareGroup": "walk",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "walk",
+   "prep": "along",
+   "landmark": "river",
+   "path": "along",
+   "phrase": "walk along the river",
+   "ja": "川沿いを歩く",
+   "compareGroup": "walk",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "walk",
+   "prep": "past",
+   "landmark": "shop",
+   "path": "past",
+   "phrase": "walk past the shop",
+   "ja": "店の前を通り過ぎる",
+   "compareGroup": "walk",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "walk",
+   "prep": "into",
+   "landmark": "room",
+   "path": "into",
+   "phrase": "walk into the room",
+   "ja": "部屋に入る",
+   "compareGroup": "walk",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "walk",
+   "prep": "out of",
+   "landmark": "room",
+   "path": "out of",
+   "phrase": "walk out of the room",
+   "ja": "部屋から出る",
+   "compareGroup": "walk",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "walk",
+   "prep": "under",
+   "landmark": "bridge",
+   "path": "under",
+   "phrase": "walk under the bridge",
+   "ja": "橋の下をくぐる",
+   "compareGroup": "walk",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "walk",
+   "prep": "up",
+   "landmark": "stairs",
+   "path": "up",
+   "phrase": "walk up the stairs",
+   "ja": "階段を上がる",
+   "compareGroup": "walk",
+   "origin": "ai",
+   "review": "unverified"
+  },
+  {
+   "verb": "walk",
+   "prep": "down",
+   "landmark": "stairs",
+   "path": "down",
+   "phrase": "walk down the stairs",
+   "ja": "階段を下りる",
+   "compareGroup": "walk",
+   "origin": "ai",
+   "review": "unverified"
+  }
+ ]
+}

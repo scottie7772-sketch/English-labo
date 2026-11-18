@@ -34,19 +34,31 @@ export function confirmDialog({ title, body = '', okLabel = 'OK', cancelLabel = 
 export function go(hash) { location.hash = hash; }
 
 // Text-to-speech (iOS built-in voices, free, on-device)
-let voice = null;
-function pickVoice() {
-  const vs = speechSynthesis.getVoices().filter((v) => v.lang?.startsWith('en'));
-  voice = vs.find((v) => v.lang === 'en-US' && /Samantha|Alex|Ava|Allison/.test(v.name)) || vs.find((v) => v.lang === 'en-US') || vs[0] || null;
+// lang: 'en' | 'es' | 'zh-TW' (default: Han characters -> zh-TW, otherwise the current learning language)
+import { L, curLang, hasHan } from './langs.js';
+const voices = {};
+function pickVoices() {
+  const all = speechSynthesis.getVoices();
+  for (const code of ['en', 'es', 'zh-TW']) {
+    const d = L(code); const want = [d.speech, ...d.speechAlt];
+    let v = null;
+    for (const w of want) { const c = all.filter((x) => x.lang?.replace('_', '-').toLowerCase().startsWith(w.toLowerCase())); v = (code === 'en' && c.find((x) => /Samantha|Alex|Ava|Allison/.test(x.name))) || c[0]; if (v) break; }
+    voices[code] = v || null;
+  }
 }
-if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
-export function speak(text, rate = 0.95) {
-  if (!('speechSynthesis' in window) || !text) return;
-  speechSynthesis.cancel();
+if ('speechSynthesis' in window) { pickVoices(); speechSynthesis.onvoiceschanged = pickVoices; }
+export function speakLang(text) { return hasHan(text) && !/[\u3040-\u30ff]/.test(text) ? 'zh-TW' : curLang(); }
+export function speak(text, rate = 0.95, lang = null, { pitch = 1, onend = null, queue = false } = {}) {
+  if (!('speechSynthesis' in window) || !text) { onend?.(); return; }
+  if (!queue) speechSynthesis.cancel();
+  const code = lang || speakLang(text);
   const u = new SpeechSynthesisUtterance(text);
-  u.lang = 'en-US'; u.rate = rate; if (voice) u.voice = voice;
+  u.lang = L(code).speech; u.rate = rate; u.pitch = pitch; if (voices[code]) u.voice = voices[code];
+  if (onend) { u.onend = onend; u.onerror = onend; }
   speechSynthesis.speak(u);
+  return u;
 }
+export const hasVoice = (code) => !!voices[code];
 
 export function fmtDate(ts, withTime = true) {
   if (!ts) return '—';

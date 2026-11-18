@@ -4,6 +4,9 @@ import { $, $$, esc, toast, confirmDialog, go, speak, fmtDate } from './ui.js';
 import { SKILLS, SKILL_LABELS, LEVEL_LABELS, effLevel, status, source, overall, filterLevel, levelText, loadAllMastery, loadWordMastery, setManual, setLock, resetToAuto } from './mastery.js';
 import { videoNames } from './video.js';
 import { icon } from './icons.js';
+import { L, curLang, langOf, numToMarks, LANGS } from './langs.js';
+import { setDue } from './srs.js';
+import { EXTRA_SKILLS } from './mastery.js';
 import { newWord, newSense, saveWord, toggleBookmark, deleteWord, headKey, splitList, parseBulk, csvToEntries, registerEntries, wordsByHead, findDuplicate, meaningsOf, splitWord } from './words.js';
 
 const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', preposition: '前置詞', conjunction: '接続詞', pronoun: '代名詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語' };
@@ -26,13 +29,14 @@ function chip(lv, records, small = false) {
 // ================= List =================
 export async function vocabList(el) {
   const f = await getFilter();
-  const [words, mastery, decks] = await Promise.all([db.all('words'), loadAllMastery(), db.all('decks')]);
+  const [words0, mastery, decks] = await Promise.all([db.all('words'), loadAllMastery(), db.all('decks')]);
+  const words = words0.filter((w) => langOf(w) === curLang());
   const tags = [...new Set(words.flatMap((w) => w.tags || []))].sort();
 
   el.innerHTML = `
     <header class="top"><h1>単語・熟語</h1><span class="grow"></span>
       <button class="icon-btn" id="add" aria-label="追加">${icon('plus', 26)}</button></header>
-    <div class="searchbar"><input id="q" type="search" placeholder="検索（英語・日本語）" value="${esc(f.q)}" autocapitalize="off" autocorrect="off"></div>
+    <div class="searchbar"><input id="q" type="search" placeholder="検索（${esc(L().name)}・日本語）" value="${esc(f.q)}" autocapitalize="off" autocorrect="off"></div>
     <details class="card filters" ${hasFilter(f) ? 'open' : ''}>
       <summary>絞り込み <span class="muted small" id="fsum"></span></summary>
       <div class="fgrp"><span>ブックマーク</span>${seg('bm', [['all', 'すべて'], ['yes', '済み'], ['no', '未']], f.bm)}</div>
@@ -84,7 +88,7 @@ export async function vocabList(el) {
       return `
       <div class="wcard" data-id="${w.id}">
         <a class="wmain" href="#word?id=${w.id}">
-          <b>${esc(w.headword)}</b>${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}${headCount[headKey(w.headword)] > 1 ? '<span class="tagp">多義</span>' : ''}
+          <b class="tl">${esc(w.headword)}</b>${w.ipa && langOf(w) === 'zh-TW' ? `<span class="small muted"> ${esc(numToMarks(w.ipa))}</span>` : ''}${w.review === 'unverified' ? '<span class="tagp ai">未検証</span>' : ''}${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}${headCount[headKey(w.headword)] > 1 ? '<span class="tagp">多義</span>' : ''}
           <span class="mean">${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>
         </a>
         <div class="wact">
@@ -166,14 +170,15 @@ export async function wordDetail(el, params) {
   const decks = await db.all('decks');
   const mastery = isNew ? {} : await loadWordMastery(w.id);
   const hist = isNew ? [] : (await db.byIndex('masteryChanges', 'wordId', w.id)).sort((a, b) => b.at - a.at).slice(0, 20);
-  const reviews = isNew ? [] : await db.byIndex('reviews', 'wordId', w.id);
-  const nextDue = reviews.length ? Math.min(...reviews.map((r) => r.due)) : null;
+  const rev = isNew ? null : await db.get('reviews', w.id);
+  const nextDue = rev ? rev.due : null;
+  const wl = langOf(w);
   const allStats = SKILLS.map((s) => mastery[s]?.stats).filter(Boolean);
   const att = allStats.reduce((a, s) => a + (s.attempts || 0), 0), cor = allStats.reduce((a, s) => a + (s.correct || 0), 0);
   const lastAt = Math.max(0, ...allStats.map((s) => s.lastAt || 0)) || null;
   const ms = allStats.filter((s) => s.avgMs).map((s) => s.avgMs);
   const ov = overall(mastery);
-  const siblings = ((await wordsByHead()).get(headKey(w.headword)) || []).filter((x) => x.id !== w.id);
+  const siblings = ((await wordsByHead(wl)).get(headKey(w.headword)) || []).filter((x) => x.id !== w.id);
   const vrefs = isNew ? [] : (w.videoRefs?.length ? w.videoRefs : w.source?.type === 'video' ? [w.source] : []);
   const vnames = vrefs.length ? await videoNames() : {};
 
@@ -183,10 +188,12 @@ export async function wordDetail(el, params) {
 
     <form id="f" class="stack" autocomplete="off">
       <div class="card stack">
-        <label class="field"><span>英単語・熟語</span>
+        <div class="kv"><span>言語</span><b>${esc(L(wl).name)}</b></div>
+        <label class="field"><span>${wl === 'en' ? '英単語・熟語' : wl === 'es' ? 'スペイン語' : '華語（繁体字）'}</span>
           <div class="row"><input name="headword" value="${esc(w.headword)}" required autocapitalize="off" autocorrect="off" spellcheck="false" class="big-input">
           <button type="button" class="icon-btn" id="say" aria-label="発音">${icon('speaker', 22)}</button></div></label>
-        <label class="field"><span>発音記号（任意）</span><input name="ipa" value="${esc(w.ipa)}" autocapitalize="off"></label>
+        <label class="field"><span>${wl === 'zh-TW' ? 'ピンイン（hǎo でも hao3 でも可。入力テストの正解にもなります）' : '発音記号（任意）'}</span><input name="ipa" value="${esc(w.ipa)}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+        ${w.review === 'unverified' ? '<label class="chk"><input type="checkbox" id="verified"> 内容を確認した（未検証の印を外す）</label>' : ''}
       </div>
 
       <h2 class="sec">意味・用法 <span class="muted small">（意味ごとに分けて管理）</span></h2>
@@ -212,6 +219,7 @@ export async function wordDetail(el, params) {
       <div class="kv"><span>総合（最も低いスキル）</span>${chip(ov.level, mastery)}</div>
       ${ov.avg != null ? `<p class="hint">参考：平均 ${ov.avg.toFixed(1)}。総合は平均ではなく最低値で表示しています。</p>` : ''}
       ${SKILLS.map((s) => skillRow(s, mastery[s])).join('')}
+      ${EXTRA_SKILLS.filter((s) => mastery[s]).map((s) => `<div class="kv"><span>${SKILL_LABELS[s]}（レッスン・ゲーム）</span>${chip(effLevel(mastery[s]), { [s]: mastery[s] }, true)}</div>`).join('')}
       <p class="hint">「手動」は次に自動判定が出るまで有効。「固定」にすると学習しても変わりません（記録は続きます）。</p>
     </div>
 
@@ -220,7 +228,8 @@ export async function wordDetail(el, params) {
       <div class="kv"><span>正答率</span><b>${att ? Math.round((cor / att) * 100) + '%（' + cor + '/' + att + '）' : '—'}</b></div>
       <div class="kv"><span>平均回答時間</span><b>${ms.length ? (ms.reduce((a, b) => a + b, 0) / ms.length / 1000).toFixed(1) + '秒' : '—'}</b></div>
       <div class="kv"><span>最終学習日</span><b>${fmtDate(lastAt, false)}</b></div>
-      <div class="kv"><span>次回復習予定</span><b>${fmtDate(nextDue, false)}</b></div>
+      <div class="kv"><span>次回復習予定</span><b>${fmtDate(nextDue, false)}${rev ? `<span class="small muted">（間隔${rev.intervalDays < 1 ? '1日未満' : Math.round(rev.intervalDays) + '日'}）</span>` : ''}</b></div>
+      <div class="row"><span class="small muted grow">復習予定を変更</span><button type="button" class="btn sm" data-due="0">今日</button><button type="button" class="btn sm" data-due="3">3日後</button><button type="button" class="btn sm" data-due="14">2週間後</button></div>
       <div class="kv"><span>登録日時</span><b>${fmtDate(w.createdAt)}</b></div>
       <div class="kv"><span>登録元</span><b>${esc(SOURCE_JA[w.source?.type] || w.source?.type || '—')}${w.source?.note ? '（' + esc(w.source.note) + '）' : ''}</b></div>
     </div>
@@ -242,7 +251,8 @@ export async function wordDetail(el, params) {
         <div class="row between"><b class="small muted">意味 ${i + 1}</b>${senses.length > 1 ? `<button type="button" class="link small danger-text" data-rm="${i}">削除</button>` : ''}</div>
         <label class="field"><span>日本語訳（「/」で複数）</span><input data-k="meanings" value="${esc((s.meanings || []).join(' / '))}"></label>
         <label class="field"><span>品詞</span><select data-k="pos">${[...new Set([...POS_OPTIONS, s.pos || ''])].map((p) => `<option value="${esc(p)}" ${s.pos === p ? 'selected' : ''}>${p ? esc(posJa(p)) : '—'}</option>`).join('')}</select></label>
-        <label class="field"><span>英文例</span><textarea data-k="ex_en" rows="2" autocapitalize="off">${esc(s.examples?.[0]?.en || '')}</textarea></label>
+        ${wl === 'es' ? `<label class="field"><span>性（名詞のみ）</span><select data-k="gender">${[['', '—'], ['m', '男性名詞'], ['f', '女性名詞']].map(([v, l]) => `<option value="${v}" ${s.gender === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : ''}
+        <label class="field"><span>例文</span><textarea data-k="ex_en" rows="2" autocapitalize="off" ${wl === 'zh-TW' ? 'lang="zh-Hant-TW"' : ''}>${esc(s.examples?.[0]?.en || '')}</textarea></label>
         <label class="field"><span>例文の日本語訳</span><textarea data-k="ex_ja" rows="2">${esc(s.examples?.[0]?.ja || '')}</textarea></label>
         <details><summary class="small muted">テスト用の詳細設定</summary>
           <label class="field"><span>別解（和→英テストで正解にする表現、「/」区切り）</span><input data-k="accepted" value="${esc((s.accepted || []).join(' / '))}" autocapitalize="off"></label>
@@ -256,6 +266,7 @@ export async function wordDetail(el, params) {
       const v = (k) => $(`[data-k=${k}]`, card).value.trim();
       s.meanings = splitList(v('meanings').replace(/,/g, '/'));
       s.pos = v('pos'); s.context = v('context');
+      const g = $('[data-k=gender]', card); if (g) s.gender = g.value;
       s.accepted = v('accepted').split(/\s*[\/／]\s*/).filter(Boolean);
       const en = v('ex_en'), ja = v('ex_ja');
       const rest = (s.examples || []).slice(1);
@@ -265,7 +276,7 @@ export async function wordDetail(el, params) {
   drawSenses();
   $('#split', el)?.addEventListener('click', () => splitDialog(w, el, params));
   sensesEl.addEventListener('click', (e) => { const i = e.target.dataset.rm; if (i != null) { readSenses(); senses.splice(+i, 1); drawSenses(); } });
-  $('#say', el).onclick = () => speak($('[name=headword]', el).value);
+  $('#say', el).onclick = () => speak($('[name=headword]', el).value, 0.95, wl);
 
   $('#f', el).onsubmit = async (e) => {
     e.preventDefault();
@@ -274,12 +285,13 @@ export async function wordDetail(el, params) {
     const head = fd.get('headword').trim();
     if (!head) return toast('英単語を入力してください');
     const newMeanings = senses.flatMap((x) => x.meanings);
-    const dup = findDuplicate(await wordsByHead(), head, newMeanings, w.id);
+    const dup = findDuplicate(await wordsByHead(wl), head, newMeanings, w.id);
     if (dup) {
       const ok = await confirmDialog({ title: '同じ意味の項目があります', body: `<p>「${esc(dup.headword)}：${esc(meaningsOf(dup).join('、'))}」と意味が重なっています。それでも登録しますか？</p><p class="hint">意味が違う場合は、重ならない訳にしてください。同じ見出し語でも、意味が違えば別の項目として登録できます。</p>`, okLabel: '登録する', cancelLabel: 'やめる' });
       if (!ok) return;
     }
     w.headword = head; w.ipa = fd.get('ipa').trim();
+    if ($('#verified', el)?.checked) w.review = 'verified';
     w.senses = senses.filter((s, i) => s.meanings.length || s.examples.length || i === 0);
     w.tags = splitList(fd.get('tags'));
     w.deckIds = fd.getAll('deck');
@@ -289,6 +301,7 @@ export async function wordDetail(el, params) {
   };
 
   if (isNew) return;
+  el.querySelectorAll('[data-due]').forEach((b) => (b.onclick = async () => { await setDue(w.id, Date.now() + +b.dataset.due * 86400000 - (b.dataset.due === '0' ? 60000 : 0), { kind: 'word', lang: wl }); toast('復習予定を変更しました'); wordDetail(el, params); }));
   $('#bm', el).onclick = async (e) => {
     const on = await toggleBookmark(w.id); w.bookmarked = on;
     const b = e.currentTarget; b.classList.toggle('on', on); b.innerHTML = bmIcon(on);

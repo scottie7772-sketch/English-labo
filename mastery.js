@@ -2,7 +2,14 @@
 import { db } from './db.js';
 
 export const SKILLS = ['recognition', 'recall', 'listening', 'spelling'];
-export const SKILL_LABELS = { recognition: '英→日', recall: '日→英', listening: '音声→意味', spelling: 'スペル' };
+import { L } from './langs.js';
+// labels follow the current learning language (英→日 / 西→日 / 華→日)
+export const SKILL_LABELS = {
+  get recognition() { return `${L().ch}→日`; }, get recall() { return `日→${L().ch}`; }, listening: '音声→意味', get spelling() { return L().code === 'zh-TW' ? '書き・入力' : 'スペル'; },
+  select: '選んで答える', build: '組み立て', produce: '文を作る', reading: '読んで理解',
+};
+// extra skills (lessons / games). Not part of the overall level: choosing or assembling alone never makes an item 習得済み.
+export const EXTRA_SKILLS = ['select', 'build', 'produce'];
 export const LEVEL_LABELS = { 1: '未習得', 2: '苦手', 3: '学習中', 4: 'ほぼ習得', 5: '習得済み' };
 
 export const mid = (wordId, skill) => `${wordId}:${skill}`;

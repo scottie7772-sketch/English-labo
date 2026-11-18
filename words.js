@@ -1,6 +1,10 @@
 // Word data operations, parsing (bulk / CSV), seed data
 import { db, uid, getMeta, setMeta } from './db.js';
 import { SKILLS, setManual, mid } from './mastery.js';
+import { curLang, langOf } from './langs.js';
+
+// words of one learning language (words without lang = English)
+export async function allWords(lang = curLang()) { return (await db.all('words')).filter((w) => langOf(w) === lang); }
 
 export const normHead = (s) => String(s || '').replace(/[　\s]+/g, ' ').trim();
 export const headKey = (s) => normHead(s).toLowerCase();
@@ -10,11 +14,11 @@ export function newSense({ pos = '', meanings = [], accepted = [], context = '',
   return { id: uid('s_'), pos, meanings, accepted, context, examples };
 }
 
-export function newWord({ headword, senses, tags = [], deckIds = [], bookmarked = false, ipa = '', source = { type: 'manual' } }) {
+export function newWord({ headword, senses, tags = [], deckIds = [], bookmarked = false, ipa = '', source = { type: 'manual' }, lang = null }) {
   const h = normHead(headword);
   const now = Date.now();
   return {
-    id: uid('w_'), headword: h, isPhrase: /\s/.test(h), ipa,
+    id: uid('w_'), lang: lang || curLang(), headword: h, isPhrase: /\s/.test(h), ipa,
     senses: senses?.length ? senses : [newSense()],
     tags, deckIds, bookmarked: !!bookmarked, bookmarkedNum: bookmarked ? 1 : 0,
     source, createdAt: now, updatedAt: now,
@@ -41,14 +45,14 @@ export async function toggleBookmark(id) {
 // Learning history (attempts, masteryChanges) is kept; per-word mastery & schedule are removed.
 export async function deleteWord(id) {
   await db.tx(['words', 'mastery', 'reviews'], 'readwrite', (t) => {
-    t.objectStore('words').delete(id);
+    t.objectStore('words').delete(id); t.objectStore('reviews').delete(id);
     for (const s of SKILLS) { t.objectStore('mastery').delete(mid(id, s)); t.objectStore('reviews').delete(mid(id, s)); }
   });
 }
 
 export async function existingHeadMap() {
   const map = new Map();
-  for (const w of await db.all('words')) map.set(headKey(w.headword), w);
+  for (const w of await allWords()) map.set(headKey(w.headword), w);
   return map;
 }
 
@@ -94,7 +98,9 @@ const COLS = {
   tags: ['tags', 'tag', 'タグ', 'カテゴリ'],
   bookmarked: ['bookmarked', 'bookmark', 'ブックマーク'],
   accepted: ['accepted', '別解', '許容解答'],
-  ipa: ['ipa', '発音記号'],
+  ipa: ['ipa', '発音記号', 'pinyin', 'ピンイン', 'reading', '読み'],
+  lang: ['lang', 'language', '言語'],
+  gender: ['gender', '性'],
 };
 
 // Returns [{headword, meanings, pos, example_en, example_ja, tags, bookmarked, accepted, ipa}]
@@ -111,18 +117,24 @@ export function csvToEntries(text) {
     headword: normHead(get(r, 'headword')),
     meanings: splitList(get(r, 'meanings')),
     pos: get(r, 'pos'), example_en: get(r, 'example_en'), example_ja: get(r, 'example_ja'),
-    tags: splitList(get(r, 'tags')), accepted: splitList(get(r, 'accepted')), ipa: get(r, 'ipa'),
+    tags: splitList(get(r, 'tags')), accepted: splitList(get(r, 'accepted')), ipa: get(r, 'ipa'), lang: normLangCode(get(r, 'lang')), gender: get(r, 'gender'),
     bookmarked: /^(1|true|yes|y|済|○|★)$/i.test(get(r, 'bookmarked')),
   })).filter((e) => e.headword);
 }
 
+const normLangCode = (s) => { s = String(s || '').trim().toLowerCase(); if (!s) return ''; if (/^(es|spa|spanish|スペイン語|西)/.test(s)) return 'es'; if (/^(zh|華|中|台湾|chinese|mandarin)/.test(s)) return 'zh-TW'; if (/^(en|英)/.test(s)) return 'en'; return ''; };
 export function entryToWord(e, source, extra = {}) {
-  return newWord({
+  const sense = newSense({ pos: e.pos || '', context: e.context || '', meanings: e.meanings || [], accepted: e.accepted || [], examples: e.example_en ? [{ en: e.example_en, ja: e.example_ja || '', ...(e.answer ? { answer: e.answer } : {}) }] : [] });
+  if (e.gender) sense.gender = e.gender;
+  const w = newWord({
+    lang: e.lang || extra.lang || curLang(),
     headword: e.headword, ipa: e.ipa || '',
-    senses: [newSense({ pos: e.pos || '', meanings: e.meanings || [], accepted: e.accepted || [], examples: e.example_en ? [{ en: e.example_en, ja: e.example_ja || '' }] : [] })],
+    senses: [sense],
     tags: [...new Set([...(e.tags || []), ...(extra.tags || [])])], deckIds: extra.deckIds || [],
     bookmarked: e.bookmarked || extra.bookmarked || false, source,
   });
+  for (const k of ['kind', 'phrasal', 'swipe', 'origin', 'review']) if (e[k] != null) w[k] = e[k];
+  return w;
 }
 
 // ---- One item = headword + ONE meaning group (similar translations may share an item) ----
@@ -134,9 +146,9 @@ export function meaningsOverlap(a, b) {
   const B = new Set(b.map(normM));
   return a.some((m) => B.has(normM(m)));
 }
-export async function wordsByHead() {
+export async function wordsByHead(lang = curLang()) {
   const map = new Map();
-  for (const w of await db.all('words')) { const k = headKey(w.headword); if (!map.has(k)) map.set(k, []); map.get(k).push(w); }
+  for (const w of await allWords(lang)) { const k = headKey(w.headword); if (!map.has(k)) map.set(k, []); map.get(k).push(w); }
   return map;
 }
 // returns the existing item that duplicates (headword, meanings), or null
@@ -146,10 +158,12 @@ export function findDuplicate(byHead, headword, meanings, exceptId = null) {
 
 // Register entries; duplicates (same headword AND overlapping meaning) are skipped. Returns {added, skipped, ids}
 export async function registerEntries(entries, source, extra = {}) {
-  const byHead = await wordsByHead();
+  const heads = {};
+  const byHeadOf = async (lang) => (heads[lang] ||= await wordsByHead(lang));
   const words = []; let skipped = 0;
   for (const e of entries) {
     const k = headKey(e.headword);
+    const byHead = await byHeadOf(e.lang || extra.lang || curLang());
     if (!k || findDuplicate(byHead, e.headword, e.meanings || [])) { skipped++; continue; }
     const w = entryToWord(e, source, extra);
     if (!byHead.has(k)) byHead.set(k, []);
@@ -163,7 +177,7 @@ export async function registerEntries(entries, source, extra = {}) {
 export async function seedIfNeeded() {
   if (await getMeta('seed:v1', false)) return 0;
   const { SEED_V1 } = await import('./seed.js');
-  const { ids } = await registerEntries(csvToEntries(SEED_V1), { type: 'seed', note: '元アプリから移行' });
+  const { ids } = await registerEntries(csvToEntries(SEED_V1), { type: 'seed', note: '元アプリから移行' }, { lang: 'en' });
   for (const id of ids) await setManual(id, SKILLS, 2, { lock: false, reason: 'import' });
   await setMeta('seed:v1', Date.now());
   return ids.length;
@@ -181,7 +195,7 @@ export async function splitWord(wordId, groups, { newExamples = [], note = '意�
   const created = [];
   const now = Date.now();
   for (let i = 1; i < groups.length; i++) {
-    const nw = newWord({ headword: w.headword, senses: [newSense({ pos, meanings: groups[i], examples: newExamples[i] || [] })],
+    const nw = newWord({ lang: langOf(w), headword: w.headword, senses: [newSense({ pos, meanings: groups[i], examples: newExamples[i] || [] })],
       tags: [...(w.tags || [])], deckIds: [...(w.deckIds || [])], bookmarked: w.bookmarked, source: { ...(w.source || {}), note } });
     nw.splitFrom = w.id;
     created.push(nw);
@@ -239,4 +253,26 @@ export async function splitSeedIfNeeded() {
   }
   await setMeta('split:v1', Date.now());
   return n;
+}
+
+// ---- Content packs (static JSON in /content, AI-made = 未検証). Imported once per pack id. ----
+export async function importPackWords(url, metaKey) {
+  if (await getMeta(metaKey, false)) return 0;
+  let pack; try { pack = await (await fetch(url)).json(); } catch { return 0; }
+  const entries = (pack.items || []).map((i) => ({
+    lang: i.lang || pack.lang || 'en', headword: i.headword, meanings: i.meanings || [], pos: i.pos || '', ipa: i.pinyin || i.ipa || '',
+    gender: i.gender || '', accepted: i.accepted || [], context: [i.note, i.measure ? `量詞：${i.measure}` : ''].filter(Boolean).join('／'), tags: [...(i.tags || []), 'AI作成・未検証'],
+    example_en: i.examples?.[0]?.en || i.examples?.[0]?.text || '', example_ja: i.examples?.[0]?.ja || '', answer: i.examples?.[0]?.answer,
+    kind: i.kind, phrasal: i.phrasal, swipe: i.swipe, origin: i.origin || 'ai', review: i.review || 'unverified',
+  }));
+  const r = await registerEntries(entries, { type: 'seed', note: pack.title || metaKey });
+  // phrasal data on already-existing items (e.g. registered earlier from CSV)
+  const byHead = await wordsByHead('en');
+  for (const i of pack.items || []) {
+    if (!i.phrasal) continue;
+    const ex = findDuplicate(byHead, i.headword, i.meanings || []);
+    if (ex && !ex.phrasal) { ex.kind = 'phrasal'; ex.phrasal = i.phrasal; if (i.swipe) ex.swipe = i.swipe; await saveWord(ex); }
+  }
+  await setMeta(metaKey, Date.now());
+  return r.added;
 }

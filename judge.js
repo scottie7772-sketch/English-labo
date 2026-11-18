@@ -1,6 +1,7 @@
 // Answer recording + automatic mastery judgment (explicit, adjustable rules)
 import { db } from './db.js';
 import { emptyMastery, effLevel, mid } from './mastery.js';
+import { emptyReview, schedule, qualityOf } from './srs.js';
 
 // All thresholds in one place (Phase 4 will expose these in Settings)
 export const RULES = {
@@ -62,7 +63,8 @@ function applyAnswer(m, { correct, hint, ms, format, at, self, revealed, grade }
 }
 
 // results: [{skill, correct, hint}] for one question. Writes mastery + attempts atomically.
-export async function recordAnswer({ sessionId, qid, wordId, direction, format, prompt, answer, ms, results, mode = 'vocab-test', self = false, revealed = null, grade = null }) {
+// srs: false = do not touch the review schedule; { kind, lang, near } = schedule info
+export async function recordAnswer({ sessionId, qid, wordId, direction, format, prompt, answer, ms, results, mode = 'vocab-test', self = false, revealed = null, grade = null, srs = {}, sub = null }) {
   const at = Date.now();
   const out = {}, recs = [], atts = [];
   // read first, then write synchronously in one transaction (safe on iOS Safari)
@@ -70,11 +72,20 @@ export async function recordAnswer({ sessionId, qid, wordId, direction, format, 
     const rec = (await db.get('mastery', mid(wordId, r.skill))) || emptyMastery(wordId, r.skill);
     const { before, after } = applyAnswer(rec, { correct: r.correct, hint: r.hint, ms, format, at, self, revealed, grade });
     recs.push(rec);
-    atts.push({ sessionId, qid, wordId, skill: r.skill, direction, format, mode, self, revealed, grade, prompt, answer, correct: r.correct, ms, hint: !!r.hint, levelBefore: before, levelAfter: after, at });
+    atts.push({ sessionId, qid, wordId, skill: r.skill, direction, format, mode, self, revealed, grade, prompt, answer, correct: r.correct, ms, hint: !!r.hint, levelBefore: before, levelAfter: after, at, ...(sub ? { sub } : {}), ...(srs?.lang ? { lang: srs.lang } : {}) });
     out[r.skill] = { before, after };
   }
+  let rev = null;
+  if (srs !== false && results.length) {
+    const word = srs.lang ? null : await db.get('words', wordId);
+    rev = (await db.get('reviews', wordId)) || emptyReview(wordId, { kind: srs.kind || 'word', lang: srs.lang || word?.lang || 'en' });
+    const q = qualityOf(results, { ms, self, grade, near: srs.near });
+    schedule(rev, q, at, format);
+    Object.defineProperty(out, '_review', { value: { quality: q, due: rev.due, intervalDays: rev.intervalDays } });
+  }
   const attemptIds = [];
-  await db.tx(['mastery', 'attempts'], 'readwrite', (t) => {
+  await db.tx(['mastery', 'attempts', 'reviews'], 'readwrite', (t) => {
+    if (rev) t.objectStore('reviews').put(rev);
     recs.forEach((r) => t.objectStore('mastery').put(r));
     atts.forEach((a) => { const q = t.objectStore('attempts').add(a); q.onsuccess = () => attemptIds.push(q.result); });
   });
@@ -86,11 +97,14 @@ export async function recordAnswer({ sessionId, qid, wordId, direction, format, 
 export async function snapshotMastery(wordId, skills) {
   const snap = {};
   for (const s of skills) snap[s] = (await db.get('mastery', mid(wordId, s))) || null;
+  snap.__review = (await db.get('reviews', wordId)) || null;
   return structuredClone(snap);
 }
 export async function undoAnswer(wordId, snap, attemptIds) {
-  await db.tx(['mastery', 'attempts'], 'readwrite', (t) => {
+  await db.tx(['mastery', 'attempts', 'reviews'], 'readwrite', (t) => {
+    if ('__review' in snap) { if (snap.__review) t.objectStore('reviews').put(snap.__review); else t.objectStore('reviews').delete(wordId); }
     for (const [skill, rec] of Object.entries(snap)) {
+      if (skill === '__review') continue;
       if (rec) t.objectStore('mastery').put(rec); else t.objectStore('mastery').delete(mid(wordId, skill));
     }
     for (const id of attemptIds || []) t.objectStore('attempts').delete(id);

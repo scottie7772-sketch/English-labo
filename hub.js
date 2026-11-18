@@ -5,6 +5,8 @@ import { icon } from './icons.js';
 import { overall, filterLevel, LEVEL_LABELS, loadAllMastery } from './mastery.js';
 import { startTest } from './study.js';
 import { startQuick } from './quick.js';
+import { curLang, langOf, L } from './langs.js';
+import { lessonStats, streakDays } from './lesson.js';
 
 const DAY = 86400000;
 const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };
@@ -20,7 +22,10 @@ function stageOf(records) {
   return overall(records).level >= 4 ? 'done' : 'learning';
 }
 export async function collectStats() {
-  const [words, mastery, attempts, sessions, decks] = await Promise.all([db.all('words'), loadAllMastery(), db.all('attempts'), db.all('sessions'), db.all('decks')]);
+  const [words0, mastery, attempts, sessions0, decks] = await Promise.all([db.all('words'), loadAllMastery(), db.all('attempts'), db.all('sessions'), db.all('decks')]);
+  const lang = curLang();
+  const words = words0.filter((w) => langOf(w) === lang);
+  const sessions = sessions0.filter((s) => (s.lang || 'en') === lang);
   const today = startOfToday(), weekAgo = Date.now() - 7 * DAY;
   const weak = words.filter((w) => filterLevel(overall(mastery[w.id]).level) <= 2);
   const recentWrongIds = new Set(attempts.filter((a) => !a.correct && a.at >= weekAgo).map((a) => a.wordId));
@@ -58,6 +63,8 @@ const fmtDay = (ts) => (ts ? new Date(ts).toLocaleDateString('ja-JP', { month: '
 // ================= Home =================
 export async function homeScreen(el) {
   const st = await collectStats();
+  const ls = await lessonStats();
+  const sk = await streakDays();
   const lastBackup = await getMeta('lastBackupAt', null);
   const bd = lastBackup ? Math.floor((Date.now() - lastBackup) / DAY) : null;
   const backupWarn = st.words.length > 0 && (bd == null || bd >= 7);
@@ -67,25 +74,30 @@ export async function homeScreen(el) {
   const item = (href, ic, name, sub, soon) => `<a class="mitem ${soon ? 'soon' : ''}" href="${href}">${icon(ic, 22)}<span class="grow"><b>${name}</b><small>${sub}</small></span>${soon ? '<em>準備中</em>' : ''}</a>`;
 
   el.innerHTML = `
-    <header class="top"><h1>English Lab</h1><span class="grow"></span><a class="icon-btn" href="#settings" aria-label="設定">${icon('gear', 24)}</a></header>
+    <header class="top"><h1>English Labo</h1><span class="grow"></span><a class="icon-btn" href="#settings" aria-label="設定">${icon('gear', 24)}</a></header>
     ${backupWarn ? `<a class="notice warn" href="#settings">${icon('warn', 18)}<span>${bd == null ? 'まだバックアップがありません' : `最終バックアップから${bd}日`}。設定から保存できます</span></a>` : ''}
 
     <section class="kpis">
       <div class="kpi"><b>${st.words.length}</b><span>登録語数</span></div>
       <div class="kpi"><b class="c-review">${st.weak.length}</b><span>苦手・未習得</span></div>
-      <div class="kpi"><b>${st.todayCount}</b><span>今日の回答</span></div>
+      <div class="kpi"><b>${icon('flame', 18)} ${sk.n}</b><span>連続日数${sk.today ? '' : '（今日まだ）'}</span></div>
     </section>
 
     <section class="actions">
       ${test ? `<a class="action resume" href="#session?id=${test.id}">${icon('play', 20)}<span class="grow"><b>前回の続きから</b><small>単語テスト 残り${left(test)}問</small></span>${icon('chevron', 18)}</a>` : ''}
       ${quick ? `<a class="action resume" href="#quick-run?id=${quick.id}">${icon('play', 20)}<span class="grow"><b>単語帳の続きから</b><small>${Object.keys(quick.answered || {}).length}枚済み</small></span>${icon('chevron', 18)}</a>` : ''}
-      <button class="action primary" id="goWeak" ${st.weak.length ? '' : 'disabled'}>${icon('review', 20)}<span class="grow"><b>苦手を復習</b><small>${st.weak.length ? `苦手・未習得 ${st.weak.length}語（前回の出題方法で）` : '現在復習する単語はありません'}</small></span>${icon('chevron', 18)}</button>
+      <a class="action primary" href="#lesson">${icon('lesson', 20)}<span class="grow"><b>今日のレッスン</b><small>${ls.due ? `復習 ${ls.due}件` : '復習なし'}・未学習 ${ls.fresh}語</small></span>${icon('chevron', 18)}</a>
+      <button class="action" id="goWeak" ${st.weak.length ? '' : 'disabled'}>${icon('review', 20)}<span class="grow"><b>苦手を復習</b><small>${st.weak.length ? `苦手・未習得 ${st.weak.length}語（前回の出題方法で）` : '現在復習する単語はありません'}</small></span>${icon('chevron', 18)}</button>
     </section>
 
     <h2 class="sec">学習</h2>
     <nav class="menu">
       ${item('#study', 'cards', '単語テスト', '4択・カード・タイピング')}
       ${item('#quick', 'bolt', '単語帳（カード）', 'スワイプで確認・リピート')}
+      ${item('#listening', 'headphones', 'リスニング', '短文・会話の聞き取り')}
+      ${item('#speaking', 'mic', '瞬間作文', `日本語から${L().name}`)}
+      ${item('#games', 'puzzle', 'ゲーム', 'パズル・Verb Swipe・前置詞の図解')}
+      ${item('#video', 'video', 'Video Lab', '動画と字幕')}
       ${item('#grammar', 'grammar', '文法', '単元一覧', true)}
     </nav>
     <h2 class="sec">単語・復習</h2>
@@ -99,9 +111,6 @@ export async function homeScreen(el) {
 
     <details class="card more"><summary>その他の機能</summary>
       <nav class="menu flat">
-        ${item('#video', 'video', 'Video Lab', '動画と字幕')}
-        ${item('#listening', 'headphones', 'リスニング', '短文の聞き取り', true)}
-        ${item('#speaking', 'mic', '瞬間英作文', '日本語から英語', true)}
         ${item('#import', 'import', 'Import', '画像から文字を取り込み', true)}
       </nav>
     </details>`;
@@ -131,7 +140,7 @@ export async function reviewScreen(el) {
 
   el.innerHTML = `
     <header class="top"><h1>復習・記録</h1></header>
-    <p class="notice info">${icon('history', 18)}<span>復習予定日（間隔反復）は準備中です。今は苦手・誤答・ブックマークから復習できます。</span></p>
+    <a class="action primary" href="#lesson">${icon('lesson', 20)}<span class="grow"><b>復習予定（間隔反復）</b><small>${(await lessonStats()).due}件が期限・レッスンで復習</small></span>${icon('chevron', 18)}</a>
     ${any ? '' : '<p class="empty">現在復習する問題はありません</p>'}
     ${group('weak', 'review', '苦手な単語・熟語', st.weak, '総合習得度が「苦手」「未習得」の語（学習履歴のない語を含む）')}
     ${group('recent', 'warn', '最近7日間に間違えた', st.recentWrong)}

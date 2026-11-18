@@ -3,12 +3,13 @@ import { exportJSON, exportCSV, validateBackup, restoreBackup, STORE_LABELS } fr
 import { $, esc, toast, confirmDialog } from './ui.js';
 import { vocabList, wordDetail, vocabBulk, vocabCSV, vocabPaste, decksScreen } from './vocab.js';
 import { seedIfNeeded } from './words.js';
+import { studySetup, sessionScreen, resultScreen } from './study.js';
 
-export const APP_VERSION = '0.2.0';
+export const APP_VERSION = '0.3.0';
 
 const MODULES = [
   { id: 'vocab', icon: '📚', name: 'Vocabulary', ja: '単語・熟語', phase: 1 },
-  { id: 'study', icon: '🃏', name: 'Flashcards & Tests', ja: 'カード・テスト', phase: 3 },
+  { id: 'study', icon: '🃏', name: 'Flashcards & Tests', ja: 'カード・テスト', phase: 1 },
   { id: 'log', icon: '📈', name: 'Learning Log', ja: '学習記録・復習', phase: 4 },
   { id: 'toeic', icon: '📝', name: 'TOEIC', ja: '文法問題', phase: 5 },
   { id: 'listening', icon: '🎧', name: 'Listening', ja: '短文保持', phase: 5 },
@@ -60,7 +61,7 @@ screens.home = async (el) => {
       <div class="stat"><b>${due}</b><span>今日の復習</span></div>
       <div class="stat"><b>${active.length}</b><span>中断中</span></div>
     </section>
-    ${active.length ? `<div class="card">中断中のセッションがあります（Phase 3 で再開機能を実装）</div>` : ''}
+    ${active.length ? `<a class="card resume" href="#session?id=${active.sort((a, b) => b.updatedAt - a.updatedAt)[0].id}">▶︎ 中断中のテストを再開（残り ${active[0].queue.filter((q) => !active[0].answered[q.qid]).length}問）</a>` : `<a class="btn primary" href="#study" style="margin-top:10px">単語テストを始める</a>`}
     <h2 class="sec">学習メニュー</h2>
     <section class="grid">
       ${MODULES.map((m) => `
@@ -87,8 +88,8 @@ function placeholder(id) {
   };
 }
 for (const m of MODULES) screens[m.id] = placeholder(m.id);
-Object.assign(screens, { vocab: vocabList, word: wordDetail, 'vocab-bulk': vocabBulk, 'vocab-csv': vocabCSV, 'vocab-paste': vocabPaste, decks: decksScreen });
-const TAB_OF = { word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
+Object.assign(screens, { study: studySetup, session: sessionScreen, result: resultScreen, vocab: vocabList, word: wordDetail, 'vocab-bulk': vocabBulk, 'vocab-csv': vocabCSV, 'vocab-paste': vocabPaste, decks: decksScreen });
+const TAB_OF = { session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
 
 screens.settings = async (el) => {
   const theme = await getSetting('theme', 'system');

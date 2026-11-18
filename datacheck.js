@@ -53,6 +53,7 @@ export async function dataCheckScreen(el) {
     <header class="top"><a href="#settings" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>データ点検</h1></header>
     <p class="hint">全${total}項目を調べました。列がずれて登録された可能性のある項目を、登録元ごとに表示します。チェックを入れて「実行」を押すまで、データは変更しません。実行前の状態は保存され、元に戻せます。</p>
     ${last ? `<div class="card stack"><div class="kv"><span>前回の修正</span><b>${fmtDate(last.at)}・${last.words.length}項目</b></div><button class="btn" id="undo">${icon('undo', 18)} 前回の修正を元に戻す</button></div>` : ''}
+    ${flagged.some((f) => f.action) ? '<div class="row selbar"><button class="btn sm grow" id="selAll">全てを選択</button><button class="btn sm grow" id="selNone">全ての選択を解除</button></div>' : ''}
     ${flagged.length ? Object.entries(groups).map(([g, list]) => `
       <h2 class="sec">登録元：${esc(g)} <span class="muted small">${list.length}件</span></h2>
       <div class="card list">${list.map((f) => `
@@ -71,6 +72,9 @@ export async function dataCheckScreen(el) {
   const upd = () => { const n = $('#nsel', el); if (n) n.textContent = sel.size; const r = $('#run', el); if (r) r.disabled = !sel.size; };
   upd();
   $$('input[data-id]', el).forEach((c) => (c.onchange = () => { c.checked ? sel.add(c.dataset.id) : sel.delete(c.dataset.id); upd(); }));
+  const setAll = (on) => { $$('input[data-id]:not([disabled])', el).forEach((c) => { c.checked = on; on ? sel.add(c.dataset.id) : sel.delete(c.dataset.id); }); upd(); };
+  $('#selAll', el)?.addEventListener('click', () => setAll(true));
+  $('#selNone', el)?.addEventListener('click', () => setAll(false));
   $('#undo', el)?.addEventListener('click', async () => {
     if (!(await confirmDialog({ title: '前回の修正を元に戻す', body: `<p>${last.words.length}項目を修正前の状態に戻します。</p>`, okLabel: '元に戻す' }))) return;
     await db.tx(['words', 'mastery', 'reviews'], 'readwrite', (t) => {

@@ -16,7 +16,7 @@ import { gamesScreen, gameRun } from './games.js';
 import { dataCheckScreen, scanWords } from './datacheck.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.0.1';
+export const APP_VERSION = '1.1.1';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },

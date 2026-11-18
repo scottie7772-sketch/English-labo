@@ -816,3 +816,27 @@ label.prow input, .dcrow input { width: 22px; height: 22px; flex: 0 0 auto; marg
 .dcrow { display: flex; gap: 10px; align-items: flex-start; padding: 12px 4px; border-bottom: 1px solid var(--line); }
 .dcrow:last-child { border-bottom: 0; }
 .dcrow .block { display: block; margin-top: 2px; }
+
+/* v1.1 video player */
+.vp-root { --fsEn: 19px; --fsJa: 15px; --opEn: 1; --opJa: 1; }
+.vp-root .subbox { display: flex; flex-direction: column; gap: 4px; }
+.vp-root.jatop .subbox, .vp-root.jatop .ctext { flex-direction: column-reverse; }
+.vp-root .ctext { display: flex; flex-direction: column; gap: 2px; }
+.vp-root .sen { font-size: var(--fsEn); opacity: var(--opEn); line-height: 1.45; }
+.vp-root .sja { font-size: var(--fsJa); opacity: var(--opJa); line-height: 1.45; color: var(--muted); margin: 0; }
+.vp-root .cue .sen { font-size: calc(var(--fsEn) * .82); font-weight: 600; }
+.vp-root .cue .sja { font-size: calc(var(--fsJa) * .9); }
+.vctl { grid-template-columns: repeat(5, 1fr); }
+.vctl .btn { min-height: 48px; font-size: 18px; }
+.vquick { display: grid; grid-template-columns: 1.3fr 1fr 1fr 1.3fr; gap: 6px; margin-top: 8px; }
+.vquick .tgl { min-height: 40px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 4px; }
+.vset h3.sub { font-size: var(--fs-s); margin: 14px 0 4px; color: var(--muted); }
+.vset .seg button { min-width: 0; padding: 0 6px; }
+.hole { font: inherit; display: inline-block; min-width: 3.2em; padding: 0 6px; margin: 0 1px; border: 0; border-bottom: 2px solid var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-weight: 800; letter-spacing: .05em; }
+.hole.shown { letter-spacing: 0; color: var(--text); background: color-mix(in srgb, var(--mid) 20%, transparent); border-color: var(--mid); }
+.hole.wasng { border-bottom-color: var(--ng); }
+.ctok { border-radius: 4px; padding: 0 2px; border-bottom: 1px dashed var(--muted); cursor: pointer; }
+.ctok.on { background: var(--accent); color: var(--accent-text); border-bottom-color: transparent; }
+.hgrade { display: flex; align-items: center; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 6px; font-weight: 700; }
+.hgrade .btn.ok { color: var(--ok); border-color: var(--ok); } .hgrade .btn.ng { color: var(--ng); border-color: var(--ng); }
+.selbar { position: sticky; top: 0; z-index: 4; background: var(--bg); padding: 6px 0; gap: 8px; }

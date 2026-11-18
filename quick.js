@@ -74,9 +74,10 @@ export async function quickSetup(el) {
         ${chips('ctime', CARD_TIMES, cfg.cardTime, (v) => (v === 0 ? 'なし' : v === 'custom' ? '任意' : v + '秒'))}
         ${cfg.cardTime === 'custom' ? `<label class="field"><span>秒</span><input type="number" id="cct" min="2" inputmode="numeric" value="${cfg.customCardTime}"></label>` : ''}
       </div>
-      <div class="card center target"><b>${n}</b> 枚　<span class="muted small">（対象 ${sel.list.length}語）</span></div>
+
       <p class="hint center">${swipe === 'right' ? '→ わかる　↑ 曖昧　← わからない' : '← わかる　↑ 曖昧　→ わからない'}（<a class="link" href="#settings">左右は設定で入れ替え</a>）</p>
-      <button class="btn primary" id="start" ${n ? '' : 'disabled'}>スタート</button>`;
+      <div class="cta-bar"><div class="cta-count"><b>${n}</b><span>枚</span><small>対象 ${sel.list.length}語</small></div>
+        <button class="btn primary cta" id="start" ${n ? '' : 'disabled'}>スタート</button></div>`;
     bind();
   }
   function bind() {
@@ -132,18 +133,18 @@ export async function quickRun(el, params) {
 
   el.innerHTML = `
     <div class="qrun">
-    <header class="top qtop"><button class="link" id="quit">終了</button>
-      <span class="grow center"><b id="clock" class="clock"></b></span>
-      <button class="link" id="pause">一時停止</button></header>
+    <header class="qhead"><button class="xbtn" id="quit" aria-label="終了">✕</button>
+      <b id="clock" class="clock"></b>
+      <button class="xbtn" id="pause" aria-label="一時停止">❚❚</button></header>
     <div class="progress"><i id="prog"></i></div>
     <div class="row between small muted" style="margin:6px 2px"><span id="pos"></span><span id="tally"></span></div>
     <div class="cardbar"><i id="cbar"></i></div>
     <div class="qstage" id="stage"></div>
     <p class="hint center">タップで答え　${knowRight ? '← わからない　↑ 曖昧　わかる →' : '← わかる　↑ 曖昧　わからない →'}</p>
     <div class="qbtns3">
-      <button class="btn qb ${knowRight ? 'dont' : 'know'}" data-r="${knowRight ? 'dont' : 'know'}">${knowRight ? '✕ わからない' : '○ わかる'}</button>
-      <button class="btn qb vague" data-r="vague">△ 曖昧</button>
-      <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}">${knowRight ? '○ わかる' : '✕ わからない'}</button>
+      <button class="btn qb ${knowRight ? 'dont' : 'know'}" data-r="${knowRight ? 'dont' : 'know'}">${knowRight ? '<b>✕</b>わからない' : '<b>○</b>わかる'}</button>
+      <button class="btn qb vague" data-r="vague"><b>△</b>曖昧</button>
+      <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}">${knowRight ? '<b>○</b>わかる' : '<b>✕</b>わからない'}</button>
       <button class="btn qb" id="undo" aria-label="取り消し">↩︎</button>
     </div>
     <div class="pauseov" id="pov" hidden><div class="card center stack"><b>一時停止中</b><button class="btn primary" id="resume">再開</button><button class="btn" id="quit2">終了して結果へ</button></div></div>
@@ -244,7 +245,7 @@ export async function quickRun(el, params) {
     if (ended) return;
     running = !p; last = performance.now();
     $('#pov', el).hidden = !p;
-    $('#pause', el).textContent = p ? '再開' : '一時停止';
+    $('#pause', el).textContent = p ? '▶︎' : '❚❚';
     if (p) { s.updatedAt = Date.now(); db.put('sessions', s); }
   }
 

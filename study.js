@@ -97,7 +97,7 @@ export async function studySetup(el) {
         <p class="hint" style="margin-top:8px">${DIRS[cfg.direction].desc}</p></div>
 
       <h2 class="sec">出題形式</h2>
-      <div class="card"><div class="seg" data-k="format">${fmts.map((f) => `<button data-v="${f}" class="${cfg.format === f ? 'on' : ''}">${FORMATS[f]}</button>`).join('')}</div>
+      <div class="card"><div class="seg" data-k="format">${fmts.map((f) => `<button data-v="${f}" class="${cfg.format === f ? 'on' : ''}">${{ typing: 'タイピング', flash: 'カード', choice: '4択' }[f]}</button>`).join('')}</div>
         ${cfg.format === 'typing' ? `<label class="chk" style="margin-top:10px"><input type="checkbox" id="case" ${cfg.caseSensitive ? 'checked' : ''}> 大文字・小文字を区別する</label>` : ''}</div>
 
       <h2 class="sec">習得度（複数可）<span class="muted small">基準：${sel.skills.map((s) => SKILL_LABELS[s]).join('・')}</span></h2>
@@ -122,9 +122,9 @@ export async function studySetup(el) {
         <p class="hint">復習期限順は Phase 4（復習スケジュール）で使えるようになります。</p>
       </div>
 
-      <div class="card center target"><b>${n}</b> 問　<span class="muted small">（対象 ${sel.list.length}語 / 全${sel.total}語${sel.noMeaning ? `・意味未入力${sel.noMeaning}語は除外` : ''}）</span></div>
-      <button class="btn primary" id="start" ${n ? '' : 'disabled'}>学習開始</button>
-      <div class="row" style="margin-top:10px"><button class="btn grow" id="saveDef">この設定をデフォルトに保存</button><button class="btn grow" id="resetDef">初期設定に戻す</button></div>`;
+      <div class="row" style="margin-top:16px"><button class="btn grow" id="saveDef">この設定をデフォルトに保存</button><button class="btn grow" id="resetDef">初期設定に戻す</button></div>
+      <div class="cta-bar"><div class="cta-count"><b>${n}</b><span>問</span><small>対象 ${sel.list.length}語 / 全${sel.total}語${sel.noMeaning ? `・意味未入力${sel.noMeaning}語は除外` : ''}</small></div>
+        <button class="btn primary cta" id="start" ${n ? '' : 'disabled'}>スタート</button></div>`;
     bind();
   }
 
@@ -273,15 +273,15 @@ export async function sessionScreen(el, params) {
     if (!$('#fstage', el)) {
       el.innerHTML = `
         <div class="qrun">
-        <header class="top qtop"><button class="link" id="quit">中断</button><span class="grow center small muted">${DIRS[q.direction].label}・${FORMATS.flash}</span><span class="small muted" id="left"></span></header>
+        <header class="qhead"><button class="xbtn" id="quit" aria-label="中断">✕</button><span class="qlabel">${DIRS[q.direction].label}・${FORMATS.flash}</span><span class="qleft" id="left"></span></header>
         <div class="progress"><i id="prog"></i></div>
         <p class="small muted center" id="pos"></p>
         <div class="qstage" id="fstage"></div>
         <p class="hint center">タップで答え　${knowRight ? '← わからない　↑ 曖昧　わかる →' : '← わかる　↑ 曖昧　わからない →'}</p>
         <div class="qbtns3">
-          <button class="btn qb ${knowRight ? 'dont' : 'know'}" data-r="${knowRight ? 'dont' : 'know'}">${knowRight ? '✕ わからない' : '○ わかる'}</button>
-          <button class="btn qb vague" data-r="vague">△ 曖昧</button>
-          <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}">${knowRight ? '○ わかる' : '✕ わからない'}</button>
+          <button class="btn qb ${knowRight ? 'dont' : 'know'}" data-r="${knowRight ? 'dont' : 'know'}">${knowRight ? '<b>✕</b>わからない' : '<b>○</b>わかる'}</button>
+          <button class="btn qb vague" data-r="vague"><b>△</b>曖昧</button>
+          <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}">${knowRight ? '<b>○</b>わかる' : '<b>✕</b>わからない'}</button>
           <button class="btn qb" id="undo">↩︎</button>
         </div>
         ${isAudio ? '<button class="btn" id="say" style="margin-top:8px">🔊 もう一度聞く</button>' : ''}
@@ -375,7 +375,7 @@ export async function sessionScreen(el, params) {
         : `<button class="play" id="say">🔊</button><div class="q-sub">タップでもう一度</div>`;
 
     el.innerHTML = `
-      <header class="top qtop"><button class="link" id="quit">中断</button><span class="grow center small muted">${DIRS[q.direction].label}・${FORMATS[q.format]}</span><span class="small muted">残り ${left}</span></header>
+      <header class="qhead"><button class="xbtn" id="quit" aria-label="中断">✕</button><span class="qlabel">${DIRS[q.direction].label}・${FORMATS[q.format]}</span><span class="qleft">残り ${left}</span></header>
       <div class="progress"><i style="width:${(answeredN / s.queue.length) * 100}%"></i></div>
       <p class="small muted center">${answeredN + 1} / ${s.queue.length}</p>
       <div class="card qcard">${promptHTML}</div>
@@ -410,14 +410,14 @@ export async function sessionScreen(el, params) {
       const opts = [w];
       for (const x of pool) { if (opts.length >= 4) break; const l = label(x); if (!seen.has(l)) { seen.add(l); opts.push(x); } }
       shuffle(opts);
-      ans.innerHTML = `<div class="choices">${opts.map((x) => `<button class="choice ${toEn ? 'en' : ''}" data-id="${x.id}">${esc(label(x))}</button>`).join('')}</div>`;
+      ans.innerHTML = `<div class="choices">${opts.map((x, i) => `<button class="choice ${toEn ? 'en' : ''}" data-id="${x.id}"><span class="cn">${i + 1}</span><span class="ctx">${esc(label(x))}</span></button>`).join('')}</div>`;
       ans.addEventListener('click', (e) => {
         const b = e.target.closest('.choice'); if (!b || revealed) return;
         revealed = true;
         const ok = b.dataset.id === w.id;
         $$('.choice', ans).forEach((c) => { c.disabled = true; if (c.dataset.id === w.id) c.classList.add('right'); });
         if (!ok) b.classList.add('wrongc');
-        commit({ correct: ok, near: false, hint: false, answer: b.textContent, results: q.skills.map((sk) => ({ skill: sk, correct: ok, hint: false })) });
+        commit({ correct: ok, near: false, hint: false, answer: b.querySelector('.ctx').textContent, results: q.skills.map((sk) => ({ skill: sk, correct: ok, hint: false })) });
       });
     } else { // flash
       ans.innerHTML = `<button class="btn primary" id="reveal">答えを見る</button>`;

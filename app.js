@@ -7,7 +7,7 @@ import { studySetup, sessionScreen, resultScreen } from './study.js';
 import { quickSetup, quickRun, quickResult, getSwipe } from './quick.js';
 import { videoList, videoPlay } from './video.js';
 
-export const APP_VERSION = '0.5.0';
+export const APP_VERSION = '0.6.0';
 
 const MODULES = [
   { id: 'vocab', icon: '📚', name: 'Vocabulary', ja: '単語・熟語', phase: 1 },
@@ -213,6 +213,7 @@ async function render() {
   const main = $('#main');
   try { await screens[route](main, currentParams()); }
   catch (e) { main.innerHTML = `<div class="card warn">エラー: ${esc(e.message)}</div>`; console.error(e); }
+  document.body.classList.toggle('focus', ['session', 'quick-run'].includes(route));
   const tab = TAB_OF[route] || route;
   document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.route === tab));
 }

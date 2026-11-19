@@ -67,13 +67,14 @@ export async function zipRead(blob) {
   if (eocd < 0) throw new Error('ZIPファイルとして読めません');
   const count = tail.getUint16(eocd + 10, true), cdSize = tail.getUint32(eocd + 12, true), cdOff = tail.getUint32(eocd + 16, true);
   const cd = new DataView(await blob.slice(cdOff, cdOff + cdSize).arrayBuffer());
-  const dec = new TextDecoder();
+  const utf8 = new TextDecoder('utf-8', { fatal: true }); let sjis = null;
+  const decName = (bytes, flag) => { if (flag & 0x800) return new TextDecoder().decode(bytes); try { return utf8.decode(bytes); } catch { try { sjis ||= new TextDecoder('shift_jis'); return sjis.decode(bytes); } catch { return new TextDecoder().decode(bytes); } } };
   const entries = {};
   for (let p = 0, n = 0; n < count; n++) {
     if (cd.getUint32(p, true) !== 0x02014b50) throw new Error('ZIPの目次が壊れています');
-    const method = cd.getUint16(p + 10, true), csize = cd.getUint32(p + 20, true), size = cd.getUint32(p + 24, true);
+    const flag = cd.getUint16(p + 8, true), method = cd.getUint16(p + 10, true), csize = cd.getUint32(p + 20, true), size = cd.getUint32(p + 24, true);
     const nlen = cd.getUint16(p + 28, true), xlen = cd.getUint16(p + 30, true), clen = cd.getUint16(p + 32, true), lho = cd.getUint32(p + 42, true);
-    const name = dec.decode(new Uint8Array(cd.buffer, p + 46, nlen));
+    const name = decName(new Uint8Array(cd.buffer, p + 46, nlen), flag);
     entries[name] = { method, csize, size, lho };
     p += 46 + nlen + xlen + clen;
   }

@@ -5,8 +5,9 @@ import { sdb, newId, commit, undo, redo, saveVersion, restoreVersion, liveBlocks
 import { parseScript, SUB_EXT, isJa, langFromName, autoPair, alignJa } from './studio-subs.js';
 import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
+import { transcribe } from './asr.js';
 
-export const STUDIO_VERSION = '0.1.0';
+export const STUDIO_VERSION = '0.2.0';
 const LIMIT_SEC = 15 * 60;   // one import: up to 15 minutes in total (user decision)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -32,7 +33,7 @@ let cleanup = null;
 async function route() {
   cleanup?.(); cleanup = null;
   const { path, params } = parseHash();
-  const screens = { sets: setsScreen, import: importScreen, set: editorScreen, versions: versionsScreen, lab: labScreen, io: ioScreen };
+  const screens = { sets: setsScreen, import: importScreen, set: editorScreen, versions: versionsScreen, lab: labScreen, io: ioScreen, words: wordsScreen };
   try { await (screens[path] || setsScreen)(ROOT, params); }
   catch (e) { console.error(e); ROOT.innerHTML = `<div class="card warn">エラー：${esc(e.message)}</div><a class="btn" href="#${BASE}sets">一覧に戻る</a>`; }
   scrollTo(0, 0);
@@ -79,12 +80,14 @@ async function setsScreen(el) {
 // ================= bulk import =================
 async function importScreen(el) {
   const files = { media: [], subs: [] };   // analysed entries
-  let sets = null, storeMode = 'store';
+  let sets = null, storeMode = 'store', groupMode = 'file';
   el.innerHTML = `${head('一括登録', 'sets')}
     <div class="card stack">
       <p class="small">動画・音声と、英語・日本語の字幕（SRT・VTT・TXT・CSV）をまとめて選びます。ファイル名・言語・長さから自動で組み合わせます。<b>1回の取り込みは合計15分まで</b>。</p>
-      <label class="btn" for="fm">🎬 動画・音声を選ぶ（複数可）</label><input type="file" id="fm" accept="video/*,audio/*" multiple hidden>
+      <label class="btn" for="fz">📦 ZIPを選ぶ（フォルダを圧縮したもの）</label><input type="file" id="fz" hidden>
+      <label class="btn" for="fm">🎬 動画・音声を選ぶ（複数可）</label><input type="file" id="fm" multiple hidden>
       <label class="btn" for="fs">📄 字幕・スクリプトを選ぶ（複数可）</label><input type="file" id="fs" multiple hidden>
+      <small class="muted">フォルダごと入れるとき：「ファイル」アプリでフォルダを長押し →「圧縮」→ できたZIPをここで選ぶ</small>
       <div id="flist" class="small"></div>
     </div>
     <div id="pairs"></div>`;
@@ -92,27 +95,47 @@ async function importScreen(el) {
     $('#flist', el).innerHTML = [...files.media.map((m) => `🎬 ${esc(m.name)}（${m.duration ? fmt(m.duration) : '長さ不明'}${m.playable ? '' : '・この端末で再生できません'}・${fmtSize(m.file.size)}）`),
       ...files.subs.map((s) => `📄 ${esc(s.name)}（${s.lang === 'ja' ? '日本語' : '英語'}・${s.parsed.cues.length}行${s.parsed.timed ? '' : '・時間なし'}）`)].join('<br>');
   };
+  async function addMedia(f, name = f.name) {
+    const meta = await readDuration(f);
+    const fp = await fingerprint(f);
+    files.media.push({ key: fp.id, name, file: f, fp, ...meta, kind: f.type.startsWith('audio') || AUDIO_EXT.test(name) ? 'audio' : 'video' });
+  }
+  async function addSub(text, name) {
+    const parsed = parseScript(text, name);
+    if (!parsed.cues.length) return;
+    const lang = langFromName(name.split('/').pop()) || (parsed.cues.slice(0, 30).filter((c) => isJa(c.text)).length > Math.min(5, parsed.cues.length / 2) ? 'ja' : 'en');
+    const lastEnd = parsed.timed ? Math.max(...parsed.cues.map((c) => c.end)) : null;
+    files.subs.push({ key: newId('f'), name, text, parsed, lang, lastEnd });
+  }
   $('#fm', el).onchange = async (e) => {
     const fl = [...e.target.files]; e.target.value = '';
     toast('動画・音声を確認しています…', 1500);
-    for (const f of fl) {
-      const meta = await readDuration(f);
-      const fp = await fingerprint(f);
-      files.media.push({ key: fp.id, name: f.name, file: f, fp, ...meta, kind: f.type.startsWith('audio') || /\.(mp3|m4a|wav|aac)$/i.test(f.name) ? 'audio' : 'video' });
-    }
+    for (const f of fl) { if (MEDIA_EXT.test(f.name) || /^(audio|video)\//.test(f.type)) await addMedia(f); else toast(`${f.name} は動画・音声ではありません`); }
     listFiles(); pair();
   };
   $('#fs', el).onchange = async (e) => {
     const fl = [...e.target.files]; e.target.value = '';
     for (const f of fl) {
       if (!SUB_EXT.test(f.name) && !/text/.test(f.type)) { toast(`${f.name} は字幕として読めません`); continue; }
-      const text = await f.text();
-      const parsed = parseScript(text, f.name);
-      const lang = langFromName(f.name) || (parsed.cues.slice(0, 30).filter((c) => isJa(c.text)).length > 5 ? 'ja' : 'en');
-      const lastEnd = parsed.timed ? Math.max(...parsed.cues.map((c) => c.end)) : null;
-      files.subs.push({ key: newId('f'), name: f.name, text, parsed, lang, lastEnd });
+      await addSub(await f.text(), f.name);
     }
     listFiles(); pair();
+  };
+  $('#fz', el).onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    try {
+      const z = await zipRead(f);
+      const names = z.names.filter((n) => !n.endsWith('/') && !/(^|\/)(__MACOSX|\.)/.test(n)).sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
+      const media = names.filter((n) => MEDIA_EXT.test(n)), subs = names.filter((n) => SUB_EXT.test(n));
+      const skipped = names.length - media.length - subs.length;
+      $('#flist', el).innerHTML = `<span class="muted">ZIPを展開しています… 0 / ${media.length + subs.length}</span>`;
+      let i = 0;
+      for (const n of media) { const b = await z.file(n); await addMedia(new File([b], n.split('/').pop(), { type: mimeOf(n) }), n); $('#flist', el).innerHTML = `<span class="muted">ZIPを展開しています… ${++i} / ${media.length + subs.length}</span>`; }
+      for (const n of subs) { await addSub(await z.text(n), n); i++; }
+      const folders = new Set(media.map(dirOf)); if (folders.size > 1 || media.length > 3) groupMode = 'folder';
+      toast(`動画・音声 ${media.length}件・字幕 ${subs.length}件を読み込みました${skipped ? `（対象外 ${skipped}件）` : ''}`, 3000);
+      listFiles(); pair();
+    } catch (err) { toast('ZIPを読めませんでした：' + err.message, 4000); }
   };
   function pair() {
     sets = autoPair(files.media, files.subs).map((s) => ({ ...s, include: true }));
@@ -125,7 +148,11 @@ async function importScreen(el) {
     const opt = (arr, cur, label) => `<option value="">（なし）</option>${arr.map((x) => `<option value="${x.key}" ${cur === x ? 'selected' : ''}>${esc(label(x))}</option>`).join('')}`;
     const needBytes = storeMode === 'store' ? sets.filter((s) => s.include && s.media).reduce((a, s) => a + s.media.file.size, 0) : 0;
     $('#pairs', el).innerHTML = `
-      <h2 class="sec">組み合わせ（${sets.length}セット）</h2>
+      <div class="card stack"><span class="small">まとめ方</span>
+        <div class="seg" id="gm"><button data-v="file" class="${groupMode === 'file' ? 'on' : ''}">ファイルごとに1セット</button><button data-v="folder" class="${groupMode === 'folder' ? 'on' : ''}">フォルダごとに1セット</button></div>
+        ${groupMode === 'folder' ? `<small class="muted">${groupsOf(sets.filter((s) => s.include)).map((g) => `📁 ${esc(g.title)}（${g.items.length}件）`).join('<br>')}</small>` : ''}</div>
+      <h2 class="sec">組み合わせ（${sets.length}件）</h2>
+      <div class="row"><button class="btn sm" id="incAll">すべて入れる</button><button class="btn sm" id="incNone">すべて外す</button></div>
       <div class="st-meter ${over ? 'over' : ''}"><i style="width:${Math.min(100, (total / LIMIT_SEC) * 100)}%"></i><span>${fmtMin(total)} / 15分</span></div>
       ${over ? '<p class="warn-text small">合計が15分を超えています。いくつかのセットのチェックを外してください。</p>' : ''}
       ${sets.map((s, i) => `<div class="card stack st-pair ${s.confidence}">
@@ -152,7 +179,10 @@ async function importScreen(el) {
       draw();
     }));
     $$('input[name=sm]', el).forEach((r) => (r.onchange = () => { storeMode = r.value; draw(); }));
-    $('#go', el).onclick = () => runImport(sets.filter((s) => s.include), storeMode);
+    $('#gm', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { groupMode = v; draw(); } };
+    $('#incAll', el).onclick = () => { sets.forEach((s) => (s.include = true)); draw(); };
+    $('#incNone', el).onclick = () => { sets.forEach((s) => (s.include = false)); draw(); };
+    $('#go', el).onclick = () => { const inc = sets.filter((s) => s.include); runImport(groupMode === 'folder' ? groupsOf(inc) : inc.map((s) => ({ title: s.title, items: [s] })), storeMode); };
   }
   async function runImport(list, mode) {
     const prog = $('#prog', el);
@@ -163,7 +193,7 @@ async function importScreen(el) {
     for (let i = 0; i < list.length; i++) {
       const s = list[i];
       prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}</p>`;
-      try { results.push({ s, id: await createSet(s, mode) }); }
+      try { results.push({ s, id: await createSet(s, mode, (k, n) => (prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}（${k} / ${n}）</p>`)) }); }
       catch (e) { results.push({ s, err: e.message }); }
     }
     lock?.release?.();
@@ -173,43 +203,65 @@ async function importScreen(el) {
   }
 }
 
-async function createSet(s, mode) {
+const MEDIA_EXT = /\.(mp4|m4v|mov|mp3|m4a|wav|aac|caf|aif|aiff)$/i, AUDIO_EXT = /\.(mp3|m4a|wav|aac|caf|aif|aiff)$/i;
+const MIME = { mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', aac: 'audio/aac', caf: 'audio/x-caf', aif: 'audio/aiff', aiff: 'audio/aiff' };
+const mimeOf = (n) => MIME[(n.match(/\.(\w+)$/) || [])[1]?.toLowerCase()] || '';
+const dirOf = (n) => (n.includes('/') ? n.slice(0, n.lastIndexOf('/')) : '');
+// folder mode: one set per folder of the media file (keeps file order)
+function groupsOf(list) {
+  const m = new Map();
+  for (const s of list) { const d = dirOf(s.media?.name || s.en?.name || s.ja?.name || '') || 'まとめ'; if (!m.has(d)) m.set(d, []); m.get(d).push(s); }
+  return [...m].map(([d, items]) => ({ title: d.split('/').filter(Boolean).join(' / '), items }));
+}
+async function putSource(media, mode) {
+  const exist = await sdb.get('sources', media.fp.id);
+  const src = exist || { id: media.fp.id, kind: media.kind, name: media.name.split('/').pop(), size: media.file.size, mime: media.file.type, duration: media.duration, playable: media.playable, head: media.fp.head, tail: media.fp.tail, addedAt: Date.now(), stored: false };
+  if (mode === 'store' && !src.stored) { src.stored = true; src.blob = media.file; }
+  else if (!src.stored) sessionFiles.set(src.id, media.file);
+  await sdb.put('sources', src);   // a big file is written from disk; may take a while
+  return src;
+}
+// group = { title, items: [{ media, en, ja, title }] } → one set; items keep their order
+async function createSet(group, mode, onStep = () => {}) {
   const setId = newId('set_');
-  let src = null;
-  if (s.media) {
-    const exist = await sdb.get('sources', s.media.fp.id);
-    src = exist || { id: s.media.fp.id, kind: s.media.kind, name: s.media.name, size: s.media.file.size, mime: s.media.file.type, duration: s.media.duration, playable: s.media.playable, head: s.media.fp.head, tail: s.media.fp.tail, addedAt: Date.now(), stored: false };
-    if (mode === 'store' && !src.stored) { src.stored = true; src.blob = s.media.file; }
-    else if (!src.stored) sessionFiles.set(src.id, s.media.file);
-    await sdb.put('sources', src);   // a big file is written from disk; may take a while
-  }
-  const dur = src?.duration || 0;
-  const mkTrack = (sub, lang) => sub && { id: newId('tr_'), setId, lang, fileName: sub.name, format: sub.parsed.format, raw: sub.text, offset: 0, cues: sub.parsed.cues };
-  const en = mkTrack(s.en, 'en'), ja = mkTrack(s.ja, 'ja');
-  const blocks = [];
-  const seg = (a, b) => (src && a != null ? [{ sourceId: src.id, start: Math.max(0, a), end: Math.min(dur || b, Math.max(b, a + 0.2)) }] : []);
-  if (en) {
-    let enCues = en.cues;
-    if (!s.en.parsed.timed) {   // no times: spread evenly over the media (marked as estimated)
-      const step = dur && enCues.length ? dur / enCues.length : 2;
-      enCues = enCues.map((c, i) => ({ ...c, start: i * step, end: (i + 1) * step, est: true }));
+  const blocks = [], tracks = [];
+  let firstSrc = null, n = 0;
+  for (const s of group.items) {
+    onStep(++n, group.items.length);
+    const src = s.media ? await putSource(s.media, mode) : null;
+    firstSrc ||= src;
+    const dur = src?.duration || 0;
+    const mkTrack = (sub, lang) => sub && { id: newId('tr_'), setId, lang, fileName: sub.name.split('/').pop(), format: sub.parsed.format, raw: sub.text, offset: 0, cues: sub.parsed.cues };
+    const en = mkTrack(s.en, 'en'), ja = mkTrack(s.ja, 'ja');
+    if (en) tracks.push(en); if (ja) tracks.push(ja);
+    const seg = (a, b) => (src && a != null ? [{ sourceId: src.id, start: Math.max(0, a), end: Math.min(dur || b, Math.max(b, a + 0.2)) }] : []);
+    const part = [];
+    if (en) {
+      let enCues = en.cues;
+      if (!s.en.parsed.timed) {   // no times: spread evenly over the media (marked as estimated)
+        const step = dur && enCues.length ? dur / enCues.length : 2;
+        enCues = enCues.map((c, i) => ({ ...c, start: i * step, end: (i + 1) * step, est: true }));
+      }
+      const { map, extra } = ja && s.ja.parsed.timed && !enCues[0]?.est ? alignJa(enCues, ja.cues) : { map: new Map(), extra: [] };
+      enCues.forEach((c, i) => {
+        const jas = map.get(c.id) || [];
+        const jaText = jas.length ? jas.map((j) => j.text).join('') : c.ja || (ja && !s.ja.parsed.timed ? ja.cues[i]?.text || '' : '');
+        const segs = seg(c.start, c.end);
+        part.push(newBlock(setId, { segments: segs, text: c.text, ja: jaText, cueRefs: { en: [c.id], ja: jas.map((j) => j.id) }, sync: c.est ? 'estimated' : 'auto',
+          align: segs.length && tokensOf(c.text).length ? [{ s: 0, e: tokensOf(c.text).length - 1, v0: 0, v1: segs[0].end - segs[0].start }] : [] }));
+      });
+      for (const j of extra) part.push(newBlock(setId, { segments: seg(j.start, j.end), text: '', ja: j.text, jaStatus: 'needsReview', cueRefs: { en: [], ja: [j.id] } }));
+      part.sort((a, b) => (a.segments[0]?.start ?? 0) - (b.segments[0]?.start ?? 0));
+    } else if (ja) {
+      ja.cues.forEach((j) => part.push(newBlock(setId, { segments: s.ja.parsed.timed ? seg(j.start, j.end) : [], text: '', ja: j.text, cueRefs: { en: [], ja: [j.id] }, sync: s.ja.parsed.timed ? 'auto' : 'estimated' })));
+    } else if (src) {   // audio/video without a script: one item for the whole file (text can be added later)
+      part.push(newBlock(setId, { segments: seg(0, dur || 1), label: src.name.replace(/\.[^.]+$/, ''), sync: dur ? 'auto' : 'estimated' }));
     }
-    const { map, extra } = ja && s.ja.parsed.timed && !enCues[0]?.est ? alignJa(enCues, ja.cues) : { map: new Map(), extra: [] };
-    enCues.forEach((c, i) => {
-      const jas = map.get(c.id) || [];
-      const jaText = jas.length ? jas.map((j) => j.text).join('') : c.ja || (ja && !s.ja.parsed.timed ? ja.cues[i]?.text || '' : '');
-      const segs = seg(c.start, c.end);
-      blocks.push(newBlock(setId, { segments: segs, text: c.text, ja: jaText, cueRefs: { en: [c.id], ja: jas.map((j) => j.id) }, sync: c.est ? 'estimated' : 'auto',
-        align: segs.length && tokensOf(c.text).length ? [{ s: 0, e: tokensOf(c.text).length - 1, v0: 0, v1: segs[0].end - segs[0].start }] : [] }));
-    });
-    for (const j of extra) blocks.push(newBlock(setId, { segments: seg(j.start, j.end), text: '', ja: j.text, jaStatus: 'needsReview', cueRefs: { en: [], ja: [j.id] } }));
-    blocks.sort((a, b) => (a.segments[0]?.start ?? 0) - (b.segments[0]?.start ?? 0));
-  } else if (ja) {
-    ja.cues.forEach((j) => blocks.push(newBlock(setId, { segments: s.ja.parsed.timed ? seg(j.start, j.end) : [], text: '', ja: j.text, cueRefs: { en: [], ja: [j.id] }, sync: s.ja.parsed.timed ? 'auto' : 'estimated' })));
+    blocks.push(...part);
   }
-  const set = { id: setId, title: s.title || src?.name || '無題', sourceId: src?.id || null, tracks: { en: en?.id || null, ja: ja?.id || null }, order: [], undo: [], redo: [],
-    display: { en: true, ja: true, opEn: 1, opJa: 0.8, pos: 'below', order: 'en' }, createdAt: Date.now(), updatedAt: Date.now() };
-  await sdb.tx(['sets', 'tracks'], 'readwrite', (t) => { t.objectStore('sets').put(set); if (en) t.objectStore('tracks').put(en); if (ja) t.objectStore('tracks').put(ja); });
+  const set = { id: setId, title: group.title || firstSrc?.name || '無題', sourceId: firstSrc?.id || null, order: [], undo: [], redo: [],
+    display: { show: 'both', opEn: 1, opJa: 0.8, pos: 'below', order: 'en' }, createdAt: Date.now(), updatedAt: Date.now() };
+  await sdb.tx(['sets', 'tracks'], 'readwrite', (t) => { t.objectStore('sets').put(set); tracks.forEach((x) => t.objectStore('tracks').put(x)); });
   await commit(set, '取り込み', { blocks, order: blocks.map((b) => b.id) });
   set.undo = []; await sdb.put('sets', set);   // the import itself is not undoable (delete the set instead)
   await saveVersion(set, '取り込み直後', true);
@@ -254,7 +306,7 @@ async function editorScreen(el, params) {
   function drawRelink() {
     const need = [...new Set(blocks.flatMap((b) => b.segments.map((x) => x.sourceId)))].map((id) => srcs[id]).filter((s) => s && !s.stored && !sessionFiles.has(s.id));
     $('#relink', el).innerHTML = need.map((s) => `<div class="notice warn stack"><b>動画・音声ファイルが必要です</b><span class="small">${esc(s.name)}（${fmtSize(s.size)}・${fmt(s.duration)}）は端末に保存していません。同じファイルを選ぶと再生・分割ができます。文字の編集はこのままでもできます。</span>
-      <label class="btn sm" for="rl_${s.id}">ファイルを選ぶ</label><input type="file" id="rl_${s.id}" data-src="${s.id}" accept="video/*,audio/*" hidden></div>`).join('');
+      <label class="btn sm" for="rl_${s.id}">ファイルを選ぶ</label><input type="file" id="rl_${s.id}" data-src="${s.id}" hidden></div>`).join('');
     $$('#relink input[type=file]', el).forEach((inp) => (inp.onchange = async () => {
       const f = inp.files[0]; if (!f) return; const s = srcs[inp.dataset.src];
       const fp = await fingerprint(f);
@@ -327,11 +379,11 @@ async function editorScreen(el, params) {
     const shown = onlySel ? blocks.filter((b) => sel.has(b.id)) : blocks;
     list.innerHTML = shown.map((b) => {
       const badges = [b.segments.length > 1 ? `<span class="tagp">${b.segments.length}区間</span>` : '', new Set(b.segments.map((s) => s.sourceId)).size > 1 ? '<span class="tagp">複数ファイル</span>' : '',
-        b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声なし</span>' : ''].join('');
+        b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', b.asr ? '<span class="tagp">自動起こし</span>' : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声なし</span>' : ''].join('');
       return `<div class="st-row ${sel.has(b.id) ? 'sel' : ''}" data-id="${b.id}">
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
         <span class="grow st-txt" data-play="${b.id}"><small class="muted">${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)} ${badges}</small>
-          <span class="st-en2">${holeHTML(b) || '<span class="muted">（英文なし）</span>'}</span><span class="st-ja2">${esc(b.ja || '')}</span></span>
+          ${b.label ? `<b class="small">${esc(b.label)}</b>` : ''}<span class="st-en2">${holeHTML(b) || `<span class="muted">（英文なし${b.label ? '・✎で追加' : ''}）</span>`}</span><span class="st-ja2">${esc(b.ja || '')}</span></span>
         ${selectMode ? '' : `<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
     }).join('') || '<p class="empty">項目がありません</p>';
     $('#undoB', el).disabled = !(set.undo || []).length; $('#redoB', el).disabled = !(set.redo || []).length;
@@ -493,9 +545,51 @@ async function editorScreen(el, params) {
       if (dlg.returnValue !== 'ok') return;
       readText();
       if (JSON.stringify(work) === JSON.stringify(b)) return;
+      if (work.text !== b.text) delete work.asr;
       await run('編集', { blocks: [work] });
     };
     dlg.showModal();
+  }
+
+  // ---------- transcription (Whisper in the browser; audio never leaves the device) ----------
+  async function runAsr() {
+    const pool = sel.size ? ordered() : blocks;
+    const targets = pool.filter((b) => !b.text.trim() && b.segments.length === 1);
+    if (!targets.length) return toast(sel.size ? '選んだ項目に、英文のない音声がありません' : '英文のない音声項目がありません（文字起こしは英文が空の項目だけに行います）', 4000);
+    const bySrc = new Map(); for (const b of targets) { const id = b.segments[0].sourceId; if (!bySrc.has(id)) bySrc.set(id, []); bySrc.get(id).push(b); }
+    const missing = [...bySrc.keys()].filter((id) => !(srcs[id]?.stored ? srcs[id].blob : sessionFiles.get(id)));
+    if (missing.length) return toast('動画・音声ファイルを選び直してから実行してください', 4000);
+    const total = [...bySrc.keys()].reduce((a, id) => a + (srcs[id].duration || 0), 0);
+    if (!(await confirmDialog({ title: '文字起こし（試験的）', body: `<p>${targets.length}項目・音声 ${bySrc.size}ファイル（合計 ${fmtMin(total)}）を、この端末の中で英語の文字に起こします。</p>
+      <p class="hint">・最初の1回だけ音声認識モデル（約80MB）をダウンロードします（無料・Wi-Fi推奨）。音声は外部に送りません。<br>・音声の長さの数倍かかることがあります。画面は開いたままにしてください。<br>・結果は自動の下書きです。聞きながら直してください。1回の操作として記録されるので ↶ で取り消せます。</p>`, okLabel: '始める' }))) return;
+    let cancelled = false;
+    const dlg = $('#dialog');
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>文字起こし中</h3><p class="small" id="asrMsg">準備しています…</p><div class="st-meter"><i id="asrBar" style="width:0%"></i><span id="asrPct">0%</span></div><button class="btn ghost" value="cancel">中止</button></form>`;
+    dlg.returnValue = ''; dlg.onclose = () => { cancelled = true; }; dlg.showModal();
+    const lock = await navigator.wakeLock?.request?.('screen').catch(() => null);
+    const changed = []; let order = set.order.slice(), k = 0, made = 0;
+    try {
+      for (const [sid, list] of bySrc) {
+        const src = srcs[sid];
+        const cues = await transcribe(src.stored ? src.blob : sessionFiles.get(sid), { lang: 'en', isCancelled: () => cancelled,
+          onProgress: (msg, r) => { const pr = (k + r) / bySrc.size; $('#asrMsg', dlg).textContent = `${src.name}：${msg}`; $('#asrBar', dlg).style.width = `${pr * 100}%`; $('#asrPct', dlg).textContent = `${Math.round(pr * 100)}%`; } });
+        if (cancelled) break;
+        k++;
+        for (const b of list) {
+          const sg = b.segments[0];
+          const inside = cues.filter((c) => c.end > sg.start + 0.05 && c.start < sg.end - 0.05);
+          if (!inside.length) continue;
+          const parts = inside.map((c, i) => newBlock(set.id, { segments: [{ sourceId: sid, start: Math.max(sg.start, c.start), end: Math.min(sg.end, c.end) }], text: c.text, ja: '', sync: 'auto', asr: true,
+            ...(i === 0 && b.label ? { label: b.label } : {}), lineage: { op: 'split', from: [`${b.id}@${b.rev}`], at: Date.now() },
+            align: tokensOf(c.text).length ? [{ s: 0, e: tokensOf(c.text).length - 1, v0: 0, v1: Math.min(sg.end, c.end) - Math.max(sg.start, c.start) }] : [] }));
+          changed.push(...parts, { ...b, deleted: true }); order.splice(order.indexOf(b.id), 1, ...parts.map((x) => x.id)); made += parts.length;
+        }
+      }
+    } catch (e) { lock?.release?.(); dlg.close(); return toast('文字起こしできませんでした：' + e.message, 5000); }
+    lock?.release?.(); if (dlg.open) dlg.close();
+    if (cancelled && !changed.length) return toast('中止しました');
+    if (!changed.length) return toast('英語の音声を見つけられませんでした', 3500);
+    await run(`文字起こし（${made}行）`, { blocks: changed, order });
   }
 
   // ---------- header buttons ----------
@@ -511,6 +605,8 @@ async function editorScreen(el, params) {
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(set.title)}</h3>
       <button class="btn" value="ver">版（保存・復元）</button>
       <button class="btn" value="exp">教材パックとして書き出す</button>
+      <button class="btn" value="asr">文字起こし（端末内・試験的）</button>
+      <button class="btn" value="words">単語リストを作る</button>
       <button class="btn" value="ren">名前を変える</button>
       <button class="btn danger" value="del">このセットを削除</button>
       <button class="btn ghost" value="cancel">閉じる</button></form>`;
@@ -519,6 +615,8 @@ async function editorScreen(el, params) {
       const v = dlg.returnValue;
       if (v === 'ver') nav(`versions?id=${set.id}`);
       if (v === 'exp') exportSet(set);
+      if (v === 'asr') runAsr();
+      if (v === 'words') nav(`words?id=${set.id}`);
       if (v === 'ren') { const t = prompt('新しい名前', set.title); if (t) { set.title = t; await sdb.put('sets', set); route(); } }
       if (v === 'del' && (await confirmDialog({ title: 'セットを削除', body: '<p>字幕・編集・版も削除します（元に戻せません）。動画本体は、ほかのセットで使っていなければ削除します。</p>', okLabel: '削除', danger: true }))) { await deleteSet(set); nav('sets'); }
     };
@@ -541,6 +639,57 @@ async function deleteSet(set) {
     vers.forEach((v) => t.objectStore('versions').delete(v.id)); tracks.forEach((x) => t.objectStore('tracks').delete(x.id)); oplog.forEach((o) => t.objectStore('oplog').delete(o.id));
     for (const id of srcIds) if (!usedElsewhere.has(id)) t.objectStore('sources').delete(id);
   });
+}
+
+// ================= word list (for English Labo's word book) =================
+const STOP = new Set('a an the and or but if so to of in on at by for with from as is am are was were be been being do does did have has had i you he she it we they me him her us them my your his its our their this that these those there here what who which when where why how not no yes oh ok okay will would can could shall should may might must just very also too then than um uh well'.split(' '));
+const normWord = (w) => w.toLowerCase().replace(/^[^a-z0-9']+|[^a-z0-9']+$/gi, '').replace(/[’]/g, "'");
+async function wordsScreen(el, params) {
+  const set = await sdb.get('sets', params.get('id'));
+  if (!set) return nav('sets');
+  const blocks = await liveBlocks(set);
+  let showCommon = false, sort = 'order';
+  const all = new Map();
+  blocks.forEach((b, bi) => tokensOf(b.text).forEach((t) => {
+    const w = normWord(t); if (!w || /^\d+$/.test(w) || w.length < 2) return;
+    const base = w.replace(/'s$/, '');
+    if (!all.has(base)) all.set(base, { w: base, n: 0, first: bi, ex: b.text, exJa: b.ja || '', on: false });
+    all.get(base).n++;
+  }));
+  const chosen = new Set();
+  const draw = () => {
+    let list = [...all.values()].filter((x) => showCommon || !STOP.has(x.w));
+    list.sort(sort === 'freq' ? (a, b) => b.n - a.n || a.first - b.first : sort === 'abc' ? (a, b) => a.w.localeCompare(b.w) : (a, b) => a.first - b.first);
+    el.innerHTML = `${head('単語リスト', `set?id=${set.id}`)}
+      <p class="small muted">${esc(set.title)}：${blocks.length}行から ${list.length}語（選択 ${chosen.size}語）</p>
+      <div class="seg sm" id="srt"><button data-v="order" class="${sort === 'order' ? 'on' : ''}">出てきた順</button><button data-v="freq" class="${sort === 'freq' ? 'on' : ''}">多い順</button><button data-v="abc" class="${sort === 'abc' ? 'on' : ''}">ABC順</button></div>
+      <div class="row"><label class="chk"><input type="checkbox" id="cmn" ${showCommon ? 'checked' : ''}> よく使う語（the, is など）も表示</label></div>
+      <div class="row"><button class="btn sm" id="wAll">表示中をすべて選ぶ</button><button class="btn sm" id="wNone">選択を解除</button></div>
+      <div class="card list">${list.map((x) => `<label class="st-wrow"><input type="checkbox" data-w="${esc(x.w)}" ${chosen.has(x.w) ? 'checked' : ''}><span class="grow"><b>${esc(x.w)}</b> <small class="muted">×${x.n}</small><br><small class="muted">${esc(x.ex)}</small></span></label>`).join('') || '<p class="empty">英文がありません。先に文字起こしか字幕の取り込みをしてください。</p>'}</div>
+      <div class="st-bar"><div class="row">
+        <button class="btn sm grow" id="csv" ${chosen.size ? '' : 'disabled'}>CSVで書き出す</button>
+        <button class="btn sm grow" id="cl" ${chosen.size ? '' : 'disabled'}>Claude用にコピー</button></div>
+        <small class="muted">CSVは English Labo の単語帳「CSVから登録」で読み込めます（意味は空欄）。意味もつけたいときは「Claude用にコピー」→ Claudeのチャットに貼る → 返ってきた表を「一括登録」に貼り付け。</small></div>`;
+    $('#srt', el).onclick = (e) => { if (e.target.dataset.v) { sort = e.target.dataset.v; draw(); } };
+    $('#cmn', el).onchange = (e) => { showCommon = e.target.checked; draw(); };
+    $('#wAll', el).onclick = () => { list.forEach((x) => chosen.add(x.w)); draw(); };
+    $('#wNone', el).onclick = () => { chosen.clear(); draw(); };
+    $$('[data-w]', el).forEach((c) => (c.onchange = () => { c.checked ? chosen.add(c.dataset.w) : chosen.delete(c.dataset.w); $('#csv', el).disabled = $('#cl', el).disabled = !chosen.size; el.querySelector('p.small.muted').textContent = `${set.title}：${blocks.length}行から ${list.length}語（選択 ${chosen.size}語）`; }));
+    const picked = () => [...all.values()].filter((x) => chosen.has(x.w)).sort((a, b) => a.first - b.first);
+    const q = (v) => `"${String(v || '').replace(/"/g, '""')}"`;
+    $('#csv', el).onclick = () => {
+      const tag = set.title.replace(/[,\s/]+/g, '_').replace(/_+/g, '_');
+      const csv = '﻿' + ['英語,日本語,例文,例文訳,タグ', ...picked().map((x) => [x.w, '', x.ex, x.exJa, tag].map(q).join(','))].join('\n');
+      const file = new File([csv], `${set.title.replace(/[\\/:*?"<>|]/g, '_')}-words.csv`, { type: 'text/csv' });
+      if (navigator.canShare?.({ files: [file] })) navigator.share({ files: [file] }).catch(() => {});
+      else { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click(); }
+    };
+    $('#cl', el).onclick = async () => {
+      const text = `次の英単語を、英語学習の単語帳用にCSVにしてください。列は「英語,日本語,品詞,例文,例文訳」。日本語は例文の文脈での意味を中心に（複数あれば「;」区切り）、例文は下のものをそのまま使い、例文訳をつけてください。熟語として覚えるべきものは、熟語の形に直して構いません。CSVだけをコードブロックで返してください。\n\n` + picked().map((x) => `${x.w}\t${x.ex}`).join('\n');
+      try { await navigator.clipboard.writeText(text); toast('コピーしました。Claudeのチャットに貼り付けてください', 3000); } catch { toast('コピーできませんでした'); }
+    };
+  };
+  draw();
 }
 
 // ================= versions =================
@@ -580,7 +729,7 @@ async function exportSet(set) {
   const manifest = { format: 'elpack', formatVersion: 2, packId: newId('pk_'), materialId: set.id, materialVersion: (await sdb.byIndex('versions', 'setId', set.id)).length, title: set.title, lang: 'en', source: { app: 'Englabo Studio', appVersion: STUDIO_VERSION }, scope: 'collection', createdAt: new Date().toISOString(),
     contents: { audio: withMedia, text: true, translation: true, timestamps: true, vocab: false } };
   const material = { set: { id: set.id, title: set.title, display: set.display }, units: [{ id: set.id, title: set.title, items: blocks.map((b) => b.id) }],
-    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, holes: b.holes, align: b.align, cueRefs: b.cueRefs, lineage: b.lineage, sync: b.sync, jaStatus: b.jaStatus })),
+    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, holes: b.holes, align: b.align, cueRefs: b.cueRefs, lineage: b.lineage, sync: b.sync, jaStatus: b.jaStatus, label: b.label, asr: b.asr })),
     media: media.map((m) => ({ id: m.id, kind: m.kind, name: m.name, size: m.size, mime: m.mime, duration: m.duration, head: m.head, tail: m.tail, included: withMedia, path: withMedia ? `media/${m.id}${(m.name.match(/\.\w+$/) || [''])[0]}` : null })),
     tracks: tracks.map((t) => ({ id: t.id, lang: t.lang, fileName: t.fileName, format: t.format, path: `subtitles/${t.id}-${t.fileName}` })) };
   const files = [{ name: 'manifest.json', data: JSON.stringify(manifest, null, 1) }, { name: 'material.json', data: JSON.stringify(material, null, 1) }, ...tracks.map((t) => ({ name: `subtitles/${t.id}-${t.fileName}`, data: t.raw }))];
@@ -622,7 +771,7 @@ async function importPack(z, manifest, material, mode) {
     await sdb.put('sources', { id: m.id, kind: m.kind, name: m.name, size: m.size, mime: m.mime, duration: m.duration, head: m.head, tail: m.tail, stored: !!blob, blob: blob || undefined, addedAt: Date.now() });
   }
   const idMap = {};
-  const blocks = material.items.map((it) => { const id = remap ? newId('b_') : it.id; idMap[it.id] = id; return { id, setId, rev: 0, deleted: false, segments: it.segments.map((s) => ({ sourceId: s.media, start: s.start, end: s.end })), text: it.text, ja: it.ja, holes: it.holes || [], align: it.align || [], cueRefs: it.cueRefs || { en: [], ja: [] }, lineage: it.lineage || { op: 'create', from: [] }, sync: it.sync || 'auto', jaStatus: it.jaStatus || 'ok' }; });
+  const blocks = material.items.map((it) => { const id = remap ? newId('b_') : it.id; idMap[it.id] = id; return { id, setId, rev: 0, deleted: false, segments: it.segments.map((s) => ({ sourceId: s.media, start: s.start, end: s.end })), text: it.text, ja: it.ja, holes: it.holes || [], align: it.align || [], cueRefs: it.cueRefs || { en: [], ja: [] }, lineage: it.lineage || { op: 'create', from: [] }, sync: it.sync || 'auto', jaStatus: it.jaStatus || 'ok', ...(it.label ? { label: it.label } : {}), ...(it.asr ? { asr: true } : {}) }; });
   let set = mode === 'update' ? await sdb.get('sets', setId) : null;
   if (!set) {
     set = { id: setId, title: material.set.title + (remap ? '（複製）' : ''), sourceId: material.media[0]?.id || null, tracks: {}, order: [], undo: [], redo: [], display: material.set.display || { show: 'both', opEn: 1, opJa: 0.8, pos: 'below', order: 'en' }, createdAt: Date.now(), updatedAt: Date.now() };
@@ -647,15 +796,15 @@ async function labScreen(el) {
     <p class="hint">iPhone（ホーム画面から開いた状態）で試し、結果をコピーして送ってください。ここで保存するデータは本番とは別の場所に入ります。</p>
     <div class="card stack"><b>容量</b><button class="btn sm" id="q">保存できる容量を調べる</button></div>
     <div class="card stack"><b>P1 大きな動画の保存・再生</b><span class="small">15分程度の動画を選ぶ（「ファイル」と「写真」の両方で試すと理想）</span>
-      <label class="btn sm" for="p1f">動画を選んで保存テスト</label><input type="file" id="p1f" accept="video/*,audio/*" hidden>
+      <label class="btn sm" for="p1f">動画を選んで保存テスト</label><input type="file" id="p1f" hidden>
       <button class="btn sm" id="p1r">保存済みを読み出して再生（アプリを閉じて開き直した後に）</button><button class="btn sm" id="p1d">テスト用データを削除</button></div>
     <div class="card stack"><b>P2 同じファイルの照合</b><span class="small">同じ動画をもう一度選び、P1 の指紋と比べる</span>
-      <label class="btn sm" for="p2f">同じ動画を選ぶ</label><input type="file" id="p2f" accept="video/*,audio/*" hidden></div>
+      <label class="btn sm" for="p2f">同じ動画を選ぶ</label><input type="file" id="p2f" hidden></div>
     <div class="card stack"><b>P3 区間再生の途切れ</b><span class="small">選んだ動画の3か所を続けて再生し、切り替えにかかる時間を測る（2本目を選ぶと別ファイルをまたぐ測定も）</span>
-      <label class="btn sm" for="p3f">動画（1〜2本）を選ぶ</label><input type="file" id="p3f" accept="video/*,audio/*" multiple hidden>
+      <label class="btn sm" for="p3f">動画（1〜2本）を選ぶ</label><input type="file" id="p3f" multiple hidden>
       <video id="p3v" playsinline muted style="width:100%;max-height:160px;background:#000"></video><video id="p3v2" playsinline muted hidden></video></div>
     <div class="card stack"><b>P4 音声の展開（波形・無音検出用）</b><span class="small">5分・10分・15分の動画や音声で試す。落ちた場合は「落ちた」と伝えてください</span>
-      <label class="btn sm" for="p4f">動画・音声を選ぶ</label><input type="file" id="p4f" accept="video/*,audio/*" hidden></div>
+      <label class="btn sm" for="p4f">動画・音声を選ぶ</label><input type="file" id="p4f" hidden></div>
     <div class="card stack"><b>結果</b><pre id="lo" class="st-log"></pre><button class="btn sm" id="cp">結果をコピー</button></div>`;
   const lab = (await import('./common-idb.js')).makeDB('ell-studio-lab', 1, { files: { keyPath: 'id' } });
   out(`端末: ${navigator.userAgent}`); out(`表示: ${matchMedia('(display-mode: standalone)').matches ? 'ホーム画面アプリ' : 'ブラウザ'}`);

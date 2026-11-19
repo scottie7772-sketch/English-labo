@@ -32,6 +32,9 @@ self.onmessage = async (e) => {
 };`;
 
 // video/audio Blob -> Float32Array, 16 kHz mono (what Whisper expects)
+// WebGPU on iPhone Safari can take the whole page down during recognition; CPU (wasm) is the safe default.
+// It can be turned on for testing with localStorage 'asr-webgpu' = '1'.
+function useGPU() { try { return 'gpu' in navigator && localStorage.getItem('asr-webgpu') === '1'; } catch { return false; } }
 export async function decodeTo16k(blob) {
   // decoding with a normal AudioContext is the path verified on iPhone (P4); it is closed right after
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -73,7 +76,7 @@ export async function transcribe(blob, { lang = 'en', onProgress = () => {}, isC
   if (isCancelled()) return [];
   const { audio, duration } = decoded;
   const model = lang === 'en' ? MODELS.en : MODELS.multi;
-  const devices = 'gpu' in navigator ? ['webgpu', 'wasm'] : ['wasm'];
+  const devices = useGPU() ? ['webgpu', 'wasm'] : ['wasm'];
   const worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })), { type: 'module' });
   return new Promise((resolve, reject) => {
     const files = {};
@@ -102,7 +105,7 @@ export async function transcribe(blob, { lang = 'en', onProgress = () => {}, isC
 // Keeps one worker (model loaded once) for several pieces of audio. run(audio16k) -> cues with times relative to the piece.
 export function openTranscriber(lang = 'en', onProgress = () => {}, { fast = true } = {}) {
   const model = lang === 'en' ? (fast ? MODELS.enFast : MODELS.en) : (fast ? MODELS.multiFast : MODELS.multi);
-  const devices = 'gpu' in navigator ? ['webgpu', 'wasm'] : ['wasm'];
+  const devices = useGPU() ? ['webgpu', 'wasm'] : ['wasm'];
   const worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })), { type: 'module' });
   const files = {};
   let pending = null;

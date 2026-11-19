@@ -9,7 +9,7 @@ import { decodeTo16k, openTranscriber, speechPieces, captureTo16k } from './asr.
 import { extractPhrases, extractWords } from './studio-words.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 
-export const STUDIO_VERSION = '0.5.2';
+export const STUDIO_VERSION = '0.5.3';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)

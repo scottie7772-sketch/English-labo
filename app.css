@@ -875,3 +875,7 @@ body[data-lang="zh-CN"] .fc-en, body[data-lang="zh-CN"] .tl, [lang="zh-Hans-CN"]
 /* no zoom on double-tap; inputs at 16px so iOS does not zoom in when focusing */
 html, body { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
 input, select, textarea { font-size: max(16px, 1em); }
+/* long titles: shorten with … so the header buttons always stay on screen */
+.top h1 { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; -webkit-user-select: none; user-select: none; }
+.top > :not(h1) { flex-shrink: 0; }
+.top > .grow { flex: 0 0 0; }

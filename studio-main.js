@@ -7,7 +7,7 @@ import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
 import { decodeTo16k, openTranscriber, speechPieces } from './asr.js';
 
-export const STUDIO_VERSION = '0.3.1';
+export const STUDIO_VERSION = '0.3.3';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -40,7 +40,7 @@ async function route() {
 }
 const head = (title, backPath = null, right = '') => `
   <div class="st-band">制作・教材スタジオ <small>v${STUDIO_VERSION}</small></div>
-  <header class="top">${backPath != null ? `<a class="back" href="#${BASE}${backPath}" aria-label="戻る">${icon('back')}</a>` : ''}<h1>${esc(title)}</h1><span class="grow"></span>${right}</header>`;
+  <header class="top">${backPath != null ? `<a class="back" href="#${BASE}${backPath}" aria-label="戻る">${icon('back')}</a>` : ''}<h1 title="${esc(title)}">${esc(title)}</h1><span class="grow"></span>${right}</header>`;
 
 function mediaURL(src) {
   if (!src) return null;
@@ -75,7 +75,7 @@ async function setsScreen(el) {
     ${editing ? `<div class="row"><button class="btn sm" id="eAll">すべて選ぶ</button><button class="btn sm" id="eNone">解除</button><button class="btn sm danger grow" id="eDel" ${chosen.size ? '' : 'disabled'}>${chosen.size}セットを削除</button></div>` : ''}
     <div class="card list">${sets.map((s) => {
       const src = srcs[s.sourceId];
-      const info = `<span class="grow"><b>${esc(s.title)}</b><small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${src.stored ? (src.derived === 'audio16k' ? '音声だけ保存' : '端末に保存') : '保存しない'}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
+      const info = `<span class="grow"><b>${esc(s.title)}</b><small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${src.stored ? (src.derived === 'audio16k' ? `節約保存（${src.codec === 'aac' ? '圧縮' : '非圧縮'}・${fmtSize(src.blob?.size || 0)}）` : '端末に保存') : '保存しない'}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
       return editing ? `<label class="st-setrow"><input type="checkbox" class="st-cb" data-id="${s.id}" ${chosen.has(s.id) ? 'checked' : ''}>${info}</label>` : `<a class="st-setrow" href="#${BASE}set?id=${s.id}">${info}›</a>`;
     }).join('')}</div>` : '<p class="empty">まだ教材セットがありません。「一括登録」から動画・音声と字幕を選んでください。</p>'}
     <p class="hint">このスタジオは単体で動く試作版です（データはこのアプリの中だけに保存）。後で English Labo の中に組み込み、ここで作った教材は「書き出し」→ English Labo で読み込みで移せます。</p>`;
@@ -226,7 +226,7 @@ async function importScreen(el) {
     for (let i = 0; i < list.length; i++) {
       const s = list[i];
       prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}</p>`;
-      try { results.push({ s, id: await createSet(s, mode, (k, n) => (prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}（${k} / ${n}）</p>`)) }); }
+      try { results.push({ s, id: await createSet(s, mode, (k, n, t = '') => (prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}（${k} / ${n}）${t ? `<br>${esc(t)}` : ''}</p>`)) }); }
       catch (e) { results.push({ s, err: e.message }); }
     }
     lock?.release?.();
@@ -245,6 +245,7 @@ function wav16(f32) {
   return buf;
 }
 // AAC 32 kbps mono 16 kHz in ADTS (~0.24 MB/min) via WebCodecs; null if this device cannot encode it
+const withTimeout = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
 async function aac16(f32) {
   if (typeof AudioEncoder === 'undefined' || typeof AudioData === 'undefined') return null;
   const base = { codec: 'mp4a.40.2', sampleRate: 16000, numberOfChannels: 1, bitrate: 32000 };
@@ -267,9 +268,12 @@ async function aac16(f32) {
   return new Blob(out, { type: 'audio/aac' });
 }
 // smallest playable copy of the sound: AAC if the device can encode and play it, otherwise 16 kHz WAV (video) or null (audio file kept as is)
-async function shrink(blob, name, isVideo) {
+async function shrink(blob, name, isVideo, say = () => {}) {
+  say('音声を取り出しています…');
   const { audio, duration } = await decodeTo16k(blob);
-  const a = await aac16(audio).catch(() => null);
+  say('小さくしています…');
+  const a = localStorage.getItem('st-noaac') ? null : await withTimeout(aac16(audio).catch(() => null), 15000 + duration * 300);
+  if (!a && typeof AudioEncoder !== 'undefined') try { localStorage.setItem('st-noaac', '1'); } catch {}   // do not try again on this device
   if (a) { const f = new File([a], name.replace(/\.[^.]+$/, '') + '.aac', { type: 'audio/aac' }); const m = await readDuration(f); if (m.playable && m.duration && Math.abs(m.duration - duration) < Math.max(2, duration * 0.03)) return { file: f, duration, codec: 'aac' }; }
   if (isVideo) return { file: new File([wav16(audio)], name.replace(/\.[^.]+$/, '') + '.wav', { type: 'audio/wav' }), duration, codec: 'wav' };
   return null;
@@ -284,10 +288,10 @@ function groupsOf(list) {
   for (const s of list) { const d = dirOf(s.media?.name || s.en?.name || s.ja?.name || '') || 'まとめ'; if (!m.has(d)) m.set(d, []); m.get(d).push(s); }
   return [...m].map(([d, items]) => ({ title: d.split('/').filter(Boolean).join(' / '), items }));
 }
-async function putSource(media, mode) {
+async function putSource(media, mode, say = () => {}) {
   const exist = await sdb.get('sources', media.fp.id);
   const src = exist || { id: media.fp.id, kind: media.kind, name: media.name.split('/').pop(), size: media.file.size, mime: media.file.type, duration: media.duration, playable: media.playable, head: media.fp.head, tail: media.fp.tail, addedAt: Date.now(), stored: false };
-  const small = mode === 'store-audio' && !src.stored ? await shrink(media.file, src.name, media.kind !== 'audio').catch(() => null) : null;
+  const small = mode === 'store-audio' && !src.stored ? await shrink(media.file, src.name, media.kind !== 'audio', say).catch(() => null) : null;
   if (small && small.file.size < media.file.size) {   // data saver: sound only, low quality
     Object.assign(src, { stored: true, blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: media.file.size, duration: small.duration || src.duration });
   } else if (mode.startsWith('store') && !src.stored) { src.stored = true; src.blob = media.file; }
@@ -302,7 +306,7 @@ async function createSet(group, mode, onStep = () => {}) {
   let firstSrc = null, n = 0;
   for (const s of group.items) {
     onStep(++n, group.items.length);
-    const src = s.media ? await putSource(s.media, mode) : null;
+    const src = s.media ? await putSource(s.media, mode, (t) => onStep(n, group.items.length, t)) : null;
     firstSrc ||= src;
     const dur = src?.duration || 0;
     const mkTrack = (sub, lang) => sub && { id: newId('tr_'), setId, lang, fileName: sub.name.split('/').pop(), format: sub.parsed.format, raw: sub.text, offset: 0, cues: sub.parsed.cues };
@@ -713,7 +717,7 @@ async function editorScreen(el, params) {
       toast(`変換中 ${++n} / ${ids.length}：${srcs[id].name}`, 4000);
       try {
         const src = await sdb.get('sources', id); const before = src.blob.size;
-        const small = await shrink(src.blob, src.name, src.kind !== 'audio');
+        const small = await shrink(src.blob, src.name, src.kind !== 'audio', (t) => toast(`${n} / ${ids.length}：${t}`, 4000));
         if (!small || small.file.size >= before) continue;
         Object.assign(src, { blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: src.size, duration: small.duration || src.duration });
         await sdb.put('sources', src); URL.revokeObjectURL(urlCache.get(id) || ''); urlCache.delete(id); saved += before - small.file.size;

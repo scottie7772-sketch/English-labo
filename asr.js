@@ -33,11 +33,13 @@ self.onmessage = async (e) => {
 
 // video/audio Blob -> Float32Array, 16 kHz mono (what Whisper expects)
 export async function decodeTo16k(blob) {
-  // an offline context does not take over the iPhone's audio output (a normal AudioContext could stop video playback afterwards)
-  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-  const ac = new OAC(1, 16000, 16000);
+  // decoding with a normal AudioContext is the path verified on iPhone (P4); it is closed right after
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ac = new AC();
   const buf = await blob.arrayBuffer();
-  const decoded = await new Promise((res, rej) => { const p = ac.decodeAudioData(buf, res, rej); if (p?.then) p.then(res, rej); });
+  let decoded;
+  try { decoded = await new Promise((res, rej) => { const p = ac.decodeAudioData(buf, res, rej); if (p?.then) p.then(res, rej); setTimeout(() => rej(new Error('音声の取り出しに時間がかかりすぎました')), 120000); }); }
+  finally { ac.close?.(); }
   const len = Math.max(1, Math.ceil(decoded.duration * 16000));
   const off = new OfflineAudioContext(1, len, 16000);
   const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();

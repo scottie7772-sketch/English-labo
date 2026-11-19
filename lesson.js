@@ -3,7 +3,7 @@
 import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, go, speak } from './ui.js';
 import { icon } from './icons.js';
-import { L, curLang, langOf, numToMarks } from './langs.js';
+import { L, curLang, langOf, numToMarks, isZh, langAttr } from './langs.js';
 import { recordAnswer } from './judge.js';
 import { loadAllMastery, effLevel } from './mastery.js';
 import { showFeedback } from './feedback.js';
@@ -71,9 +71,9 @@ function chooseFormat(w, rec, review, canSwipe, avoid) {
   return shuffle(pool.length ? pool : opts)[0];
 }
 
-async function buildLesson(lang, size, onlyReview) {
+async function buildLesson(lang, size, onlyReview, tag = null) {
   const [words0, revs, mastery] = await Promise.all([db.all('words'), db.all('reviews'), loadAllMastery()]);
-  const words = words0.filter((w) => langOf(w) === lang && allMeanings(w).length);
+  const words = words0.filter((w) => langOf(w) === lang && allMeanings(w).length && (!tag || (w.tags || []).includes(tag)));
   const R = Object.fromEntries(revs.map((r) => [r.id, r]));
   const now = Date.now();
   const sets = lang === 'en' ? await swipeSets().catch(() => null) : null;
@@ -83,7 +83,7 @@ async function buildLesson(lang, size, onlyReview) {
   words.filter((w) => R[w.id] && R[w.id].due <= now).sort((a, b) => R[a.id].due - R[b.id].due).slice(0, size).forEach(pushWord);
   // 2) English extras: due puzzles / visuals (and one new)
   let extras = [];
-  if (lang === 'en') {
+  if (lang === 'en' && !tag) {
     const [pz, vz] = await Promise.all([puzzles().catch(() => []), visuals().catch(() => [])]);
     const duePz = pz.filter((x) => R[x.id] && R[x.id].due <= now), dueVz = vz.filter((x) => R[x.id] && R[x.id].due <= now);
     extras = [...duePz.map((item) => ({ type: 'puzzle', item })), ...dueVz.map((item) => ({ type: 'visual', item }))];
@@ -113,7 +113,8 @@ export async function lessonRun(el, params) {
   const lang = curLang();
   const onlyReview = params.get('only') === 'review';
   const size = await getSetting('lessonSize', 12);
-  const { queue, pool } = await buildLesson(lang, size, onlyReview);
+  const tag = params.get('tag');
+  const { queue, pool } = await buildLesson(lang, size, onlyReview, tag);
   if (!queue.length) { el.innerHTML = `<header class="top"><a href="#lesson" class="back">${icon('back', 24)}</a><h1>レッスン</h1></header><p class="empty">${onlyReview ? '今日の復習はありません' : '出題できる語がありません。単語を追加してください'}</p>`; return; }
   const sid = uid('ln_');
   const total0 = queue.length;
@@ -153,7 +154,7 @@ export async function lessonRun(el, params) {
     const { w } = it; let fmt = it.format;
     const meanings = allMeanings(w);
     const mean = meanings.join('、');
-    const zh = langOf(w) === 'zh-TW';
+    const zh = isZh(langOf(w));
     const reading = zh && w.ipa ? `<div class="fc-read">${esc(numToMarks(w.ipa))}</div>` : '';
     const t0 = performance.now();
     const host = $('#q', el), fbHost = $('#fb', el);
@@ -205,7 +206,7 @@ export async function lessonRun(el, params) {
         choiceUI(`<div class="lq-prompt"><span class="small muted">空欄に入るのは？</span><div class="cloze tl">${blanked}</div>${ex.ja ? `<div class="small muted">${esc(ex.ja)}</div>` : ''}</div>`, pickOpts((x) => x.headword.toLowerCase()), 'head', null, ['select']);
       } else {   // type
         host.innerHTML = `<div class="lq"><div class="lq-prompt"><span class="small muted">${esc(L(langOf(w)).name)}で入力</span><div class="fc-ja">${esc(mean)}</div></div>
-          <form id="tf" class="stack"><input id="inp" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off" placeholder="${esc(L(langOf(w)).placeholder)}" ${zh ? 'lang="zh-Hant-TW"' : ''}>
+          <form id="tf" class="stack"><input id="inp" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off" placeholder="${esc(L(langOf(w)).placeholder)}" ${langAttr(langOf(w))}>
           <div class="row"><button type="button" class="btn grow" id="dk">わからない</button><button class="btn primary grow">答え合わせ</button></div></form></div>`;
         const inp = $('#inp', host); setTimeout(() => inp.focus(), 50);
         const submit = (giveUp) => {

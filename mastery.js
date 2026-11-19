@@ -2,10 +2,10 @@
 import { db } from './db.js';
 
 export const SKILLS = ['recognition', 'recall', 'listening', 'spelling'];
-import { L } from './langs.js';
+import { L, isZh } from './langs.js';
 // labels follow the current learning language (英→日 / 西→日 / 華→日)
 export const SKILL_LABELS = {
-  get recognition() { return `${L().ch}→日`; }, get recall() { return `日→${L().ch}`; }, listening: '音声→意味', get spelling() { return L().code === 'zh-TW' ? '書き・入力' : 'スペル'; },
+  get recognition() { return `${L().ch}→日`; }, get recall() { return `日→${L().ch}`; }, listening: '音声→意味', get spelling() { return isZh(L().code) ? '書き・入力' : 'スペル'; },
   select: '選んで答える', build: '組み立て', produce: '文を作る', reading: '読んで理解',
 };
 // extra skills (lessons / games). Not part of the overall level: choosing or assembling alone never makes an item 習得済み.

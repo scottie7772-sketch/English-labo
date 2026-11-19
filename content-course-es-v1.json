@@ -1,0 +1,2770 @@
+{
+ "format": "ell-course",
+ "version": 1,
+ "lang": "es",
+ "title": "スペイン語 入門コース（中南米基準）",
+ "note": "AI作成・未検証。完全初心者向けに、あいさつ→自己紹介→数字→時間→食事→買い物→移動→好きなこと の順で、単語・フレーズ・文法パターンを学ぶ構成。",
+ "units": [
+  {
+   "id": "es-u1",
+   "no": 1,
+   "title": "あいさつ・発音",
+   "goal": "あいさつとお礼・おわびが言える。つづりの読み方の基本を知る",
+   "intro": [
+    "スペイン語はほぼローマ字読み。母音は a i u e o の5つだけで、日本語に近い発音です。",
+    "h は読まない（hola＝オラ）。j と g（e・i の前）は喉の奥の「ハ行」（gente＝ヘンテ）。ll と y は「ジャ／ヤ」行、ñ は「ニャ」行。",
+    "アクセント記号（á é í ó ú）がある所を強く読みます。記号がなければ、母音か n・s で終わる語は後ろから2番目、それ以外は最後の音節を強く読みます。",
+    "疑問文・感嘆文は ¿…? ¡…! のように前後に記号をつけます。"
+   ],
+   "vocab": [
+    {
+     "headword": "hola",
+     "meanings": [
+      "こんにちは",
+      "やあ"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "Hola, ¿qué tal?",
+       "ja": "やあ、元気？"
+      }
+     ]
+    },
+    {
+     "headword": "buenos días",
+     "meanings": [
+      "おはよう"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "Buenos días, profesora.",
+       "ja": "おはようございます、先生。"
+      }
+     ]
+    },
+    {
+     "headword": "buenas tardes",
+     "meanings": [
+      "こんにちは（午後）"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "Buenas tardes, señor.",
+       "ja": "こんにちは（男性に）。"
+      }
+     ]
+    },
+    {
+     "headword": "buenas noches",
+     "meanings": [
+      "こんばんは",
+      "おやすみ"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "Buenas noches, hasta mañana.",
+       "ja": "おやすみ、また明日。"
+      }
+     ]
+    },
+    {
+     "headword": "adiós",
+     "meanings": [
+      "さようなら"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "Adiós, cuídate.",
+       "ja": "さようなら、気をつけて。"
+      }
+     ]
+    },
+    {
+     "headword": "gracias",
+     "meanings": [
+      "ありがとう"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "Muchas gracias.",
+       "ja": "どうもありがとう。"
+      }
+     ]
+    },
+    {
+     "headword": "de nada",
+     "meanings": [
+      "どういたしまして"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "—Gracias. —De nada.",
+       "ja": "「ありがとう」「どういたしまして」"
+      }
+     ]
+    },
+    {
+     "headword": "perdón",
+     "meanings": [
+      "すみません",
+      "ごめんなさい"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "Perdón, no entiendo.",
+       "ja": "すみません、分かりません。"
+      }
+     ]
+    },
+    {
+     "headword": "sí",
+     "meanings": [
+      "はい"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "Sí, claro.",
+       "ja": "はい、もちろん。"
+      }
+     ]
+    },
+    {
+     "headword": "no",
+     "meanings": [
+      "いいえ",
+      "〜ない"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "No, gracias.",
+       "ja": "いいえ、結構です。"
+      }
+     ]
+    },
+    {
+     "headword": "por favor",
+     "meanings": [
+      "お願いします"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "Agua, por favor.",
+       "ja": "お水をお願いします。"
+      }
+     ]
+    },
+    {
+     "headword": "hasta luego",
+     "meanings": [
+      "またね"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "Hasta luego, Ana.",
+       "ja": "またね、アナ。"
+      }
+     ]
+    }
+   ],
+   "phrases": [
+    {
+     "id": "es-u1-p1",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u1",
+     "ja": "やあ、元気？",
+     "model": "Hola, ¿cómo estás?",
+     "alts": [],
+     "chunks": [
+      "¿cómo estás?"
+     ]
+    },
+    {
+     "id": "es-u1-p2",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u1",
+     "ja": "元気だよ、ありがとう。君は？",
+     "model": "Bien, gracias. ¿Y tú?",
+     "alts": [
+      "Muy bien, gracias. ¿Y tú?"
+     ],
+     "chunks": [
+      "¿Y tú?"
+     ]
+    },
+    {
+     "id": "es-u1-p3",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u1",
+     "ja": "はじめまして。",
+     "model": "Mucho gusto.",
+     "alts": [
+      "Encantado.",
+      "Encantada."
+     ],
+     "chunks": [
+      "mucho gusto"
+     ]
+    },
+    {
+     "id": "es-u1-p4",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u1",
+     "ja": "すみません、分かりません。",
+     "model": "Perdón, no entiendo.",
+     "alts": [
+      "Lo siento, no entiendo."
+     ],
+     "chunks": [
+      "no entiendo"
+     ]
+    },
+    {
+     "id": "es-u1-p5",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u1",
+     "ja": "もっとゆっくりお願いします。",
+     "model": "Más despacio, por favor.",
+     "alts": [],
+     "chunks": [
+      "más despacio"
+     ]
+    },
+    {
+     "id": "es-u1-p6",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u1",
+     "ja": "また明日。",
+     "model": "Hasta mañana.",
+     "alts": [],
+     "chunks": [
+      "hasta ~"
+     ]
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "¿Cómo estás? / ¿Cómo está usted?",
+     "explain": "親しい相手には tú（君）、目上や初対面の相手には usted（あなた）を使います。動詞の形が変わります（estás / está）。中南米では「君たち・あなたたち」はどちらも ustedes です。",
+     "examples": [
+      {
+       "text": "¿Cómo estás, Pedro?",
+       "ja": "元気、ペドロ？"
+      },
+      {
+       "text": "¿Cómo está usted, señora?",
+       "ja": "お元気ですか（女性に）。"
+      },
+      {
+       "text": "¿Cómo están ustedes?",
+       "ja": "皆さんお元気ですか。"
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "es-u1-z1",
+     "lang": "es",
+     "ja": "やあ、元気？",
+     "tiles": [
+      "Hola,",
+      "¿cómo",
+      "estás?"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "es"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u1-z2",
+     "lang": "es",
+     "ja": "元気だよ、ありがとう。",
+     "tiles": [
+      "Bien,",
+      "gracias."
+     ],
+     "answers": [
+      [
+       0,
+       1
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u1-z3",
+     "lang": "es",
+     "ja": "もっとゆっくりお願いします。",
+     "tiles": [
+      "Más",
+      "despacio,",
+      "por favor."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "muy"
+     ],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "es-u2",
+   "no": 2,
+   "title": "自己紹介",
+   "goal": "名前・出身・仕事を言える。ser（〜である）を使える",
+   "intro": [
+    "「私は〜です」は Soy ～。主語の yo（私）は普通は省きます。動詞の形で主語が分かるからです。",
+    "国名・職業の名詞は、男性なら -o、女性なら -a になることが多いです（japonés / japonesa、médico / médica）。"
+   ],
+   "vocab": [
+    {
+     "headword": "yo",
+     "meanings": [
+      "私"
+     ],
+     "pos": "pronoun",
+     "examples": [
+      {
+       "text": "Yo soy Ken.",
+       "ja": "私はケンです。"
+      }
+     ]
+    },
+    {
+     "headword": "tú",
+     "meanings": [
+      "君"
+     ],
+     "pos": "pronoun",
+     "examples": [
+      {
+       "text": "¿Tú eres estudiante?",
+       "ja": "君は学生？"
+      }
+     ]
+    },
+    {
+     "headword": "ser",
+     "meanings": [
+      "〜である"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "Soy de Japón.",
+       "ja": "私は日本出身です。"
+      }
+     ]
+    },
+    {
+     "headword": "llamarse",
+     "meanings": [
+      "〜という名前である"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "Me llamo Yuki.",
+       "ja": "私の名前はユキです。"
+      }
+     ]
+    },
+    {
+     "headword": "el nombre",
+     "meanings": [
+      "名前"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "¿Cuál es tu nombre?",
+       "ja": "君の名前は？"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "Japón",
+     "meanings": [
+      "日本"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Vivo en Japón.",
+       "ja": "日本に住んでいます。"
+      }
+     ]
+    },
+    {
+     "headword": "japonés",
+     "meanings": [
+      "日本人（男）",
+      "日本語"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Soy japonés.",
+       "ja": "私は日本人です（男性）。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "japonesa",
+     "meanings": [
+      "日本人（女）"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Soy japonesa.",
+       "ja": "私は日本人です（女性）。"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "el trabajo",
+     "meanings": [
+      "仕事"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Me gusta mi trabajo.",
+       "ja": "自分の仕事が好きです。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "el estudiante",
+     "meanings": [
+      "学生"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Soy estudiante.",
+       "ja": "私は学生です。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "el amigo",
+     "meanings": [
+      "友だち（男）"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Él es mi amigo.",
+       "ja": "彼は私の友だちです。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "de",
+     "meanings": [
+      "〜の",
+      "〜から"
+     ],
+     "pos": "preposition",
+     "examples": [
+      {
+       "text": "Soy de Osaka.",
+       "ja": "大阪出身です。"
+      }
+     ]
+    }
+   ],
+   "phrases": [
+    {
+     "id": "es-u2-p1",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u2",
+     "ja": "私の名前はケンです。",
+     "model": "Me llamo Ken.",
+     "alts": [
+      "Soy Ken."
+     ],
+     "chunks": [
+      "me llamo ~"
+     ]
+    },
+    {
+     "id": "es-u2-p2",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u2",
+     "ja": "名前は何？",
+     "model": "¿Cómo te llamas?",
+     "alts": [
+      "¿Cuál es tu nombre?"
+     ],
+     "chunks": [
+      "¿cómo te llamas?"
+     ]
+    },
+    {
+     "id": "es-u2-p3",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u2",
+     "ja": "日本出身です。",
+     "model": "Soy de Japón.",
+     "alts": [
+      "Soy japonés.",
+      "Soy japonesa."
+     ],
+     "chunks": [
+      "soy de ~"
+     ]
+    },
+    {
+     "id": "es-u2-p4",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u2",
+     "ja": "どこの出身？",
+     "model": "¿De dónde eres?",
+     "alts": [],
+     "chunks": [
+      "¿de dónde ~?"
+     ]
+    },
+    {
+     "id": "es-u2-p5",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u2",
+     "ja": "私は学生です。",
+     "model": "Soy estudiante.",
+     "alts": [],
+     "chunks": [
+      "soy + 職業"
+     ]
+    },
+    {
+     "id": "es-u2-p6",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u2",
+     "ja": "知り合えてうれしいです。",
+     "model": "Encantado de conocerte.",
+     "alts": [
+      "Encantada de conocerte.",
+      "Mucho gusto."
+     ],
+     "chunks": [
+      "encantado / encantada"
+     ]
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "ser の現在形",
+     "explain": "ser は「〜である」（名前・国籍・職業・性質）。yo soy / tú eres / él・ella・usted es / nosotros somos / ellos・ustedes son。",
+     "examples": [
+      {
+       "text": "Soy Ken.",
+       "ja": "私はケンです。"
+      },
+      {
+       "text": "¿Eres japonesa?",
+       "ja": "君は日本人（女性）？"
+      },
+      {
+       "text": "Ella es médica.",
+       "ja": "彼女は医者です。"
+      }
+     ]
+    },
+    {
+     "pattern": "名詞の性（男性・女性）",
+     "explain": "名詞はすべて男性か女性。-o で終わる語は男性（el libro）、-a は女性（la casa）が多い。冠詞 el / la もこれに合わせます。例外：el día、la mano。",
+     "examples": [
+      {
+       "text": "el amigo / la amiga",
+       "ja": "友だち（男／女）"
+      },
+      {
+       "text": "el nombre",
+       "ja": "名前（男性名詞）"
+      },
+      {
+       "text": "la ciudad",
+       "ja": "街（女性名詞）"
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "es-u2-z1",
+     "lang": "es",
+     "ja": "私は日本出身です。",
+     "tiles": [
+      "Soy",
+      "de",
+      "Japón."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "en"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u2-z2",
+     "lang": "es",
+     "ja": "名前は何？",
+     "tiles": [
+      "¿Cómo",
+      "te",
+      "llamas?"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u2-z3",
+     "lang": "es",
+     "ja": "彼女は医者です。",
+     "tiles": [
+      "Ella",
+      "es",
+      "médica."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "está"
+     ],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "es-u3",
+   "no": 3,
+   "title": "数字と値段",
+   "goal": "1〜20と大きな数、値段を聞いて言える",
+   "intro": [
+    "1〜10：uno, dos, tres, cuatro, cinco, seis, siete, ocho, nueve, diez。",
+    "11〜15：once, doce, trece, catorce, quince。16〜19 は dieciséis, diecisiete… と「10と6」の形。20 は veinte、100 は cien。"
+   ],
+   "vocab": [
+    {
+     "headword": "uno",
+     "meanings": [
+      "1"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "Un café, por favor.",
+       "ja": "コーヒー1つお願いします。"
+      }
+     ]
+    },
+    {
+     "headword": "dos",
+     "meanings": [
+      "2"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "Dos boletos, por favor.",
+       "ja": "チケット2枚お願いします。"
+      }
+     ]
+    },
+    {
+     "headword": "tres",
+     "meanings": [
+      "3"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "Tengo tres hermanos.",
+       "ja": "兄弟が3人います。"
+      }
+     ]
+    },
+    {
+     "headword": "cinco",
+     "meanings": [
+      "5"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "Son cinco pesos.",
+       "ja": "5ペソです。"
+      }
+     ]
+    },
+    {
+     "headword": "diez",
+     "meanings": [
+      "10"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "Diez minutos.",
+       "ja": "10分。"
+      }
+     ]
+    },
+    {
+     "headword": "quince",
+     "meanings": [
+      "15"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "Cuesta quince pesos.",
+       "ja": "15ペソです。"
+      }
+     ]
+    },
+    {
+     "headword": "veinte",
+     "meanings": [
+      "20"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "Tengo veinte años.",
+       "ja": "20歳です。"
+      }
+     ]
+    },
+    {
+     "headword": "cien",
+     "meanings": [
+      "100"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "Cien pesos.",
+       "ja": "100ペソ。"
+      }
+     ]
+    },
+    {
+     "headword": "el dinero",
+     "meanings": [
+      "お金"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "No tengo dinero.",
+       "ja": "お金がありません。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "costar",
+     "meanings": [
+      "（値段が）かかる"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "¿Cuánto cuesta?",
+       "ja": "いくらですか。"
+      }
+     ]
+    },
+    {
+     "headword": "caro",
+     "meanings": [
+      "（値段が）高い"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "Es muy caro.",
+       "ja": "とても高い。"
+      }
+     ]
+    },
+    {
+     "headword": "barato",
+     "meanings": [
+      "安い"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "Es barato.",
+       "ja": "安いです。"
+      }
+     ]
+    }
+   ],
+   "phrases": [
+    {
+     "id": "es-u3-p1",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u3",
+     "ja": "いくらですか？",
+     "model": "¿Cuánto cuesta?",
+     "alts": [
+      "¿Cuánto es?"
+     ],
+     "chunks": [
+      "¿cuánto cuesta?"
+     ]
+    },
+    {
+     "id": "es-u3-p2",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u3",
+     "ja": "20ペソです。",
+     "model": "Son veinte pesos.",
+     "alts": [],
+     "chunks": [
+      "son + 金額"
+     ]
+    },
+    {
+     "id": "es-u3-p3",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u3",
+     "ja": "とても高いです。",
+     "model": "Es muy caro.",
+     "alts": [
+      "Está muy caro."
+     ],
+     "chunks": [
+      "muy ~"
+     ]
+    },
+    {
+     "id": "es-u3-p4",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u3",
+     "ja": "もっと安いものはありますか？",
+     "model": "¿Tiene algo más barato?",
+     "alts": [],
+     "chunks": [
+      "más barato"
+     ]
+    },
+    {
+     "id": "es-u3-p5",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u3",
+     "ja": "2つお願いします。",
+     "model": "Dos, por favor.",
+     "alts": [],
+     "chunks": [
+      "数＋por favor"
+     ]
+    },
+    {
+     "id": "es-u3-p6",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u3",
+     "ja": "20歳です。",
+     "model": "Tengo veinte años.",
+     "alts": [],
+     "chunks": [
+      "tener ~ años"
+     ]
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "¿Cuánto cuesta / cuestan?",
+     "explain": "値段は「¿Cuánto cuesta ~?」。複数の物なら cuestan。答えは「Cuesta(n) + 金額」か「Son + 金額」。",
+     "examples": [
+      {
+       "text": "¿Cuánto cuesta este libro?",
+       "ja": "この本はいくら？"
+      },
+      {
+       "text": "¿Cuánto cuestan los zapatos?",
+       "ja": "その靴はいくら？"
+      },
+      {
+       "text": "Son cincuenta pesos.",
+       "ja": "50ペソです。"
+      }
+     ]
+    },
+    {
+     "pattern": "年齢は tener",
+     "explain": "年齢は「持つ」の tener を使います：Tengo 20 años（20年を持っている）。",
+     "examples": [
+      {
+       "text": "¿Cuántos años tienes?",
+       "ja": "何歳？"
+      },
+      {
+       "text": "Tengo treinta años.",
+       "ja": "30歳です。"
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "es-u3-z1",
+     "lang": "es",
+     "ja": "いくらですか？",
+     "tiles": [
+      "¿Cuánto",
+      "cuesta?"
+     ],
+     "answers": [
+      [
+       0,
+       1
+      ]
+     ],
+     "extra": [
+      "es"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u3-z2",
+     "lang": "es",
+     "ja": "20ペソです。",
+     "tiles": [
+      "Son",
+      "veinte",
+      "pesos."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u3-z3",
+     "lang": "es",
+     "ja": "20歳です。",
+     "tiles": [
+      "Tengo",
+      "veinte",
+      "años."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "soy"
+     ],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "es-u4",
+   "no": 4,
+   "title": "時間・曜日",
+   "goal": "今日・明日・曜日・時刻を言える",
+   "intro": [
+    "曜日は小文字で書きます：lunes（月）martes（火）miércoles（水）jueves（木）viernes（金）sábado（土）domingo（日）。",
+    "「〜曜日に」は el lunes（毎週なら los lunes）。"
+   ],
+   "vocab": [
+    {
+     "headword": "hoy",
+     "meanings": [
+      "今日"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "Hoy es lunes.",
+       "ja": "今日は月曜日です。"
+      }
+     ]
+    },
+    {
+     "headword": "mañana",
+     "meanings": [
+      "明日",
+      "朝"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "Mañana trabajo.",
+       "ja": "明日は仕事です。"
+      }
+     ]
+    },
+    {
+     "headword": "ayer",
+     "meanings": [
+      "昨日"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "Ayer fue domingo.",
+       "ja": "昨日は日曜日でした。"
+      }
+     ]
+    },
+    {
+     "headword": "ahora",
+     "meanings": [
+      "今"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "Ahora no puedo.",
+       "ja": "今はできません。"
+      }
+     ]
+    },
+    {
+     "headword": "la hora",
+     "meanings": [
+      "時間",
+      "時刻"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "¿Qué hora es?",
+       "ja": "今何時？"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "el lunes",
+     "meanings": [
+      "月曜日"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "El lunes tengo clase.",
+       "ja": "月曜は授業がある。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "el viernes",
+     "meanings": [
+      "金曜日"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Nos vemos el viernes.",
+       "ja": "金曜に会おう。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "el sábado",
+     "meanings": [
+      "土曜日"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "El sábado descanso.",
+       "ja": "土曜は休みます。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "el domingo",
+     "meanings": [
+      "日曜日"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "El domingo voy al parque.",
+       "ja": "日曜は公園に行く。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "la semana",
+     "meanings": [
+      "週"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Esta semana estoy ocupado.",
+       "ja": "今週は忙しい。"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "temprano",
+     "meanings": [
+      "早く"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "Llego temprano.",
+       "ja": "早く着きます。"
+      }
+     ]
+    },
+    {
+     "headword": "tarde",
+     "meanings": [
+      "遅く",
+      "午後"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "Es tarde.",
+       "ja": "遅い時間だ。"
+      }
+     ]
+    }
+   ],
+   "phrases": [
+    {
+     "id": "es-u4-p1",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u4",
+     "ja": "今何時ですか？",
+     "model": "¿Qué hora es?",
+     "alts": [],
+     "chunks": [
+      "¿qué hora es?"
+     ]
+    },
+    {
+     "id": "es-u4-p2",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u4",
+     "ja": "3時です。",
+     "model": "Son las tres.",
+     "alts": [],
+     "chunks": [
+      "son las + 数"
+     ]
+    },
+    {
+     "id": "es-u4-p3",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u4",
+     "ja": "1時です。",
+     "model": "Es la una.",
+     "alts": [],
+     "chunks": [
+      "es la una"
+     ]
+    },
+    {
+     "id": "es-u4-p4",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u4",
+     "ja": "今日は何曜日？",
+     "model": "¿Qué día es hoy?",
+     "alts": [],
+     "chunks": [
+      "¿qué día ~?"
+     ]
+    },
+    {
+     "id": "es-u4-p5",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u4",
+     "ja": "今日は金曜日です。",
+     "model": "Hoy es viernes.",
+     "alts": [],
+     "chunks": [
+      "hoy es ~"
+     ]
+    },
+    {
+     "id": "es-u4-p6",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u4",
+     "ja": "また明日会おう。",
+     "model": "Nos vemos mañana.",
+     "alts": [
+      "Hasta mañana."
+     ],
+     "chunks": [
+      "nos vemos"
+     ]
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "時刻の言い方",
+     "explain": "「〜時です」は Son las + 数（1時だけ Es la una）。「〜時に」は a las + 数。30分は y media、15分は y cuarto。",
+     "examples": [
+      {
+       "text": "Son las ocho y media.",
+       "ja": "8時半です。"
+      },
+      {
+       "text": "La clase es a las diez.",
+       "ja": "授業は10時です。"
+      },
+      {
+       "text": "Es la una y cuarto.",
+       "ja": "1時15分です。"
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "es-u4-z1",
+     "lang": "es",
+     "ja": "今何時ですか？",
+     "tiles": [
+      "¿Qué",
+      "hora",
+      "es?"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "son"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u4-z2",
+     "lang": "es",
+     "ja": "3時です。",
+     "tiles": [
+      "Son",
+      "las",
+      "tres."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "es"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u4-z3",
+     "lang": "es",
+     "ja": "授業は10時です。",
+     "tiles": [
+      "La clase",
+      "es",
+      "a las",
+      "diez."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2,
+       3
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "es-u5",
+   "no": 5,
+   "title": "食事・注文",
+   "goal": "注文する・食べたい物を言える",
+   "intro": [
+    "お店では Quiero ～（〜がほしい）でも通じますが、Me da ～, por favor.（〜をください）や ¿Me trae ～?（〜を持ってきてくれますか）がより丁寧です。"
+   ],
+   "vocab": [
+    {
+     "headword": "querer",
+     "meanings": [
+      "ほしい",
+      "〜したい"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "Quiero un café.",
+       "ja": "コーヒーがほしい。"
+      }
+     ]
+    },
+    {
+     "headword": "comer",
+     "meanings": [
+      "食べる"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "¿Qué quieres comer?",
+       "ja": "何を食べたい？"
+      }
+     ]
+    },
+    {
+     "headword": "beber",
+     "meanings": [
+      "飲む"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "Quiero beber agua.",
+       "ja": "水が飲みたい。"
+      }
+     ]
+    },
+    {
+     "headword": "el agua",
+     "meanings": [
+      "水"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Un vaso de agua, por favor.",
+       "ja": "水を1杯お願いします。"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "el café",
+     "meanings": [
+      "コーヒー"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Un café con leche.",
+       "ja": "カフェオレを1つ。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "la comida",
+     "meanings": [
+      "食べ物",
+      "食事"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "La comida está rica.",
+       "ja": "料理がおいしい。"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "el pan",
+     "meanings": [
+      "パン"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Quiero pan.",
+       "ja": "パンがほしい。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "la carne",
+     "meanings": [
+      "肉"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "No como carne.",
+       "ja": "肉は食べません。"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "el pollo",
+     "meanings": [
+      "鶏肉"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Tacos de pollo, por favor.",
+       "ja": "鶏肉のタコスをお願いします。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "rico",
+     "meanings": [
+      "おいしい"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "¡Qué rico!",
+       "ja": "おいしい！"
+      }
+     ]
+    },
+    {
+     "headword": "la cuenta",
+     "meanings": [
+      "会計"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "La cuenta, por favor.",
+       "ja": "お会計お願いします。"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "el menú",
+     "meanings": [
+      "メニュー"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "¿Me trae el menú?",
+       "ja": "メニューを持ってきてくれますか。"
+      }
+     ],
+     "gender": "m"
+    }
+   ],
+   "phrases": [
+    {
+     "id": "es-u5-p1",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u5",
+     "ja": "コーヒーを1つお願いします。",
+     "model": "Quiero un café, por favor.",
+     "alts": [
+      "Un café, por favor.",
+      "Me da un café, por favor."
+     ],
+     "chunks": [
+      "quiero ~"
+     ]
+    },
+    {
+     "id": "es-u5-p2",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u5",
+     "ja": "おすすめは何ですか？",
+     "model": "¿Qué me recomienda?",
+     "alts": [],
+     "chunks": [
+      "¿qué me recomienda?"
+     ]
+    },
+    {
+     "id": "es-u5-p3",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u5",
+     "ja": "肉なしでお願いします。",
+     "model": "Sin carne, por favor.",
+     "alts": [],
+     "chunks": [
+      "sin ~"
+     ]
+    },
+    {
+     "id": "es-u5-p4",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u5",
+     "ja": "とてもおいしいです！",
+     "model": "¡Está muy rico!",
+     "alts": [
+      "¡Qué rico!"
+     ],
+     "chunks": [
+      "está rico"
+     ]
+    },
+    {
+     "id": "es-u5-p5",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u5",
+     "ja": "お会計お願いします。",
+     "model": "La cuenta, por favor.",
+     "alts": [],
+     "chunks": [
+      "la cuenta"
+     ]
+    },
+    {
+     "id": "es-u5-p6",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u5",
+     "ja": "タコスが食べたいです。",
+     "model": "Quiero comer tacos.",
+     "alts": [],
+     "chunks": [
+      "quiero + 動詞の原形"
+     ]
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "querer ＋ 名詞／動詞の原形",
+     "explain": "Quiero + 名詞＝〜がほしい、Quiero + 動詞の原形＝〜したい。quiero / quieres / quiere と変わります（e が ie になる動詞）。",
+     "examples": [
+      {
+       "text": "Quiero agua.",
+       "ja": "水がほしい。"
+      },
+      {
+       "text": "¿Quieres comer algo?",
+       "ja": "何か食べたい？"
+      },
+      {
+       "text": "Ella quiere un té.",
+       "ja": "彼女はお茶がほしい。"
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "es-u5-z1",
+     "lang": "es",
+     "ja": "コーヒーを1つお願いします。",
+     "tiles": [
+      "Quiero",
+      "un café,",
+      "por favor."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u5-z2",
+     "lang": "es",
+     "ja": "タコスが食べたいです。",
+     "tiles": [
+      "Quiero",
+      "comer",
+      "tacos."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "como"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u5-z3",
+     "lang": "es",
+     "ja": "お会計お願いします。",
+     "tiles": [
+      "La cuenta,",
+      "por favor."
+     ],
+     "answers": [
+      [
+       0,
+       1
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "es-u6",
+   "no": 6,
+   "title": "買い物",
+   "goal": "これ・それを指して、あるか聞き、買える",
+   "intro": [
+    "「この」は este（男性名詞）/ esta（女性名詞）、「その」は ese / esa。名詞の性に合わせます。"
+   ],
+   "vocab": [
+    {
+     "headword": "este",
+     "meanings": [
+      "この",
+      "これ（男性）"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "Este libro es bueno.",
+       "ja": "この本はいい。"
+      }
+     ]
+    },
+    {
+     "headword": "esta",
+     "meanings": [
+      "この",
+      "これ（女性）"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "Esta camisa es bonita.",
+       "ja": "このシャツはきれい。"
+      }
+     ]
+    },
+    {
+     "headword": "ese",
+     "meanings": [
+      "その",
+      "それ（男性）"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "¿Cuánto cuesta ese?",
+       "ja": "それはいくら？"
+      }
+     ]
+    },
+    {
+     "headword": "tener",
+     "meanings": [
+      "持っている",
+      "ある"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "¿Tiene otra talla?",
+       "ja": "別のサイズはありますか？"
+      }
+     ]
+    },
+    {
+     "headword": "comprar",
+     "meanings": [
+      "買う"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "Quiero comprar esto.",
+       "ja": "これを買いたい。"
+      }
+     ]
+    },
+    {
+     "headword": "la tienda",
+     "meanings": [
+      "店"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "La tienda está cerrada.",
+       "ja": "店は閉まっている。"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "la camisa",
+     "meanings": [
+      "シャツ"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Busco una camisa blanca.",
+       "ja": "白いシャツを探しています。"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "los zapatos",
+     "meanings": [
+      "靴"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Estos zapatos son caros.",
+       "ja": "この靴は高い。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "grande",
+     "meanings": [
+      "大きい"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "Es muy grande.",
+       "ja": "大きすぎる。"
+      }
+     ]
+    },
+    {
+     "headword": "pequeño",
+     "meanings": [
+      "小さい"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "¿Tiene uno más pequeño?",
+       "ja": "もっと小さいのはありますか？"
+      }
+     ]
+    },
+    {
+     "headword": "la tarjeta",
+     "meanings": [
+      "カード"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "¿Puedo pagar con tarjeta?",
+       "ja": "カードで払えますか？"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "el efectivo",
+     "meanings": [
+      "現金"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Pago en efectivo.",
+       "ja": "現金で払います。"
+      }
+     ],
+     "gender": "m"
+    }
+   ],
+   "phrases": [
+    {
+     "id": "es-u6-p1",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u6",
+     "ja": "これの別のサイズはありますか？",
+     "model": "¿Tiene esto en otra talla?",
+     "alts": [],
+     "chunks": [
+      "en otra talla"
+     ]
+    },
+    {
+     "id": "es-u6-p2",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u6",
+     "ja": "見ているだけです。",
+     "model": "Solo estoy mirando.",
+     "alts": [],
+     "chunks": [
+      "solo estoy mirando"
+     ]
+    },
+    {
+     "id": "es-u6-p3",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u6",
+     "ja": "これにします（女性名詞の物）。",
+     "model": "Me llevo esta.",
+     "alts": [
+      "Me llevo este."
+     ],
+     "chunks": [
+      "me llevo ~"
+     ]
+    },
+    {
+     "id": "es-u6-p4",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u6",
+     "ja": "カードで払えますか？",
+     "model": "¿Puedo pagar con tarjeta?",
+     "alts": [],
+     "chunks": [
+      "¿puedo ~?"
+     ]
+    },
+    {
+     "id": "es-u6-p5",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u6",
+     "ja": "私には大きすぎます。",
+     "model": "Es muy grande para mí.",
+     "alts": [],
+     "chunks": [
+      "para mí"
+     ]
+    },
+    {
+     "id": "es-u6-p6",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u6",
+     "ja": "このシャツはいくらですか？",
+     "model": "¿Cuánto cuesta esta camisa?",
+     "alts": [],
+     "chunks": [
+      "esta + 女性名詞"
+     ]
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "este / esta、¿Tiene ~?",
+     "explain": "este + 男性名詞、esta + 女性名詞。物を指すだけなら esto（これ）。店員に「〜はありますか」は usted の形で ¿Tiene ~?。",
+     "examples": [
+      {
+       "text": "Este café es bueno.",
+       "ja": "このコーヒーはおいしい。"
+      },
+      {
+       "text": "Esta tienda es barata.",
+       "ja": "この店は安い。"
+      },
+      {
+       "text": "¿Tiene agua?",
+       "ja": "水はありますか？"
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "es-u6-z1",
+     "lang": "es",
+     "ja": "カードで払えますか？",
+     "tiles": [
+      "¿Puedo",
+      "pagar",
+      "con tarjeta?"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "en"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u6-z2",
+     "lang": "es",
+     "ja": "見ているだけです。",
+     "tiles": [
+      "Solo",
+      "estoy",
+      "mirando."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "soy"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u6-z3",
+     "lang": "es",
+     "ja": "このシャツはいくらですか？",
+     "tiles": [
+      "¿Cuánto",
+      "cuesta",
+      "esta camisa?"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "este"
+     ],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "es-u7",
+   "no": 7,
+   "title": "移動・道を聞く",
+   "goal": "場所を尋ね、行き方を理解できる",
+   "intro": [
+    "場所・状態は ser ではなく estar：¿Dónde está el baño?（トイレはどこ？）。"
+   ],
+   "vocab": [
+    {
+     "headword": "dónde",
+     "meanings": [
+      "どこ"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "¿Dónde estás?",
+       "ja": "どこにいるの？"
+      }
+     ]
+    },
+    {
+     "headword": "estar",
+     "meanings": [
+      "（〜に）いる",
+      "ある"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "El hotel está cerca.",
+       "ja": "ホテルは近い。"
+      }
+     ]
+    },
+    {
+     "headword": "el baño",
+     "meanings": [
+      "トイレ"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "¿Dónde está el baño?",
+       "ja": "トイレはどこ？"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "la estación",
+     "meanings": [
+      "駅"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "La estación está lejos.",
+       "ja": "駅は遠い。"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "el metro",
+     "meanings": [
+      "地下鉄"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Voy en metro.",
+       "ja": "地下鉄で行きます。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "ir",
+     "meanings": [
+      "行く"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "Voy al centro.",
+       "ja": "中心街に行きます。"
+      }
+     ]
+    },
+    {
+     "headword": "cerca",
+     "meanings": [
+      "近くに"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "Está cerca de aquí.",
+       "ja": "ここから近い。"
+      }
+     ]
+    },
+    {
+     "headword": "lejos",
+     "meanings": [
+      "遠くに"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "¿Está lejos?",
+       "ja": "遠いですか？"
+      }
+     ]
+    },
+    {
+     "headword": "a la derecha",
+     "meanings": [
+      "右に"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "Está a la derecha.",
+       "ja": "右にあります。"
+      }
+     ]
+    },
+    {
+     "headword": "a la izquierda",
+     "meanings": [
+      "左に"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "Gire a la izquierda.",
+       "ja": "左に曲がってください。"
+      }
+     ]
+    },
+    {
+     "headword": "todo recto",
+     "meanings": [
+      "まっすぐ"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "Siga todo recto.",
+       "ja": "まっすぐ行ってください。"
+      }
+     ]
+    },
+    {
+     "headword": "el hotel",
+     "meanings": [
+      "ホテル"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Busco mi hotel.",
+       "ja": "ホテルを探しています。"
+      }
+     ],
+     "gender": "m"
+    }
+   ],
+   "phrases": [
+    {
+     "id": "es-u7-p1",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u7",
+     "ja": "トイレはどこですか？",
+     "model": "¿Dónde está el baño?",
+     "alts": [
+      "Perdón, ¿dónde está el baño?"
+     ],
+     "chunks": [
+      "¿dónde está ~?"
+     ]
+    },
+    {
+     "id": "es-u7-p2",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u7",
+     "ja": "ここから遠いですか？",
+     "model": "¿Está lejos de aquí?",
+     "alts": [],
+     "chunks": [
+      "lejos de aquí"
+     ]
+    },
+    {
+     "id": "es-u7-p3",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u7",
+     "ja": "まっすぐ行ってください。",
+     "model": "Siga todo recto.",
+     "alts": [],
+     "chunks": [
+      "todo recto"
+     ]
+    },
+    {
+     "id": "es-u7-p4",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u7",
+     "ja": "左にあります。",
+     "model": "Está a la izquierda.",
+     "alts": [],
+     "chunks": [
+      "a la izquierda"
+     ]
+    },
+    {
+     "id": "es-u7-p5",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u7",
+     "ja": "駅へはどう行けばいいですか？",
+     "model": "¿Cómo llego a la estación?",
+     "alts": [],
+     "chunks": [
+      "¿cómo llego a ~?"
+     ]
+    },
+    {
+     "id": "es-u7-p6",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u7",
+     "ja": "地下鉄で行きます。",
+     "model": "Voy en metro.",
+     "alts": [],
+     "chunks": [
+      "en + 乗り物"
+     ]
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "estar（場所・状態）と ir a（〜へ行く）",
+     "explain": "場所は estar：estoy / estás / está。行き先は ir a ～（a + el は al になる）：Voy al hotel。",
+     "examples": [
+      {
+       "text": "Estoy en la estación.",
+       "ja": "駅にいます。"
+      },
+      {
+       "text": "El baño está a la derecha.",
+       "ja": "トイレは右です。"
+      },
+      {
+       "text": "Voy al centro.",
+       "ja": "中心街へ行きます。"
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "es-u7-z1",
+     "lang": "es",
+     "ja": "トイレはどこですか？",
+     "tiles": [
+      "¿Dónde",
+      "está",
+      "el baño?"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "es"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u7-z2",
+     "lang": "es",
+     "ja": "地下鉄で行きます。",
+     "tiles": [
+      "Voy",
+      "en",
+      "metro."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "a"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u7-z3",
+     "lang": "es",
+     "ja": "駅にいます。",
+     "tiles": [
+      "Estoy",
+      "en",
+      "la estación."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "soy"
+     ],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "es-u8",
+   "no": 8,
+   "title": "好きなこと・予定",
+   "goal": "好きなことを言い、予定を話せる",
+   "intro": [
+    "「〜が好き」は Me gusta ～（〜が私を喜ばせる）。好きな物が複数なら Me gustan ～。",
+    "近い予定は voy a + 動詞の原形（〜するつもり）。"
+   ],
+   "vocab": [
+    {
+     "headword": "gustar",
+     "meanings": [
+      "好きである（〜が気に入る）"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "Me gusta el café.",
+       "ja": "コーヒーが好き。"
+      }
+     ]
+    },
+    {
+     "headword": "la música",
+     "meanings": [
+      "音楽"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Me gusta la música.",
+       "ja": "音楽が好き。"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "el fútbol",
+     "meanings": [
+      "サッカー"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "¿Te gusta el fútbol?",
+       "ja": "サッカーは好き？"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "leer",
+     "meanings": [
+      "読む"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "Me gusta leer.",
+       "ja": "読書が好き。"
+      }
+     ]
+    },
+    {
+     "headword": "viajar",
+     "meanings": [
+      "旅行する"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "Quiero viajar a México.",
+       "ja": "メキシコに旅行したい。"
+      }
+     ]
+    },
+    {
+     "headword": "el fin de semana",
+     "meanings": [
+      "週末"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "¿Qué haces el fin de semana?",
+       "ja": "週末は何をするの？"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "hacer",
+     "meanings": [
+      "する",
+      "作る"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "Voy a hacer la tarea.",
+       "ja": "宿題をするつもりです。"
+      }
+     ]
+    },
+    {
+     "headword": "mucho",
+     "meanings": [
+      "とても",
+      "たくさん"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "Me gusta mucho.",
+       "ja": "とても好き。"
+      }
+     ]
+    },
+    {
+     "headword": "también",
+     "meanings": [
+      "〜も"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "A mí también.",
+       "ja": "私も。"
+      }
+     ]
+    },
+    {
+     "headword": "el cine",
+     "meanings": [
+      "映画館",
+      "映画"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Vamos al cine.",
+       "ja": "映画に行こう。"
+      }
+     ],
+     "gender": "m"
+    },
+    {
+     "headword": "la playa",
+     "meanings": [
+      "ビーチ"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "Voy a la playa.",
+       "ja": "ビーチに行きます。"
+      }
+     ],
+     "gender": "f"
+    },
+    {
+     "headword": "juntos",
+     "meanings": [
+      "一緒に"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "¿Vamos juntos?",
+       "ja": "一緒に行く？"
+      }
+     ]
+    }
+   ],
+   "phrases": [
+    {
+     "id": "es-u8-p1",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u8",
+     "ja": "音楽がとても好きです。",
+     "model": "Me gusta mucho la música.",
+     "alts": [
+      "Me encanta la música."
+     ],
+     "chunks": [
+      "me gusta ~"
+     ]
+    },
+    {
+     "id": "es-u8-p2",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u8",
+     "ja": "サッカーは好き？",
+     "model": "¿Te gusta el fútbol?",
+     "alts": [],
+     "chunks": [
+      "¿te gusta ~?"
+     ]
+    },
+    {
+     "id": "es-u8-p3",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u8",
+     "ja": "私も（好き）。",
+     "model": "A mí también.",
+     "alts": [],
+     "chunks": [
+      "a mí también"
+     ]
+    },
+    {
+     "id": "es-u8-p4",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u8",
+     "ja": "明日は何をするの？",
+     "model": "¿Qué vas a hacer mañana?",
+     "alts": [],
+     "chunks": [
+      "vas a + 動詞"
+     ]
+    },
+    {
+     "id": "es-u8-p5",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u8",
+     "ja": "ビーチに行くつもりです。",
+     "model": "Voy a ir a la playa.",
+     "alts": [],
+     "chunks": [
+      "voy a + 動詞"
+     ]
+    },
+    {
+     "id": "es-u8-p6",
+     "lang": "es",
+     "level": 1,
+     "unit": "es-u8",
+     "ja": "映画に行かない？",
+     "model": "¿Vamos al cine?",
+     "alts": [],
+     "chunks": [
+      "¿vamos a ~?"
+     ]
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "me gusta / me gustan",
+     "explain": "好きな物が単数・動詞なら gusta、複数なら gustan。「君は〜が好き？」は ¿Te gusta(n) ~?。",
+     "examples": [
+      {
+       "text": "Me gusta leer.",
+       "ja": "読書が好き。"
+      },
+      {
+       "text": "Me gustan los perros.",
+       "ja": "犬が好き。"
+      },
+      {
+       "text": "¿Te gusta el café?",
+       "ja": "コーヒーは好き？"
+      }
+     ]
+    },
+    {
+     "pattern": "ir a ＋ 動詞の原形（予定）",
+     "explain": "voy a / vas a / va a + 動詞の原形＝「〜するつもり」。",
+     "examples": [
+      {
+       "text": "Voy a estudiar.",
+       "ja": "勉強するつもりです。"
+      },
+      {
+       "text": "¿Vas a venir?",
+       "ja": "来る？"
+      },
+      {
+       "text": "Vamos a comer juntos.",
+       "ja": "一緒に食べよう。"
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "es-u8-z1",
+     "lang": "es",
+     "ja": "音楽がとても好きです。",
+     "tiles": [
+      "Me",
+      "gusta",
+      "mucho",
+      "la música."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2,
+       3
+      ]
+     ],
+     "extra": [
+      "gustan"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u8-z2",
+     "lang": "es",
+     "ja": "明日は何をするの？",
+     "tiles": [
+      "¿Qué",
+      "vas a",
+      "hacer",
+      "mañana?"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2,
+       3
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "es-u8-z3",
+     "lang": "es",
+     "ja": "ビーチに行くつもりです。",
+     "tiles": [
+      "Voy a",
+      "ir",
+      "a la playa."
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  }
+ ]
+}

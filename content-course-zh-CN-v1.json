@@ -1,0 +1,2929 @@
+{
+ "format": "ell-course",
+ "version": 1,
+ "lang": "zh-CN",
+ "title": "中国語（普通話）入門コース",
+ "note": "AI作成・未検証。完全初心者向けに、あいさつ→自己紹介→数字→時間→食事→買い物→移動→好きなこと の順で、単語・フレーズ・文法パターンを学ぶ構成。",
+ "units": [
+  {
+   "id": "zh-CN-u1",
+   "no": 1,
+   "title": "あいさつ・発音（声調）",
+   "goal": "あいさつができる。4つの声調とピンインを知る",
+   "intro": [
+    "中国語は1文字1音節。音の高さの動き（声調）で意味が変わります：mā（1声・高く平ら）má（2声・上がる）mǎ（3声・低く抑える）mà（4声・急に下がる）。",
+    "発音はアルファベット表記の「ピンイン」で表します。このアプリの入力は hǎo のような声調記号つきでも、hao3 のような数字つきでも大丈夫です。",
+    "3声が2つ続くと、前の3声は2声で読みます（你好 nǐ hǎo → ní hǎo）。不（bù）は4声の前で bú になります。"
+   ],
+   "vocab": [
+    {
+     "headword": "你好",
+     "meanings": [
+      "こんにちは"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "你好！我叫小林。",
+       "ja": "こんにちは！小林です。"
+      }
+     ],
+     "pinyin": "nǐ hǎo"
+    },
+    {
+     "headword": "您好",
+     "meanings": [
+      "こんにちは（丁寧）"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "您好，请进。",
+       "ja": "こんにちは、どうぞお入りください。"
+      }
+     ],
+     "pinyin": "nín hǎo"
+    },
+    {
+     "headword": "谢谢",
+     "meanings": [
+      "ありがとう"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "谢谢你！",
+       "ja": "ありがとう！"
+      }
+     ],
+     "pinyin": "xièxie"
+    },
+    {
+     "headword": "不客气",
+     "meanings": [
+      "どういたしまして"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "——谢谢。——不客气。",
+       "ja": "「ありがとう」「どういたしまして」"
+      }
+     ],
+     "pinyin": "bú kèqi"
+    },
+    {
+     "headword": "对不起",
+     "meanings": [
+      "ごめんなさい"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "对不起，我来晚了。",
+       "ja": "ごめんなさい、遅れました。"
+      }
+     ],
+     "pinyin": "duìbuqǐ"
+    },
+    {
+     "headword": "没关系",
+     "meanings": [
+      "大丈夫",
+      "気にしないで"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "没关系。",
+       "ja": "大丈夫です。"
+      }
+     ],
+     "pinyin": "méi guānxi"
+    },
+    {
+     "headword": "再见",
+     "meanings": [
+      "さようなら"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "明天见！再见！",
+       "ja": "また明日、さようなら！"
+      }
+     ],
+     "pinyin": "zàijiàn"
+    },
+    {
+     "headword": "是",
+     "meanings": [
+      "はい",
+      "〜である"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "是的。",
+       "ja": "そうです。"
+      }
+     ],
+     "pinyin": "shì"
+    },
+    {
+     "headword": "不",
+     "meanings": [
+      "いいえ",
+      "〜ない"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "我不是老师。",
+       "ja": "私は先生ではありません。"
+      }
+     ],
+     "pinyin": "bù"
+    },
+    {
+     "headword": "请",
+     "meanings": [
+      "どうぞ",
+      "〜してください"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "请坐。",
+       "ja": "お座りください。"
+      }
+     ],
+     "pinyin": "qǐng"
+    },
+    {
+     "headword": "早上好",
+     "meanings": [
+      "おはよう"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "早上好！",
+       "ja": "おはよう！"
+      }
+     ],
+     "pinyin": "zǎoshang hǎo"
+    },
+    {
+     "headword": "晚安",
+     "meanings": [
+      "おやすみ"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "晚安，明天见。",
+       "ja": "おやすみ、また明日。"
+      }
+     ],
+     "pinyin": "wǎn'ān"
+    }
+   ],
+   "phrases": [
+    {
+     "id": "zh-CN-u1-p1",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u1",
+     "ja": "こんにちは！",
+     "model": "你好！",
+     "alts": [
+      "您好！"
+     ],
+     "chunks": [
+      "你好"
+     ],
+     "pinyin": "Nǐ hǎo!"
+    },
+    {
+     "id": "zh-CN-u1-p2",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u1",
+     "ja": "ありがとう。",
+     "model": "谢谢你。",
+     "alts": [
+      "谢谢。"
+     ],
+     "chunks": [
+      "谢谢"
+     ],
+     "pinyin": "Xièxie nǐ."
+    },
+    {
+     "id": "zh-CN-u1-p3",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u1",
+     "ja": "どういたしまして。",
+     "model": "不客气。",
+     "alts": [
+      "不用谢。"
+     ],
+     "chunks": [
+      "不客气"
+     ],
+     "pinyin": "Bú kèqi."
+    },
+    {
+     "id": "zh-CN-u1-p4",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u1",
+     "ja": "ごめんなさい。",
+     "model": "对不起。",
+     "alts": [
+      "不好意思。"
+     ],
+     "chunks": [
+      "对不起"
+     ],
+     "pinyin": "Duìbuqǐ."
+    },
+    {
+     "id": "zh-CN-u1-p5",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u1",
+     "ja": "もう一度言ってください。",
+     "model": "请再说一遍。",
+     "alts": [
+      "请再说一次。"
+     ],
+     "chunks": [
+      "再说一遍"
+     ],
+     "pinyin": "Qǐng zài shuō yí biàn."
+    },
+    {
+     "id": "zh-CN-u1-p6",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u1",
+     "ja": "（聞いて）分かりません。",
+     "model": "我听不懂。",
+     "alts": [
+      "我不懂。"
+     ],
+     "chunks": [
+      "听不懂"
+     ],
+     "pinyin": "Wǒ tīng bu dǒng."
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "不 で否定する",
+     "explain": "動詞・形容詞の前に 不 をつけると否定。不 は普通 bù ですが、4声の前では bú になります（不是 bú shì）。",
+     "examples": [
+      {
+       "text": "我不是学生。",
+       "ja": "私は学生ではありません。",
+       "pinyin": "Wǒ bú shì xuésheng."
+      },
+      {
+       "text": "我不忙。",
+       "ja": "私は忙しくありません。",
+       "pinyin": "Wǒ bù máng."
+      },
+      {
+       "text": "他不去。",
+       "ja": "彼は行きません。",
+       "pinyin": "Tā bú qù."
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "zh-CN-u1-z1",
+     "lang": "zh-CN",
+     "ja": "もう一度言ってください。",
+     "tiles": [
+      "请",
+      "再说",
+      "一遍。"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "不"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u1-z2",
+     "lang": "zh-CN",
+     "ja": "（聞いて）分かりません。",
+     "tiles": [
+      "我",
+      "听不懂。"
+     ],
+     "answers": [
+      [
+       0,
+       1
+      ]
+     ],
+     "extra": [
+      "是"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u1-z3",
+     "lang": "zh-CN",
+     "ja": "私は学生ではありません。",
+     "tiles": [
+      "我",
+      "不是",
+      "学生。"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "没"
+     ],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "zh-CN-u2",
+   "no": 2,
+   "title": "自己紹介",
+   "goal": "名前・出身・仕事を言える。「是」の文と「吗」の疑問文を作れる",
+   "intro": [
+    "中国語の語順は基本的に「主語＋動詞＋目的語」で、英語に近いです。動詞の形は人称や時制で変わりません。",
+    "文末に 吗（ma）をつけると「〜ですか？」の疑問文になります。"
+   ],
+   "vocab": [
+    {
+     "headword": "我",
+     "meanings": [
+      "私"
+     ],
+     "pos": "pronoun",
+     "examples": [
+      {
+       "text": "我是日本人。",
+       "ja": "私は日本人です。"
+      }
+     ],
+     "pinyin": "wǒ"
+    },
+    {
+     "headword": "你",
+     "meanings": [
+      "あなた"
+     ],
+     "pos": "pronoun",
+     "examples": [
+      {
+       "text": "你是学生吗？",
+       "ja": "あなたは学生ですか？"
+      }
+     ],
+     "pinyin": "nǐ"
+    },
+    {
+     "headword": "他",
+     "meanings": [
+      "彼"
+     ],
+     "pos": "pronoun",
+     "examples": [
+      {
+       "text": "他是我朋友。",
+       "ja": "彼は私の友だちです。"
+      }
+     ],
+     "pinyin": "tā"
+    },
+    {
+     "headword": "她",
+     "meanings": [
+      "彼女"
+     ],
+     "pos": "pronoun",
+     "examples": [
+      {
+       "text": "她是老师。",
+       "ja": "彼女は先生です。"
+      }
+     ],
+     "pinyin": "tā"
+    },
+    {
+     "headword": "叫",
+     "meanings": [
+      "（名前を）〜という"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "我叫小林。",
+       "ja": "小林といいます。"
+      }
+     ],
+     "pinyin": "jiào"
+    },
+    {
+     "headword": "名字",
+     "meanings": [
+      "名前"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "你叫什么名字？",
+       "ja": "お名前は？"
+      }
+     ],
+     "pinyin": "míngzi"
+    },
+    {
+     "headword": "日本人",
+     "meanings": [
+      "日本人"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "我是日本人。",
+       "ja": "私は日本人です。"
+      }
+     ],
+     "pinyin": "Rìběnrén"
+    },
+    {
+     "headword": "中国",
+     "meanings": [
+      "中国"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "我想去中国。",
+       "ja": "中国に行きたい。"
+      }
+     ],
+     "pinyin": "Zhōngguó"
+    },
+    {
+     "headword": "学生",
+     "meanings": [
+      "学生"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "我是大学生。",
+       "ja": "私は大学生です。"
+      }
+     ],
+     "pinyin": "xuésheng"
+    },
+    {
+     "headword": "老师",
+     "meanings": [
+      "先生"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "王老师好！",
+       "ja": "王先生、こんにちは！"
+      }
+     ],
+     "pinyin": "lǎoshī"
+    },
+    {
+     "headword": "朋友",
+     "meanings": [
+      "友だち"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "他是我的好朋友。",
+       "ja": "彼は私の親友です。"
+      }
+     ],
+     "pinyin": "péngyou"
+    },
+    {
+     "headword": "认识",
+     "meanings": [
+      "知り合う",
+      "知っている"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "认识你很高兴。",
+       "ja": "知り合えてうれしいです。"
+      }
+     ],
+     "pinyin": "rènshi"
+    }
+   ],
+   "phrases": [
+    {
+     "id": "zh-CN-u2-p1",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u2",
+     "ja": "私は小林といいます。",
+     "model": "我叫小林。",
+     "alts": [
+      "我姓小林。"
+     ],
+     "chunks": [
+      "我叫～"
+     ],
+     "pinyin": "Wǒ jiào Xiǎolín."
+    },
+    {
+     "id": "zh-CN-u2-p2",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u2",
+     "ja": "お名前は何ですか？",
+     "model": "你叫什么名字？",
+     "alts": [],
+     "chunks": [
+      "叫什么名字"
+     ],
+     "pinyin": "Nǐ jiào shénme míngzi?"
+    },
+    {
+     "id": "zh-CN-u2-p3",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u2",
+     "ja": "私は日本人です。",
+     "model": "我是日本人。",
+     "alts": [],
+     "chunks": [
+      "我是～"
+     ],
+     "pinyin": "Wǒ shì Rìběnrén."
+    },
+    {
+     "id": "zh-CN-u2-p4",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u2",
+     "ja": "どこの国の方ですか？",
+     "model": "你是哪国人？",
+     "alts": [],
+     "chunks": [
+      "哪国人"
+     ],
+     "pinyin": "Nǐ shì nǎ guó rén?"
+    },
+    {
+     "id": "zh-CN-u2-p5",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u2",
+     "ja": "知り合えてうれしいです。",
+     "model": "认识你很高兴。",
+     "alts": [
+      "很高兴认识你。"
+     ],
+     "chunks": [
+      "很高兴"
+     ],
+     "pinyin": "Rènshi nǐ hěn gāoxìng."
+    },
+    {
+     "id": "zh-CN-u2-p6",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u2",
+     "ja": "あなたは？",
+     "model": "你呢？",
+     "alts": [],
+     "chunks": [
+      "～呢？"
+     ],
+     "pinyin": "Nǐ ne?"
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "A 是 B／吗 の疑問文",
+     "explain": "「A は B です」は A 是 B。否定は 不是。文末に 吗 をつけると「〜ですか？」。",
+     "examples": [
+      {
+       "text": "我是学生。",
+       "ja": "私は学生です。",
+       "pinyin": "Wǒ shì xuésheng."
+      },
+      {
+       "text": "你是老师吗？",
+       "ja": "あなたは先生ですか？",
+       "pinyin": "Nǐ shì lǎoshī ma?"
+      },
+      {
+       "text": "他不是中国人。",
+       "ja": "彼は中国人ではありません。",
+       "pinyin": "Tā bú shì Zhōngguórén."
+      }
+     ]
+    },
+    {
+     "pattern": "～呢？（〜は？）",
+     "explain": "話題を相手に返すときは「名詞＋呢？」。",
+     "examples": [
+      {
+       "text": "我是日本人，你呢？",
+       "ja": "私は日本人です。あなたは？",
+       "pinyin": "Wǒ shì Rìběnrén, nǐ ne?"
+      },
+      {
+       "text": "我很好，你呢？",
+       "ja": "元気です。あなたは？",
+       "pinyin": "Wǒ hěn hǎo, nǐ ne?"
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "zh-CN-u2-z1",
+     "lang": "zh-CN",
+     "ja": "私は日本人です。",
+     "tiles": [
+      "我",
+      "是",
+      "日本人。"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "不"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u2-z2",
+     "lang": "zh-CN",
+     "ja": "あなたは先生ですか？",
+     "tiles": [
+      "你",
+      "是",
+      "老师",
+      "吗？"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2,
+       3
+      ]
+     ],
+     "extra": [
+      "呢"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u2-z3",
+     "lang": "zh-CN",
+     "ja": "お名前は何ですか？",
+     "tiles": [
+      "你",
+      "叫",
+      "什么",
+      "名字？"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2,
+       3
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "zh-CN-u3",
+   "no": 3,
+   "title": "数字と値段",
+   "goal": "数字と値段のやり取りができる",
+   "intro": [
+    "1〜10：一 yī、二 èr、三 sān、四 sì、五 wǔ、六 liù、七 qī、八 bā、九 jiǔ、十 shí。11は十一、20は二十、100は一百。",
+    "物を数えるときの「2つ」は 两（liǎng）を使います：两个、两杯。お金の単位は話し言葉で 块（kuài）＝元。"
+   ],
+   "vocab": [
+    {
+     "headword": "一",
+     "meanings": [
+      "1"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "一个人。",
+       "ja": "1人。"
+      }
+     ],
+     "pinyin": "yī"
+    },
+    {
+     "headword": "二",
+     "meanings": [
+      "2"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "二月。",
+       "ja": "2月。"
+      }
+     ],
+     "pinyin": "èr"
+    },
+    {
+     "headword": "两",
+     "meanings": [
+      "2つ（数えるとき）"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "两杯咖啡。",
+       "ja": "コーヒー2杯。"
+      }
+     ],
+     "pinyin": "liǎng"
+    },
+    {
+     "headword": "三",
+     "meanings": [
+      "3"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "三个苹果。",
+       "ja": "りんご3個。"
+      }
+     ],
+     "pinyin": "sān"
+    },
+    {
+     "headword": "十",
+     "meanings": [
+      "10"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "十块钱。",
+       "ja": "10元。"
+      }
+     ],
+     "pinyin": "shí"
+    },
+    {
+     "headword": "一百",
+     "meanings": [
+      "100"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "一百块。",
+       "ja": "100元。"
+      }
+     ],
+     "pinyin": "yìbǎi"
+    },
+    {
+     "headword": "个",
+     "meanings": [
+      "〜個（一般的な量詞）"
+     ],
+     "pos": "measure",
+     "examples": [
+      {
+       "text": "我要一个。",
+       "ja": "1つください。"
+      }
+     ],
+     "pinyin": "gè"
+    },
+    {
+     "headword": "块",
+     "meanings": [
+      "元（話し言葉）"
+     ],
+     "pos": "measure",
+     "examples": [
+      {
+       "text": "五块钱。",
+       "ja": "5元。"
+      }
+     ],
+     "pinyin": "kuài"
+    },
+    {
+     "headword": "钱",
+     "meanings": [
+      "お金"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "多少钱？",
+       "ja": "いくら？"
+      }
+     ],
+     "pinyin": "qián"
+    },
+    {
+     "headword": "多少",
+     "meanings": [
+      "どれくらい",
+      "いくつ"
+     ],
+     "pos": "pronoun",
+     "examples": [
+      {
+       "text": "多少钱？",
+       "ja": "いくらですか？"
+      }
+     ],
+     "pinyin": "duōshao"
+    },
+    {
+     "headword": "贵",
+     "meanings": [
+      "（値段が）高い"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "太贵了！",
+       "ja": "高すぎる！"
+      }
+     ],
+     "pinyin": "guì"
+    },
+    {
+     "headword": "便宜",
+     "meanings": [
+      "安い"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "便宜一点儿吧。",
+       "ja": "少し安くしてください。"
+      }
+     ],
+     "pinyin": "piányi"
+    }
+   ],
+   "phrases": [
+    {
+     "id": "zh-CN-u3-p1",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u3",
+     "ja": "これはいくらですか？",
+     "model": "这个多少钱？",
+     "alts": [
+      "多少钱？"
+     ],
+     "chunks": [
+      "多少钱"
+     ],
+     "pinyin": "Zhège duōshao qián?"
+    },
+    {
+     "id": "zh-CN-u3-p2",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u3",
+     "ja": "20元です。",
+     "model": "二十块。",
+     "alts": [
+      "二十块钱。"
+     ],
+     "chunks": [
+      "～块"
+     ],
+     "pinyin": "Èrshí kuài."
+    },
+    {
+     "id": "zh-CN-u3-p3",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u3",
+     "ja": "高すぎます！",
+     "model": "太贵了！",
+     "alts": [],
+     "chunks": [
+      "太～了"
+     ],
+     "pinyin": "Tài guì le!"
+    },
+    {
+     "id": "zh-CN-u3-p4",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u3",
+     "ja": "少し安くしてください。",
+     "model": "便宜一点儿吧。",
+     "alts": [
+      "能便宜一点儿吗？"
+     ],
+     "chunks": [
+      "便宜一点儿"
+     ],
+     "pinyin": "Piányi yìdiǎnr ba."
+    },
+    {
+     "id": "zh-CN-u3-p5",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u3",
+     "ja": "2つください。",
+     "model": "我要两个。",
+     "alts": [],
+     "chunks": [
+      "两个"
+     ],
+     "pinyin": "Wǒ yào liǎng ge."
+    },
+    {
+     "id": "zh-CN-u3-p6",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u3",
+     "ja": "スマホで払えますか？",
+     "model": "可以用手机付吗？",
+     "alts": [
+      "可以扫码吗？"
+     ],
+     "chunks": [
+      "用手机付"
+     ],
+     "pinyin": "Kěyǐ yòng shǒujī fù ma?"
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "数＋量詞＋名詞",
+     "explain": "物を数えるときは間に量詞を入れます：一个人（1人）、两杯水（水2杯）、三本书（本3冊）。迷ったら 个 が一番広く使えます。",
+     "examples": [
+      {
+       "text": "我要一个。",
+       "ja": "1つください。",
+       "pinyin": "Wǒ yào yí ge."
+      },
+      {
+       "text": "两杯咖啡。",
+       "ja": "コーヒー2杯。",
+       "pinyin": "Liǎng bēi kāfēi."
+      },
+      {
+       "text": "三本书。",
+       "ja": "本3冊。",
+       "pinyin": "Sān běn shū."
+      }
+     ]
+    },
+    {
+     "pattern": "太～了（〜すぎる）",
+     "explain": "程度が高すぎることは 太＋形容詞＋了。",
+     "examples": [
+      {
+       "text": "太贵了。",
+       "ja": "高すぎる。",
+       "pinyin": "Tài guì le."
+      },
+      {
+       "text": "太好了！",
+       "ja": "よかった！",
+       "pinyin": "Tài hǎo le!"
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "zh-CN-u3-z1",
+     "lang": "zh-CN",
+     "ja": "これはいくらですか？",
+     "tiles": [
+      "这个",
+      "多少",
+      "钱？"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "吗"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u3-z2",
+     "lang": "zh-CN",
+     "ja": "2つください。",
+     "tiles": [
+      "我",
+      "要",
+      "两个。"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "二个"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u3-z3",
+     "lang": "zh-CN",
+     "ja": "高すぎます！",
+     "tiles": [
+      "太",
+      "贵",
+      "了！"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "很"
+     ],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "zh-CN-u4",
+   "no": 4,
+   "title": "時間・曜日",
+   "goal": "今日・明日・曜日・時刻を言える。時間の言葉の位置を知る",
+   "intro": [
+    "曜日は 星期＋数字：星期一（月）〜星期六（土）、日曜は 星期天（星期日）。",
+    "時を表す言葉は動詞より前に置きます：我明天去（私は明日行く）。"
+   ],
+   "vocab": [
+    {
+     "headword": "今天",
+     "meanings": [
+      "今日"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "今天星期几？",
+       "ja": "今日は何曜日？"
+      }
+     ],
+     "pinyin": "jīntiān"
+    },
+    {
+     "headword": "明天",
+     "meanings": [
+      "明日"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "明天见！",
+       "ja": "また明日！"
+      }
+     ],
+     "pinyin": "míngtiān"
+    },
+    {
+     "headword": "昨天",
+     "meanings": [
+      "昨日"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "昨天很忙。",
+       "ja": "昨日は忙しかった。"
+      }
+     ],
+     "pinyin": "zuótiān"
+    },
+    {
+     "headword": "现在",
+     "meanings": [
+      "今"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "现在几点？",
+       "ja": "今何時？"
+      }
+     ],
+     "pinyin": "xiànzài"
+    },
+    {
+     "headword": "点",
+     "meanings": [
+      "〜時"
+     ],
+     "pos": "measure",
+     "examples": [
+      {
+       "text": "三点。",
+       "ja": "3時。"
+      }
+     ],
+     "pinyin": "diǎn"
+    },
+    {
+     "headword": "半",
+     "meanings": [
+      "半",
+      "30分"
+     ],
+     "pos": "number",
+     "examples": [
+      {
+       "text": "八点半。",
+       "ja": "8時半。"
+      }
+     ],
+     "pinyin": "bàn"
+    },
+    {
+     "headword": "星期",
+     "meanings": [
+      "曜日",
+      "週"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "星期一。",
+       "ja": "月曜日。"
+      }
+     ],
+     "pinyin": "xīngqī"
+    },
+    {
+     "headword": "星期天",
+     "meanings": [
+      "日曜日"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "星期天我休息。",
+       "ja": "日曜は休みます。"
+      }
+     ],
+     "pinyin": "xīngqītiān"
+    },
+    {
+     "headword": "几",
+     "meanings": [
+      "いくつ（10以下を予想）"
+     ],
+     "pos": "pronoun",
+     "examples": [
+      {
+       "text": "现在几点？",
+       "ja": "今何時？"
+      }
+     ],
+     "pinyin": "jǐ"
+    },
+    {
+     "headword": "早上",
+     "meanings": [
+      "朝"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "早上七点起床。",
+       "ja": "朝7時に起きる。"
+      }
+     ],
+     "pinyin": "zǎoshang"
+    },
+    {
+     "headword": "晚上",
+     "meanings": [
+      "夜"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "晚上见。",
+       "ja": "夜に会おう。"
+      }
+     ],
+     "pinyin": "wǎnshang"
+    },
+    {
+     "headword": "忙",
+     "meanings": [
+      "忙しい"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "你忙吗？",
+       "ja": "忙しい？"
+      }
+     ],
+     "pinyin": "máng"
+    }
+   ],
+   "phrases": [
+    {
+     "id": "zh-CN-u4-p1",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u4",
+     "ja": "今何時ですか？",
+     "model": "现在几点？",
+     "alts": [],
+     "chunks": [
+      "几点"
+     ],
+     "pinyin": "Xiànzài jǐ diǎn?"
+    },
+    {
+     "id": "zh-CN-u4-p2",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u4",
+     "ja": "3時半です。",
+     "model": "三点半。",
+     "alts": [
+      "现在三点半。"
+     ],
+     "chunks": [
+      "～点半"
+     ],
+     "pinyin": "Sān diǎn bàn."
+    },
+    {
+     "id": "zh-CN-u4-p3",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u4",
+     "ja": "今日は何曜日ですか？",
+     "model": "今天星期几？",
+     "alts": [],
+     "chunks": [
+      "星期几"
+     ],
+     "pinyin": "Jīntiān xīngqī jǐ?"
+    },
+    {
+     "id": "zh-CN-u4-p4",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u4",
+     "ja": "今日は金曜日です。",
+     "model": "今天星期五。",
+     "alts": [],
+     "chunks": [
+      "今天星期～"
+     ],
+     "pinyin": "Jīntiān xīngqīwǔ."
+    },
+    {
+     "id": "zh-CN-u4-p5",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u4",
+     "ja": "また明日！",
+     "model": "明天见！",
+     "alts": [],
+     "chunks": [
+      "～见"
+     ],
+     "pinyin": "Míngtiān jiàn!"
+    },
+    {
+     "id": "zh-CN-u4-p6",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u4",
+     "ja": "明日は忙しいですか？",
+     "model": "你明天忙吗？",
+     "alts": [],
+     "chunks": [
+      "忙吗"
+     ],
+     "pinyin": "Nǐ míngtiān máng ma?"
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "時間の言葉は動詞の前",
+     "explain": "「いつ」を表す言葉（今天・明天・三点など）は主語の前か後、動詞より前に置きます。",
+     "examples": [
+      {
+       "text": "我明天去北京。",
+       "ja": "私は明日北京に行きます。",
+       "pinyin": "Wǒ míngtiān qù Běijīng."
+      },
+      {
+       "text": "我们三点见。",
+       "ja": "3時に会いましょう。",
+       "pinyin": "Wǒmen sān diǎn jiàn."
+      },
+      {
+       "text": "他晚上工作。",
+       "ja": "彼は夜働きます。",
+       "pinyin": "Tā wǎnshang gōngzuò."
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "zh-CN-u4-z1",
+     "lang": "zh-CN",
+     "ja": "今何時ですか？",
+     "tiles": [
+      "现在",
+      "几点？"
+     ],
+     "answers": [
+      [
+       0,
+       1
+      ]
+     ],
+     "extra": [
+      "吗"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u4-z2",
+     "lang": "zh-CN",
+     "ja": "今日は何曜日ですか？",
+     "tiles": [
+      "今天",
+      "星期",
+      "几？"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u4-z3",
+     "lang": "zh-CN",
+     "ja": "私は明日北京に行きます。",
+     "tiles": [
+      "我",
+      "明天",
+      "去",
+      "北京。"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2,
+       3
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "zh-CN-u5",
+   "no": 5,
+   "title": "食事・注文",
+   "goal": "注文して、好みを伝えられる",
+   "intro": [
+    "注文は 我要～（〜をください／〜にします）が一番簡単です。「〜したい」は 我想～。"
+   ],
+   "vocab": [
+    {
+     "headword": "要",
+     "meanings": [
+      "ほしい",
+      "〜にする"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "我要这个。",
+       "ja": "これにします。"
+      }
+     ],
+     "pinyin": "yào"
+    },
+    {
+     "headword": "想",
+     "meanings": [
+      "〜したい"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "我想吃饺子。",
+       "ja": "餃子が食べたい。"
+      }
+     ],
+     "pinyin": "xiǎng"
+    },
+    {
+     "headword": "吃",
+     "meanings": [
+      "食べる"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "你吃饭了吗？",
+       "ja": "ごはん食べた？"
+      }
+     ],
+     "pinyin": "chī"
+    },
+    {
+     "headword": "喝",
+     "meanings": [
+      "飲む"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "你想喝什么？",
+       "ja": "何を飲みたい？"
+      }
+     ],
+     "pinyin": "hē"
+    },
+    {
+     "headword": "水",
+     "meanings": [
+      "水"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "一瓶水。",
+       "ja": "水1本。"
+      }
+     ],
+     "pinyin": "shuǐ"
+    },
+    {
+     "headword": "茶",
+     "meanings": [
+      "お茶"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "我想喝茶。",
+       "ja": "お茶が飲みたい。"
+      }
+     ],
+     "pinyin": "chá"
+    },
+    {
+     "headword": "咖啡",
+     "meanings": [
+      "コーヒー"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "一杯咖啡。",
+       "ja": "コーヒー1杯。"
+      }
+     ],
+     "pinyin": "kāfēi"
+    },
+    {
+     "headword": "米饭",
+     "meanings": [
+      "ごはん"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "一碗米饭。",
+       "ja": "ごはん1杯。"
+      }
+     ],
+     "pinyin": "mǐfàn"
+    },
+    {
+     "headword": "饺子",
+     "meanings": [
+      "餃子"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "我喜欢吃饺子。",
+       "ja": "餃子が好き。"
+      }
+     ],
+     "pinyin": "jiǎozi"
+    },
+    {
+     "headword": "好吃",
+     "meanings": [
+      "おいしい"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "真好吃！",
+       "ja": "本当においしい！"
+      }
+     ],
+     "pinyin": "hǎochī"
+    },
+    {
+     "headword": "辣",
+     "meanings": [
+      "辛い"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "不要太辣。",
+       "ja": "あまり辛くしないで。"
+      }
+     ],
+     "pinyin": "là"
+    },
+    {
+     "headword": "买单",
+     "meanings": [
+      "お会計"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "服务员，买单！",
+       "ja": "すみません、お会計！"
+      }
+     ],
+     "pinyin": "mǎidān"
+    }
+   ],
+   "phrases": [
+    {
+     "id": "zh-CN-u5-p1",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u5",
+     "ja": "これにします。",
+     "model": "我要这个。",
+     "alts": [
+      "我要一个这个。"
+     ],
+     "chunks": [
+      "我要～"
+     ],
+     "pinyin": "Wǒ yào zhège."
+    },
+    {
+     "id": "zh-CN-u5-p2",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u5",
+     "ja": "コーヒーが飲みたいです。",
+     "model": "我想喝咖啡。",
+     "alts": [],
+     "chunks": [
+      "我想～"
+     ],
+     "pinyin": "Wǒ xiǎng hē kāfēi."
+    },
+    {
+     "id": "zh-CN-u5-p3",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u5",
+     "ja": "あまり辛くしないでください。",
+     "model": "不要太辣。",
+     "alts": [
+      "少放辣。"
+     ],
+     "chunks": [
+      "不要太～"
+     ],
+     "pinyin": "Bú yào tài là."
+    },
+    {
+     "id": "zh-CN-u5-p4",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u5",
+     "ja": "本当においしい！",
+     "model": "真好吃！",
+     "alts": [
+      "很好吃！"
+     ],
+     "chunks": [
+      "好吃"
+     ],
+     "pinyin": "Zhēn hǎochī!"
+    },
+    {
+     "id": "zh-CN-u5-p5",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u5",
+     "ja": "すみません、お会計お願いします！",
+     "model": "服务员，买单！",
+     "alts": [
+      "买单。"
+     ],
+     "chunks": [
+      "买单"
+     ],
+     "pinyin": "Fúwùyuán, mǎidān!"
+    },
+    {
+     "id": "zh-CN-u5-p6",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u5",
+     "ja": "メニューはありますか？",
+     "model": "有菜单吗？",
+     "alts": [],
+     "chunks": [
+      "有～吗"
+     ],
+     "pinyin": "Yǒu càidān ma?"
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "要／想 ＋ 動詞・名詞",
+     "explain": "要＋名詞＝〜がほしい（注文）、想＋動詞＝〜したい。どちらも主語の後、動詞の前。",
+     "examples": [
+      {
+       "text": "我要一杯茶。",
+       "ja": "お茶を1杯ください。",
+       "pinyin": "Wǒ yào yì bēi chá."
+      },
+      {
+       "text": "我想吃米饭。",
+       "ja": "ごはんが食べたい。",
+       "pinyin": "Wǒ xiǎng chī mǐfàn."
+      },
+      {
+       "text": "你想喝什么？",
+       "ja": "何を飲みたい？",
+       "pinyin": "Nǐ xiǎng hē shénme?"
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "zh-CN-u5-z1",
+     "lang": "zh-CN",
+     "ja": "これにします。",
+     "tiles": [
+      "我",
+      "要",
+      "这个。"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "想"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u5-z2",
+     "lang": "zh-CN",
+     "ja": "コーヒーが飲みたいです。",
+     "tiles": [
+      "我",
+      "想",
+      "喝",
+      "咖啡。"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2,
+       3
+      ]
+     ],
+     "extra": [
+      "吃"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u5-z3",
+     "lang": "zh-CN",
+     "ja": "メニューはありますか？",
+     "tiles": [
+      "有",
+      "菜单",
+      "吗？"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "是"
+     ],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "zh-CN-u6",
+   "no": 6,
+   "title": "買い物",
+   "goal": "これ・あれを指し、「ある？」と聞いて買える",
+   "intro": [
+    "「これ」は 这个（zhège）、「あれ・それ」は 那个（nàge）。",
+    "「〜はありますか」は 有～吗？ または 有没有～？（肯定と否定を並べた疑問文）。"
+   ],
+   "vocab": [
+    {
+     "headword": "这个",
+     "meanings": [
+      "これ",
+      "この"
+     ],
+     "pos": "pronoun",
+     "examples": [
+      {
+       "text": "这个好看。",
+       "ja": "これはすてき。"
+      }
+     ],
+     "pinyin": "zhège"
+    },
+    {
+     "headword": "那个",
+     "meanings": [
+      "あれ",
+      "それ"
+     ],
+     "pos": "pronoun",
+     "examples": [
+      {
+       "text": "那个多少钱？",
+       "ja": "あれはいくら？"
+      }
+     ],
+     "pinyin": "nàge"
+    },
+    {
+     "headword": "有",
+     "meanings": [
+      "ある",
+      "持っている"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "有大的吗？",
+       "ja": "大きいのはありますか？"
+      }
+     ],
+     "pinyin": "yǒu"
+    },
+    {
+     "headword": "没有",
+     "meanings": [
+      "ない"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "没有了。",
+       "ja": "もうありません。"
+      }
+     ],
+     "pinyin": "méiyǒu"
+    },
+    {
+     "headword": "买",
+     "meanings": [
+      "買う"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "我想买这个。",
+       "ja": "これを買いたい。"
+      }
+     ],
+     "pinyin": "mǎi"
+    },
+    {
+     "headword": "卖",
+     "meanings": [
+      "売る"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "这里卖水吗？",
+       "ja": "ここで水は売っていますか？"
+      }
+     ],
+     "pinyin": "mài"
+    },
+    {
+     "headword": "大",
+     "meanings": [
+      "大きい"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "太大了。",
+       "ja": "大きすぎる。"
+      }
+     ],
+     "pinyin": "dà"
+    },
+    {
+     "headword": "小",
+     "meanings": [
+      "小さい"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "有小一点儿的吗？",
+       "ja": "もう少し小さいのはありますか？"
+      }
+     ],
+     "pinyin": "xiǎo"
+    },
+    {
+     "headword": "衣服",
+     "meanings": [
+      "服"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "这件衣服很好看。",
+       "ja": "この服はすてき。"
+      }
+     ],
+     "pinyin": "yīfu"
+    },
+    {
+     "headword": "试",
+     "meanings": [
+      "試す"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "可以试一下吗？",
+       "ja": "試着してもいいですか？"
+      }
+     ],
+     "pinyin": "shì"
+    },
+    {
+     "headword": "颜色",
+     "meanings": [
+      "色"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "有别的颜色吗？",
+       "ja": "ほかの色はありますか？"
+      }
+     ],
+     "pinyin": "yánsè"
+    },
+    {
+     "headword": "超市",
+     "meanings": [
+      "スーパー"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "我去超市。",
+       "ja": "スーパーに行く。"
+      }
+     ],
+     "pinyin": "chāoshì"
+    }
+   ],
+   "phrases": [
+    {
+     "id": "zh-CN-u6-p1",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u6",
+     "ja": "もう少し小さいのはありますか？",
+     "model": "有没有小一点儿的？",
+     "alts": [
+      "有小一点儿的吗？"
+     ],
+     "chunks": [
+      "有没有～"
+     ],
+     "pinyin": "Yǒu méiyǒu xiǎo yìdiǎnr de?"
+    },
+    {
+     "id": "zh-CN-u6-p2",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u6",
+     "ja": "試してもいいですか？",
+     "model": "可以试一下吗？",
+     "alts": [],
+     "chunks": [
+      "试一下"
+     ],
+     "pinyin": "Kěyǐ shì yíxià ma?"
+    },
+    {
+     "id": "zh-CN-u6-p3",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u6",
+     "ja": "見ているだけです。",
+     "model": "我随便看看。",
+     "alts": [
+      "我只是看看。"
+     ],
+     "chunks": [
+      "随便看看"
+     ],
+     "pinyin": "Wǒ suíbiàn kànkan."
+    },
+    {
+     "id": "zh-CN-u6-p4",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u6",
+     "ja": "これを買います。",
+     "model": "我买这个。",
+     "alts": [
+      "我要这个。"
+     ],
+     "chunks": [
+      "我买～"
+     ],
+     "pinyin": "Wǒ mǎi zhège."
+    },
+    {
+     "id": "zh-CN-u6-p5",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u6",
+     "ja": "ほかの色はありますか？",
+     "model": "有别的颜色吗？",
+     "alts": [],
+     "chunks": [
+      "别的"
+     ],
+     "pinyin": "Yǒu bié de yánsè ma?"
+    },
+    {
+     "id": "zh-CN-u6-p6",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u6",
+     "ja": "あれはいくらですか？",
+     "model": "那个多少钱？",
+     "alts": [],
+     "chunks": [
+      "那个"
+     ],
+     "pinyin": "Nàge duōshao qián?"
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "有～吗？／有没有～？",
+     "explain": "「ある？」は 有～吗？。肯定と否定を並べた 有没有～？ でも同じ意味（吗は付けない）。「ない」は 没有（不有とは言わない）。",
+     "examples": [
+      {
+       "text": "有水吗？",
+       "ja": "水はありますか？",
+       "pinyin": "Yǒu shuǐ ma?"
+      },
+      {
+       "text": "有没有大的？",
+       "ja": "大きいのはありますか？",
+       "pinyin": "Yǒu méiyǒu dà de?"
+      },
+      {
+       "text": "没有了。",
+       "ja": "もうありません。",
+       "pinyin": "Méiyǒu le."
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "zh-CN-u6-z1",
+     "lang": "zh-CN",
+     "ja": "試してもいいですか？",
+     "tiles": [
+      "可以",
+      "试一下",
+      "吗？"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "有"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u6-z2",
+     "lang": "zh-CN",
+     "ja": "ほかの色はありますか？",
+     "tiles": [
+      "有",
+      "别的",
+      "颜色",
+      "吗？"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2,
+       3
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u6-z3",
+     "lang": "zh-CN",
+     "ja": "これを買います。",
+     "tiles": [
+      "我",
+      "买",
+      "这个。"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "卖"
+     ],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "zh-CN-u7",
+   "no": 7,
+   "title": "移動・道を聞く",
+   "goal": "場所を尋ね、行き方を理解できる",
+   "intro": [
+    "「〜はどこ？」は ～在哪儿？（北方で一般的）または ～在哪里？。どちらも通じます。"
+   ],
+   "vocab": [
+    {
+     "headword": "在",
+     "meanings": [
+      "〜にある",
+      "いる"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "我在车站。",
+       "ja": "駅にいます。"
+      }
+     ],
+     "pinyin": "zài"
+    },
+    {
+     "headword": "哪儿",
+     "meanings": [
+      "どこ"
+     ],
+     "pos": "pronoun",
+     "examples": [
+      {
+       "text": "洗手间在哪儿？",
+       "ja": "トイレはどこ？"
+      }
+     ],
+     "pinyin": "nǎr"
+    },
+    {
+     "headword": "洗手间",
+     "meanings": [
+      "トイレ"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "请问，洗手间在哪儿？",
+       "ja": "すみません、トイレはどこですか？"
+      }
+     ],
+     "pinyin": "xǐshǒujiān"
+    },
+    {
+     "headword": "地铁",
+     "meanings": [
+      "地下鉄"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "我坐地铁去。",
+       "ja": "地下鉄で行きます。"
+      }
+     ],
+     "pinyin": "dìtiě"
+    },
+    {
+     "headword": "地铁站",
+     "meanings": [
+      "地下鉄の駅"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "地铁站在前边。",
+       "ja": "地下鉄の駅は前のほうです。"
+      }
+     ],
+     "pinyin": "dìtiězhàn"
+    },
+    {
+     "headword": "出租车",
+     "meanings": [
+      "タクシー"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "我们打车吧。",
+       "ja": "タクシーで行こう。"
+      }
+     ],
+     "pinyin": "chūzūchē"
+    },
+    {
+     "headword": "去",
+     "meanings": [
+      "行く"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "你去哪儿？",
+       "ja": "どこに行くの？"
+      }
+     ],
+     "pinyin": "qù"
+    },
+    {
+     "headword": "远",
+     "meanings": [
+      "遠い"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "远不远？",
+       "ja": "遠いですか？"
+      }
+     ],
+     "pinyin": "yuǎn"
+    },
+    {
+     "headword": "近",
+     "meanings": [
+      "近い"
+     ],
+     "pos": "adjective",
+     "examples": [
+      {
+       "text": "很近。",
+       "ja": "近いです。"
+      }
+     ],
+     "pinyin": "jìn"
+    },
+    {
+     "headword": "左边",
+     "meanings": [
+      "左側"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "在左边。",
+       "ja": "左にあります。"
+      }
+     ],
+     "pinyin": "zuǒbian"
+    },
+    {
+     "headword": "右边",
+     "meanings": [
+      "右側"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "在右边。",
+       "ja": "右にあります。"
+      }
+     ],
+     "pinyin": "yòubian"
+    },
+    {
+     "headword": "一直走",
+     "meanings": [
+      "まっすぐ行く"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "一直走就到了。",
+       "ja": "まっすぐ行けば着きます。"
+      }
+     ],
+     "pinyin": "yìzhí zǒu"
+    }
+   ],
+   "phrases": [
+    {
+     "id": "zh-CN-u7-p1",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u7",
+     "ja": "すみません、トイレはどこですか？",
+     "model": "请问，洗手间在哪儿？",
+     "alts": [
+      "洗手间在哪儿？",
+      "厕所在哪儿？"
+     ],
+     "chunks": [
+      "在哪儿"
+     ],
+     "pinyin": "Qǐngwèn, xǐshǒujiān zài nǎr?"
+    },
+    {
+     "id": "zh-CN-u7-p2",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u7",
+     "ja": "遠いですか？",
+     "model": "远不远？",
+     "alts": [
+      "远吗？"
+     ],
+     "chunks": [
+      "远不远"
+     ],
+     "pinyin": "Yuǎn bu yuǎn?"
+    },
+    {
+     "id": "zh-CN-u7-p3",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u7",
+     "ja": "まっすぐ行ってください。",
+     "model": "一直走。",
+     "alts": [],
+     "chunks": [
+      "一直走"
+     ],
+     "pinyin": "Yìzhí zǒu."
+    },
+    {
+     "id": "zh-CN-u7-p4",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u7",
+     "ja": "左にあります。",
+     "model": "在左边。",
+     "alts": [],
+     "chunks": [
+      "在～边"
+     ],
+     "pinyin": "Zài zuǒbian."
+    },
+    {
+     "id": "zh-CN-u7-p5",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u7",
+     "ja": "地下鉄で行きます。",
+     "model": "我坐地铁去。",
+     "alts": [],
+     "chunks": [
+      "坐～去"
+     ],
+     "pinyin": "Wǒ zuò dìtiě qù."
+    },
+    {
+     "id": "zh-CN-u7-p6",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u7",
+     "ja": "北京駅へはどう行きますか？",
+     "model": "到北京站怎么走？",
+     "alts": [],
+     "chunks": [
+      "怎么走"
+     ],
+     "pinyin": "Dào Běijīng zhàn zěnme zǒu?"
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "～在＋場所／坐＋乗り物＋去",
+     "explain": "「AはBにある」は A 在 B。乗り物で行くのは 坐＋乗り物＋去。",
+     "examples": [
+      {
+       "text": "我在酒店。",
+       "ja": "ホテルにいます。",
+       "pinyin": "Wǒ zài jiǔdiàn."
+      },
+      {
+       "text": "银行在右边。",
+       "ja": "銀行は右にあります。",
+       "pinyin": "Yínháng zài yòubian."
+      },
+      {
+       "text": "我坐出租车去。",
+       "ja": "タクシーで行きます。",
+       "pinyin": "Wǒ zuò chūzūchē qù."
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "zh-CN-u7-z1",
+     "lang": "zh-CN",
+     "ja": "トイレはどこですか？",
+     "tiles": [
+      "洗手间",
+      "在",
+      "哪儿？"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2
+      ]
+     ],
+     "extra": [
+      "是"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u7-z2",
+     "lang": "zh-CN",
+     "ja": "地下鉄で行きます。",
+     "tiles": [
+      "我",
+      "坐",
+      "地铁",
+      "去。"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2,
+       3
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u7-z3",
+     "lang": "zh-CN",
+     "ja": "左にあります。",
+     "tiles": [
+      "在",
+      "左边。"
+     ],
+     "answers": [
+      [
+       0,
+       1
+      ]
+     ],
+     "extra": [
+      "是"
+     ],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  },
+  {
+   "id": "zh-CN-u8",
+   "no": 8,
+   "title": "好きなこと・予定",
+   "goal": "好きなことを言い、予定を話せる",
+   "intro": [
+    "「〜が好き」は 喜欢～（xǐhuan）。後ろに名詞も動詞も置けます：喜欢音乐、喜欢看电影。",
+    "予定は時間の言葉＋動詞でOK。「〜しよう」は文末に 吧。"
+   ],
+   "vocab": [
+    {
+     "headword": "喜欢",
+     "meanings": [
+      "好きだ"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "我喜欢音乐。",
+       "ja": "音楽が好き。"
+      }
+     ],
+     "pinyin": "xǐhuan"
+    },
+    {
+     "headword": "音乐",
+     "meanings": [
+      "音楽"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "你喜欢什么音乐？",
+       "ja": "どんな音楽が好き？"
+      }
+     ],
+     "pinyin": "yīnyuè"
+    },
+    {
+     "headword": "看",
+     "meanings": [
+      "見る",
+      "読む"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "我喜欢看电影。",
+       "ja": "映画を見るのが好き。"
+      }
+     ],
+     "pinyin": "kàn"
+    },
+    {
+     "headword": "电影",
+     "meanings": [
+      "映画"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "我们去看电影吧。",
+       "ja": "映画を見に行こう。"
+      }
+     ],
+     "pinyin": "diànyǐng"
+    },
+    {
+     "headword": "旅游",
+     "meanings": [
+      "旅行する"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "我想去中国旅游。",
+       "ja": "中国に旅行したい。"
+      }
+     ],
+     "pinyin": "lǚyóu"
+    },
+    {
+     "headword": "周末",
+     "meanings": [
+      "週末"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "周末你做什么？",
+       "ja": "週末は何をするの？"
+      }
+     ],
+     "pinyin": "zhōumò"
+    },
+    {
+     "headword": "做",
+     "meanings": [
+      "する",
+      "作る"
+     ],
+     "pos": "verb",
+     "examples": [
+      {
+       "text": "你在做什么？",
+       "ja": "何をしているの？"
+      }
+     ],
+     "pinyin": "zuò"
+    },
+    {
+     "headword": "一起",
+     "meanings": [
+      "一緒に"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "我们一起去吧。",
+       "ja": "一緒に行こう。"
+      }
+     ],
+     "pinyin": "yìqǐ"
+    },
+    {
+     "headword": "也",
+     "meanings": [
+      "〜も"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "我也喜欢。",
+       "ja": "私も好き。"
+      }
+     ],
+     "pinyin": "yě"
+    },
+    {
+     "headword": "很",
+     "meanings": [
+      "とても"
+     ],
+     "pos": "adverb",
+     "examples": [
+      {
+       "text": "我很喜欢。",
+       "ja": "とても好き。"
+      }
+     ],
+     "pinyin": "hěn"
+    },
+    {
+     "headword": "运动",
+     "meanings": [
+      "運動（する）"
+     ],
+     "pos": "noun",
+     "examples": [
+      {
+       "text": "我喜欢运动。",
+       "ja": "運動が好き。"
+      }
+     ],
+     "pinyin": "yùndòng"
+    },
+    {
+     "headword": "有空",
+     "meanings": [
+      "暇がある"
+     ],
+     "pos": "phrase",
+     "examples": [
+      {
+       "text": "你明天有空吗？",
+       "ja": "明日暇？"
+      }
+     ],
+     "pinyin": "yǒu kòng"
+    }
+   ],
+   "phrases": [
+    {
+     "id": "zh-CN-u8-p1",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u8",
+     "ja": "映画を見るのが大好きです。",
+     "model": "我很喜欢看电影。",
+     "alts": [
+      "我喜欢看电影。"
+     ],
+     "chunks": [
+      "喜欢＋動詞"
+     ],
+     "pinyin": "Wǒ hěn xǐhuan kàn diànyǐng."
+    },
+    {
+     "id": "zh-CN-u8-p2",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u8",
+     "ja": "何が好きですか？",
+     "model": "你喜欢什么？",
+     "alts": [],
+     "chunks": [
+      "喜欢什么"
+     ],
+     "pinyin": "Nǐ xǐhuan shénme?"
+    },
+    {
+     "id": "zh-CN-u8-p3",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u8",
+     "ja": "私もです。",
+     "model": "我也是。",
+     "alts": [],
+     "chunks": [
+      "也"
+     ],
+     "pinyin": "Wǒ yě shì."
+    },
+    {
+     "id": "zh-CN-u8-p4",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u8",
+     "ja": "週末は何をしますか？",
+     "model": "周末你做什么？",
+     "alts": [
+      "你周末做什么？"
+     ],
+     "chunks": [
+      "做什么"
+     ],
+     "pinyin": "Zhōumò nǐ zuò shénme?"
+    },
+    {
+     "id": "zh-CN-u8-p5",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u8",
+     "ja": "明日は空いていますか？",
+     "model": "你明天有空吗？",
+     "alts": [],
+     "chunks": [
+      "有空"
+     ],
+     "pinyin": "Nǐ míngtiān yǒu kòng ma?"
+    },
+    {
+     "id": "zh-CN-u8-p6",
+     "lang": "zh-CN",
+     "level": 1,
+     "unit": "zh-CN-u8",
+     "ja": "一緒に行きましょう！",
+     "model": "我们一起去吧！",
+     "alts": [],
+     "chunks": [
+      "一起",
+      "～吧"
+     ],
+     "pinyin": "Wǒmen yìqǐ qù ba!"
+    }
+   ],
+   "grammar": [
+    {
+     "pattern": "喜欢＋名詞／動詞",
+     "explain": "喜欢の後ろには名詞も「動詞＋目的語」も置けます。強めるときは 很喜欢。",
+     "examples": [
+      {
+       "text": "我喜欢茶。",
+       "ja": "お茶が好き。",
+       "pinyin": "Wǒ xǐhuan chá."
+      },
+      {
+       "text": "我喜欢看书。",
+       "ja": "読書が好き。",
+       "pinyin": "Wǒ xǐhuan kàn shū."
+      },
+      {
+       "text": "他很喜欢运动。",
+       "ja": "彼は運動が大好き。",
+       "pinyin": "Tā hěn xǐhuan yùndòng."
+      }
+     ]
+    },
+    {
+     "pattern": "～吧（〜しよう／〜でしょう）",
+     "explain": "文末の 吧 は提案（〜しよう）や軽い推量を表します。",
+     "examples": [
+      {
+       "text": "我们走吧。",
+       "ja": "行きましょう。",
+       "pinyin": "Wǒmen zǒu ba."
+      },
+      {
+       "text": "一起吃饭吧。",
+       "ja": "一緒にごはんを食べよう。",
+       "pinyin": "Yìqǐ chīfàn ba."
+      }
+     ]
+    }
+   ],
+   "puzzles": [
+    {
+     "id": "zh-CN-u8-z1",
+     "lang": "zh-CN",
+     "ja": "映画を見るのが大好きです。",
+     "tiles": [
+      "我",
+      "很",
+      "喜欢",
+      "看",
+      "电影。"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2,
+       3,
+       4
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u8-z2",
+     "lang": "zh-CN",
+     "ja": "一緒に行きましょう！",
+     "tiles": [
+      "我们",
+      "一起",
+      "去",
+      "吧！"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2,
+       3
+      ]
+     ],
+     "extra": [
+      "吗"
+     ],
+     "unit": "chunk",
+     "level": 1
+    },
+    {
+     "id": "zh-CN-u8-z3",
+     "lang": "zh-CN",
+     "ja": "明日は空いていますか？",
+     "tiles": [
+      "你",
+      "明天",
+      "有空",
+      "吗？"
+     ],
+     "answers": [
+      [
+       0,
+       1,
+       2,
+       3
+      ]
+     ],
+     "extra": [],
+     "unit": "chunk",
+     "level": 1
+    }
+   ]
+  }
+ ]
+}

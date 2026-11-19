@@ -7,6 +7,7 @@ import { startTest } from './study.js';
 import { startQuick } from './quick.js';
 import { curLang, langOf, L } from './langs.js';
 import { lessonStats, streakDays } from './lesson.js';
+import { COURSE_LANGS } from './course.js';
 
 const DAY = 86400000;
 const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };
@@ -86,7 +87,8 @@ export async function homeScreen(el) {
     <section class="actions">
       ${test ? `<a class="action resume" href="#session?id=${test.id}">${icon('play', 20)}<span class="grow"><b>前回の続きから</b><small>単語テスト 残り${left(test)}問</small></span>${icon('chevron', 18)}</a>` : ''}
       ${quick ? `<a class="action resume" href="#quick-run?id=${quick.id}">${icon('play', 20)}<span class="grow"><b>単語帳の続きから</b><small>${Object.keys(quick.answered || {}).length}枚済み</small></span>${icon('chevron', 18)}</a>` : ''}
-      <a class="action primary" href="#lesson">${icon('lesson', 20)}<span class="grow"><b>今日のレッスン</b><small>${ls.due ? `復習 ${ls.due}件` : '復習なし'}・未学習 ${ls.fresh}語</small></span>${icon('chevron', 18)}</a>
+      ${COURSE_LANGS.includes(curLang()) ? `<a class="action primary" href="#course">${icon('book', 20)}<span class="grow"><b>入門コース</b><small>単語 → 文法 → フレーズを課ごとに</small></span>${icon('chevron', 18)}</a>` : ''}
+      <a class="action ${COURSE_LANGS.includes(curLang()) ? '' : 'primary'}" href="#lesson">${icon('lesson', 20)}<span class="grow"><b>今日のレッスン</b><small>${ls.due ? `復習 ${ls.due}件` : '復習なし'}・未学習 ${ls.fresh}語</small></span>${icon('chevron', 18)}</a>
       <button class="action" id="goWeak" ${st.weak.length ? '' : 'disabled'}>${icon('review', 20)}<span class="grow"><b>苦手を復習</b><small>${st.weak.length ? `苦手・未習得 ${st.weak.length}語（前回の出題方法で）` : '現在復習する単語はありません'}</small></span>${icon('chevron', 18)}</button>
     </section>
 

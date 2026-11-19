@@ -3,7 +3,7 @@
 import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, go, speak } from './ui.js';
 import { icon } from './icons.js';
-import { L, curLang, compareAnswer, stripAccents } from './langs.js';
+import { L, curLang, compareAnswer, stripAccents, isZh, langAttr } from './langs.js';
 import { recordAnswer } from './judge.js';
 import { speakingItems } from './content.js';
 import { showFeedback, wordDiff } from './feedback.js';
@@ -15,7 +15,7 @@ const EN_CONTR = [[/\bi'm\b/g, 'i am'], [/\bi'll\b/g, 'i will'], [/\bi'd\b/g, 'i
 function normSentence(s, lang) {
   let t = String(s || '').toLowerCase().replace(/[‘’ʼ]/g, "'").replace(/[“”"]/g, '');
   if (lang === 'en') for (const [re, r] of EN_CONTR) t = t.replace(re, r);
-  if (lang === 'zh-TW') return t.replace(/[\s，。、！？,.!?~～]/g, '');
+  if (isZh(lang)) return t.replace(/[\s，。、！？,.!?~～]/g, '');
   return t.replace(/[¿¡.,!?;:]/g, '').replace(/\s+/g, ' ').trim();
 }
 // 'exact' | 'accent' | null
@@ -25,7 +25,7 @@ function matchSentence(input, item, lang) {
   if (!a) return { res: null, best: item.model };
   for (const x of answers) if (normSentence(x, lang) === a) return { res: 'exact', best: x };
   if (lang === 'es') for (const x of answers) if (stripAccents(normSentence(x, lang)) === stripAccents(a)) return { res: 'accent', best: x };
-  if (lang === 'zh-TW') for (const x of answers) if (compareAnswer(input, x, lang) === 'exact') return { res: 'exact', best: x };
+  if (isZh(lang)) for (const x of answers) if (compareAnswer(input, x, lang) === 'exact') return { res: 'exact', best: x };
   // closest answer for the diff
   const words = new Set(a.split(' '));
   let best = item.model, bs = -1;
@@ -90,7 +90,7 @@ export async function speakingRun(el) {
       <div class="progress"><i style="width:${(i / queue.length) * 100}%"></i></div>
       <div class="sp-prompt"><span class="small muted">日本語</span><div class="sp-ja">${esc(it.ja)}</div>${it.note ? `<div class="small muted">${esc(it.note)}</div>` : ''}</div>
       <label class="field"><span>${esc(L(lang).name)}で</span>
-        <textarea id="inp" rows="3" autocapitalize="${lang === 'zh-TW' ? 'off' : 'sentences'}" autocorrect="off" spellcheck="false" ${lang === 'zh-TW' ? 'lang="zh-Hant-TW"' : ''} placeholder="${lang === 'zh-TW' ? '漢字で入力（注音・ピンインキーボード）' : '声に出してから入力すると効果的'}"></textarea></label>
+        <textarea id="inp" rows="3" autocapitalize="${isZh(lang) ? 'off' : 'sentences'}" autocorrect="off" spellcheck="false" ${langAttr(lang)} placeholder="${isZh(lang) ? '漢字で入力（注音・ピンインキーボード）' : '声に出してから入力すると効果的'}"></textarea></label>
       <div class="row">
         ${SR ? `<button class="btn" id="mic">${icon('mic', 18)} 話す</button>` : ''}
         <button class="btn grow" id="giveup">わからない</button>
@@ -123,7 +123,7 @@ export async function speakingRun(el) {
     const m = gaveUp ? { res: null, best: it.model } : matchSentence(val, it, lang);
     $$('#check, #giveup, #mic', el).forEach((b) => (b.disabled = true));
     $('#inp', el).readOnly = true;
-    const answersHTML = `<div class="sp-model"><b ${lang === 'zh-TW' ? 'lang="zh-Hant-TW"' : ''}>${esc(it.model)}</b><button class="icon-btn" id="say" aria-label="読み上げ">${icon('speaker', 20)}</button></div>
+    const answersHTML = `<div class="sp-model"><b ${langAttr(lang)}>${esc(it.model)}</b><button class="icon-btn" id="say" aria-label="読み上げ">${icon('speaker', 20)}</button></div>
       ${it.pinyin ? `<div class="small muted">${esc(it.pinyin)}</div>` : ''}
       ${(it.alts || []).length ? `<div class="small"><span class="muted">別の言い方：</span>${it.alts.map(esc).join(' ／ ')}</div>` : ''}
       ${(it.chunks || []).length ? `<div class="chunks">${it.chunks.map((c, k) => `<button class="chunk" data-k="${k}">${esc(c)}<span>＋</span></button>`).join('')}</div>` : ''}`;
@@ -133,7 +133,7 @@ export async function speakingRun(el) {
     const d = val ? wordDiff(val, m.best) : null;
     host.innerHTML = `<div class="card stack sp-judge">
       ${m.res === 'accent' ? '<div class="verdict near">アクセント記号だけ違います</div>' : val ? '<div class="small muted">登録された答えと一致しませんでした。見比べて判定してください</div>' : ''}
-      ${d && lang !== 'zh-TW' ? `<div class="diff"><div><span class="small muted">あなた</span> <code>${d.you}</code></div><div><span class="small muted">模範</span> <code>${d.target}</code></div></div>` : val ? `<div class="small"><span class="muted">あなた：</span>${esc(val)}</div>` : ''}
+      ${d && !isZh(lang) ? `<div class="diff"><div><span class="small muted">あなた</span> <code>${d.you}</code></div><div><span class="small muted">模範</span> <code>${d.target}</code></div></div>` : val ? `<div class="small"><span class="muted">あなた：</span>${esc(val)}</div>` : ''}
       ${answersHTML}
       <div class="row">
         ${val ? '<button class="btn grow" data-g="ok">正しく言えた</button>' : ''}
@@ -173,13 +173,13 @@ export async function speakingRun(el) {
     const ok = results.filter((r) => r.g === 'ok').length;
     const wrong = results.filter((r) => r.g !== 'ok').map((r) => r.id);
     el.innerHTML = `
-      <header class="top"><a href="#speaking" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>結果</h1></header>
+      <header class="top"><a href="${st.back || '#speaking'}" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>結果</h1></header>
       <div class="donemark">${icon('check', 30)}<span>${results.length}問 完了</span></div>
       <div class="stats"><div class="stat"><b class="up">${ok}</b><span>言えた</span></div><div class="stat"><b class="mid">${results.filter((r) => r.g === 'near').length}</b><span>惜しい</span></div><div class="stat"><b class="down">${results.filter((r) => r.g === 'ng').length}</b><span>言えなかった</span></div></div>
       ${wrong.length ? '<button class="btn primary" id="again">言えなかった問題をもう一度</button>' : ''}
       <div class="card list">${results.map((r) => `<div class="rrow"><span class="mk ${r.g}">${r.g === 'ok' ? '○' : r.g === 'near' ? '△' : '✕'}</span><span class="grow"><b>${esc(all[r.id].ja)}</b><br><span class="small muted">${esc(all[r.id].model)}</span></span></div>`).join('')}</div>
-      <a class="btn" href="#speaking" style="margin-top:12px">瞬間作文に戻る</a>`;
-    $('#again', el)?.addEventListener('click', () => { sessionStorage.setItem('speakQueue', JSON.stringify({ lang, ids: wrong, sid: uid('sp_') })); speakingRun(el); });
+      <a class="btn" href="${st.back || '#speaking'}" style="margin-top:12px">${st.back ? '課に戻る' : '瞬間作文に戻る'}</a>`;
+    $('#again', el)?.addEventListener('click', () => { sessionStorage.setItem('speakQueue', JSON.stringify({ lang, ids: wrong, sid: uid('sp_'), back: st.back })); speakingRun(el); });
   }
   show();
 }

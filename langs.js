@@ -5,19 +5,25 @@ import { getSetting, setSetting } from './db.js';
 export const LANGS = {
   en: { code: 'en', name: '英語', short: 'EN', ch: '英', speech: 'en-US', speechAlt: ['en-GB', 'en'], placeholder: '英語' },
   es: { code: 'es', name: 'スペイン語', short: 'ES', ch: '西', speech: 'es-MX', speechAlt: ['es-US', 'es-ES', 'es'], placeholder: 'スペイン語' },
+  'zh-CN': { code: 'zh-CN', name: '中国語', short: '中', ch: '中', speech: 'zh-CN', speechAlt: ['cmn-CN', 'zh-Hans', 'zh'], placeholder: '中国語（漢字またはピンイン）', reading: 'ピンイン' },
   'zh-TW': { code: 'zh-TW', name: '台湾華語', short: '華', ch: '華', speech: 'zh-TW', speechAlt: ['zh-HK', 'zh-CN', 'zh'], placeholder: '華語（漢字またはピンイン）', reading: 'ピンイン' },
 };
 export const LANG_CODES = Object.keys(LANGS);
 
 let cur = 'en';
-let enabled = ['en', 'es', 'zh-TW'];
+let enabled = ['en', 'es', 'zh-TW', 'zh-CN'];
+export const isZh = (code) => code === 'zh-TW' || code === 'zh-CN';
+export const htmlLang = (code) => (code === 'zh-TW' ? 'zh-Hant-TW' : code === 'zh-CN' ? 'zh-Hans-CN' : code);
+export const langAttr = (code) => (isZh(code) ? `lang="${htmlLang(code)}"` : '');
 const listeners = new Set();
 export const curLang = () => cur;
 export const L = (code = cur) => LANGS[code] || LANGS.en;
 export const langOf = (w) => (w && w.lang) || 'en';
 export const enabledLangs = () => enabled;
 export async function loadLang() {
-  enabled = (await getSetting('enabledLangs', ['en', 'es', 'zh-TW'])).filter((c) => LANGS[c]);
+  enabled = (await getSetting('enabledLangs', ['en', 'es', 'zh-TW', 'zh-CN'])).filter((c) => LANGS[c]);
+  // the 中国語 (Mainland) mode was added in v1.2: turn it on once for people who saved their language list before
+  if (!(await getSetting('langs:zhCN', false))) { if (!enabled.includes('zh-CN')) enabled.push('zh-CN'); await setSetting('enabledLangs', enabled); await setSetting('langs:zhCN', true); }
   if (!enabled.includes('en')) enabled.unshift('en');
   cur = await getSetting('currentLang', 'en');
   if (!enabled.includes(cur)) cur = 'en';
@@ -38,7 +44,7 @@ export const onLangChange = (f) => listeners.add(f);
 
 export function langSwitchHTML() {
   if (enabled.length < 2) return '';
-  return `<div class="langsw" role="group" aria-label="学習する言語">${enabled.map((c) => `<button data-langsw="${c}" class="${c === cur ? 'on' : ''}" lang="${c === 'zh-TW' ? 'zh-Hant-TW' : c}">${LANGS[c].short}</button>`).join('')}</div>`;
+  return `<div class="langsw" role="group" aria-label="学習する言語">${enabled.map((c) => `<button data-langsw="${c}" class="${c === cur ? 'on' : ''}" lang="${htmlLang(c)}">${LANGS[c].short}</button>`).join('')}</div>`;
 }
 
 // ---------- Spanish ----------
@@ -85,7 +91,7 @@ export function compareAnswer(input, answer, lang, { caseSensitive = false } = {
   if (!a) return null;
   if (a === b || a.replace(/[-\s]+/g, ' ') === b.replace(/[-\s]+/g, ' ')) return 'exact';
   if (lang === 'es') { if (stripAccents(a) === stripAccents(b)) return 'accent'; return null; }
-  if (lang === 'zh-TW') {
+  if (isZh(lang)) {
     const strip = (x) => x.replace(/[，。、！？\s]/g, '');
     if (hasHan(a) || hasHan(b)) return hasHan(a) && hasHan(b) && strip(a) === strip(b) ? 'exact' : null;
     const ka = pinyinKey(a), kb = pinyinKey(b);

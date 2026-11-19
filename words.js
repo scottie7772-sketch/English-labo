@@ -1,7 +1,7 @@
 // Word data operations, parsing (bulk / CSV), seed data
 import { db, uid, getMeta, setMeta } from './db.js';
 import { SKILLS, setManual, mid } from './mastery.js';
-import { curLang, langOf } from './langs.js';
+import { curLang, langOf, isZh } from './langs.js';
 
 // words of one learning language (words without lang = English)
 export async function allWords(lang = curLang()) { return (await db.all('words')).filter((w) => langOf(w) === lang); }
@@ -90,9 +90,9 @@ export function entryIssues(e, lang = 'en') {
   if (!head.trim()) out.push('見出し語がありません');
   else if (isNumOnly(head)) out.push('見出し語が数字だけです（番号の列を読んだ可能性）');
   else if (/^(no|番号|id|headword|word|英語|単語|英単語|熟語|句動詞|meaning|意味)$/i.test(head.trim())) out.push('見出し行（列名）を単語として読んだ可能性');
-  if (lang !== 'zh-TW' && hasJa(head)) out.push('見出し語に日本語が入っています');
+  if (!isZh(lang) && hasJa(head)) out.push('見出し語に日本語が入っています');
   if (ms.length && !ms.some(hasJa)) out.push('意味に日本語がありません');
-  if (ex && hasKana(ex) && lang !== 'zh-TW') out.push('例文の欄に日本語が入っています');
+  if (ex && hasKana(ex) && !isZh(lang)) out.push('例文の欄に日本語が入っています');
   return out;
 }
 
@@ -178,7 +178,7 @@ export function analyzeCSV(text, overrideMap = null) {
 }
 export function csvToEntries(text) { return analyzeCSV(text).entries; }
 
-const normLangCode = (s) => { s = String(s || '').trim().toLowerCase(); if (!s) return ''; if (/^(es|spa|spanish|スペイン語|西)/.test(s)) return 'es'; if (/^(zh|華|中|台湾|chinese|mandarin)/.test(s)) return 'zh-TW'; if (/^(en|英)/.test(s)) return 'en'; return ''; };
+const normLangCode = (s) => { s = String(s || '').trim().toLowerCase(); if (!s) return ''; if (/^(es|spa|spanish|スペイン語|西)/.test(s)) return 'es'; if (/^(zh-cn|zh-hans|cn$|普通|中国語|中文|简体|簡体|中$)/.test(s)) return 'zh-CN'; if (/^(zh|華|台湾|繁体|chinese|mandarin)/.test(s)) return 'zh-TW'; if (/^(en|英)/.test(s)) return 'en'; return ''; };
 export function entryToWord(e, source, extra = {}) {
   const sense = newSense({ pos: e.pos || '', context: e.context || '', meanings: e.meanings || [], accepted: e.accepted || [], examples: e.example_en ? [{ en: e.example_en, ja: e.example_ja || '', ...(e.answer ? { answer: e.answer } : {}) }] : [] });
   if (e.gender) sense.gender = e.gender;

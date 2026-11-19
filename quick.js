@@ -9,7 +9,7 @@ import { toggleBookmark } from './words.js';
 import { makeSwipeCard, swipeCardHTML, answerStripHTML } from './swipecard.js';
 import { icon } from './icons.js';
 
-import { L, curLang, langOf, numToMarks } from './langs.js';
+import { L, curLang, langOf, numToMarks, isZh } from './langs.js';
 const QDIRS = { en2ja: { get label() { return `${L().ch}→日`; }, skill: 'recognition' }, ja2en: { get label() { return `日→${L().ch}`; }, skill: 'recall' } };
 const RANGES = [
   ['auto', 'おまかせ', '習得済み以外'], ['unlearned', '未学習', ''], ['weak', '苦手', ''], ['learning', '学習中', ''],
@@ -26,7 +26,7 @@ export const QUICK_DEFAULTS = Object.freeze({
   range: 'auto', order: 'random', direction: 'en2ja', units: [0],
   unitSize: 30, autoFlip: 10, cardTime: 0, time: 0, showTimer: true, repeat: 'end',
 });
-const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語', conjunction: '接続詞', preposition: '前置詞' };
+const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', pronoun: '代名詞', number: '数詞', measure: '量詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語', conjunction: '接続詞', preposition: '前置詞' };
 
 let cleanup = null;
 function setCleanup(fn) { cleanup?.(); cleanup = fn; }
@@ -59,6 +59,7 @@ async function buildList(cfg, extra = {}) {
   };
   const countsByRange = Object.fromEntries(RANGES.map(([k]) => [k, usable.filter(test[k]).length]));
   let list = usable.filter(test[cfg.range] || test.all);
+  if (extra.tag) list = list.filter((w) => (w.tags || []).includes(extra.tag));
   if (extra.recentWrong) {
     const weekAgo = Date.now() - 7 * 86400000;
     const ids = new Set((await db.all('attempts')).filter((a) => !a.correct && a.at >= weekAgo).map((a) => a.wordId));
@@ -232,7 +233,7 @@ export async function quickRun(el, params) {
     const pos = [...new Set((w.senses || []).map((x) => POS_JA[x.pos] || x.pos).filter(Boolean))].join('・');
     const ex = (w.senses || []).flatMap((x) => x.examples || []).find((x) => x.en);
     const posTag = pos ? `<div class="q-sub">${esc(pos)}</div>` : '';
-    const en = `<div class="fc-en">${esc(w.headword)}</div>${w.ipa && langOf(w) === 'zh-TW' ? `<div class="fc-read">${esc(numToMarks(w.ipa))}</div>` : ''}`;
+    const en = `<div class="fc-en">${esc(w.headword)}</div>${w.ipa && isZh(langOf(w)) ? `<div class="fc-read">${esc(numToMarks(w.ipa))}</div>` : ''}`;
     const ja = `<div class="fc-ja">${mean}</div>`;
     const exH = ex ? `<div class="fc-ex">${esc(ex.en)}${ex.ja ? `<br><span class="muted">${esc(ex.ja)}</span>` : ''}</div>` : '';
     const tapHint = '<div class="tap-hint">タップで答えを表示</div>';
@@ -449,8 +450,8 @@ export async function quickResult(el, params) {
 export async function startQuick(overrides = {}) {
   const base = await loadCfg();
   const map = (o) => (o.bookmarkedOnly ? 'bookmark' : o.levels?.length && o.levels.every((l) => l <= 2) ? 'weak' : base.range);
-  const cfg = { ...base, range: map(overrides), units: [0] };
-  const data = await buildList(cfg, { recentWrong: overrides.recentWrong });
+  const cfg = { ...base, range: overrides.tag ? 'all' : map(overrides), units: [0], ...(overrides.tag ? { order: 'old' } : {}) };
+  const data = await buildList(cfg, { recentWrong: overrides.recentWrong, tag: overrides.tag });
   if (!data.list.length) { toast('対象の単語がありません'); return; }
   for (const x of await db.byIndex('sessions', 'status', 'active')) if (x.mode === 'quick') { x.status = 'done'; x.endedAt = Date.now(); await db.put('sessions', x); }
   // whole range as consecutive units

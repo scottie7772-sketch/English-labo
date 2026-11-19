@@ -5,7 +5,7 @@ import { SKILL_LABELS, LEVEL_LABELS, effLevel, filterLevel, levelText, loadAllMa
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
 import { makeSwipeCard, swipeCardHTML, answerStripHTML } from './swipecard.js';
 import { icon } from './icons.js';
-import { L, curLang, langOf, compareAnswer, numToMarks } from './langs.js';
+import { L, curLang, langOf, compareAnswer, numToMarks, isZh } from './langs.js';
 
 // ---------- definitions ----------
 export const DIRS = {
@@ -483,7 +483,7 @@ export async function sessionScreen(el, params) {
 
     function submitTyping(value) {
       if (revealed) return; revealed = true;
-      const answers = [w.headword, ...allAccepted(w), ...(langOf(w) === 'zh-TW' && w.ipa ? [w.ipa] : [])];
+      const answers = [w.headword, ...allAccepted(w), ...(isZh(langOf(w)) && w.ipa ? [w.ipa] : [])];
       const r = checkTyping(value, answers, s.config.caseSensitive, langOf(w));
       const hint = hintLevel > 0;
       let results;
@@ -525,7 +525,7 @@ export async function sessionScreen(el, params) {
       $('#fb', el).innerHTML = `
         <div class="card fb ${cls}">
           <div class="verdict">${icon(correct ? 'check' : near ? 'warn' : 'close', 20)}${verdict}</div>
-          <div class="row"><b class="fb-en tl">${esc(w.headword)}</b>${w.ipa ? `<span class="small muted">${esc(langOf(w) === 'zh-TW' ? numToMarks(w.ipa) : w.ipa)}</span>` : ''}<button class="icon-btn" id="say2" aria-label="発音">${icon('speaker', 22)}</button></div>
+          <div class="row"><b class="fb-en tl">${esc(w.headword)}</b>${w.ipa ? `<span class="small muted">${esc(isZh(langOf(w)) ? numToMarks(w.ipa) : w.ipa)}</span>` : ''}<button class="icon-btn" id="say2" aria-label="発音">${icon('speaker', 22)}</button></div>
           ${diff}
           <div class="fb-mean">${esc(meanings.join('、'))}</div>
           ${ex ? `<div class="ex"><div>${esc(ex.en)}</div>${ex.ja ? `<div class="muted small">${esc(ex.ja)}</div>` : ''}</div>` : ''}

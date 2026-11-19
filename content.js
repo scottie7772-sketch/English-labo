@@ -12,11 +12,16 @@ export async function seedContent() {
   for (const [file, key] of [['en-pack-v1', 'pack:en-v1'], ['es-v1', 'pack:es-v1'], ['zh-v1', 'pack:zh-v1']]) {
     try { n += await importPackWords(`./content-${file}.json`, key); } catch { /* offline first run: try next time */ }
   }
+  const { seedCourse, COURSE_LANGS } = await import('./course.js');
+  for (const l of COURSE_LANGS) { try { n += await seedCourse(l); } catch { /* next time */ } }
   return n;
 }
 // puzzles / visual items of the English pack, with stable ids
 export async function puzzles() { const p = await loadPack('en-pack-v1'); return (p.puzzles || []).map((x, i) => ({ id: x.id || `pz_${i + 1}`, lang: 'en', ...x })); }
 export async function visuals() { const p = await loadPack('en-pack-v1'); return (p.visual || []).map((x, i) => ({ id: x.id || `vz_${i + 1}`, lang: 'en', ...x })); }
 export async function swipeSets() { return (await loadPack('en-pack-v1')).swipeSets; }
-export async function speakingItems(lang) { return (await loadPack('speaking-v1')).items.filter((x) => x.lang === lang); }
+export async function speakingItems(lang) {
+  const { coursePhrases } = await import('./course.js');
+  return [...(await loadPack('speaking-v1')).items.filter((x) => x.lang === lang), ...(await coursePhrases(lang))];
+}
 export async function listeningItems(lang) { return (await loadPack('listening-v1')).items.filter((x) => x.lang === lang); }

@@ -35,11 +35,11 @@ export function go(hash) { location.hash = hash; }
 
 // Text-to-speech (iOS built-in voices, free, on-device)
 // lang: 'en' | 'es' | 'zh-TW' (default: Han characters -> zh-TW, otherwise the current learning language)
-import { L, curLang, hasHan } from './langs.js';
+import { L, curLang, hasHan, isZh } from './langs.js';
 const voices = {};
 function pickVoices() {
   const all = speechSynthesis.getVoices();
-  for (const code of ['en', 'es', 'zh-TW']) {
+  for (const code of ['en', 'es', 'zh-TW', 'zh-CN']) {
     const d = L(code); const want = [d.speech, ...d.speechAlt];
     let v = null;
     for (const w of want) { const c = all.filter((x) => x.lang?.replace('_', '-').toLowerCase().startsWith(w.toLowerCase())); v = (code === 'en' && c.find((x) => /Samantha|Alex|Ava|Allison/.test(x.name))) || c[0]; if (v) break; }
@@ -47,7 +47,7 @@ function pickVoices() {
   }
 }
 if ('speechSynthesis' in window) { pickVoices(); speechSynthesis.onvoiceschanged = pickVoices; }
-export function speakLang(text) { return hasHan(text) && !/[\u3040-\u30ff]/.test(text) ? 'zh-TW' : curLang(); }
+export function speakLang(text) { return hasHan(text) && !/[\u3040-\u30ff]/.test(text) ? (isZh(curLang()) ? curLang() : 'zh-TW') : curLang(); }
 export function speak(text, rate = 0.95, lang = null, { pitch = 1, onend = null, queue = false } = {}) {
   if (!('speechSynthesis' in window) || !text) { onend?.(); return; }
   if (!queue) speechSynthesis.cancel();

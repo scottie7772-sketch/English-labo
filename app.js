@@ -14,9 +14,10 @@ import { listeningScreen, listeningRun } from './listening.js';
 import { lessonScreen, lessonRun } from './lesson.js';
 import { gamesScreen, gameRun } from './games.js';
 import { dataCheckScreen, scanWords } from './datacheck.js';
+import { courseScreen, courseUnit, coursePuzzle } from './course.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.1.2';
+export const APP_VERSION = '1.2.0';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -52,10 +53,10 @@ screens.review = reviewScreen;
 screens.log = reviewScreen;
 screens.grammar = grammarScreen;
 screens.toeic = grammarScreen;
-Object.assign(screens, { listening: listeningScreen, 'listening-run': listeningRun, speaking: speakingScreen, 'speaking-run': speakingRun, lesson: lessonScreen, 'lesson-run': lessonRun, games: gamesScreen, game: gameRun, datacheck: dataCheckScreen });
+Object.assign(screens, { listening: listeningScreen, 'listening-run': listeningRun, speaking: speakingScreen, 'speaking-run': speakingRun, lesson: lessonScreen, 'lesson-run': lessonRun, games: gamesScreen, game: gameRun, datacheck: dataCheckScreen, course: courseScreen, 'course-unit': courseUnit, 'course-puzzle': coursePuzzle });
 screens.import = comingSoon('Import', 'import', '画像やスクリーンショットから英語を取り込む機能は、まだ実装していません。今は単語帳の「まとめて追加」「CSV」「英文から選ぶ」が使えます。');
 Object.assign(screens, { quick: quickSetup, 'quick-run': quickRun, 'quick-result': quickResult, video: videoList, 'video-play': videoPlay, study: studySetup, session: sessionScreen, result: resultScreen, vocab: vocabList, word: wordDetail, 'vocab-bulk': vocabBulk, 'vocab-csv': vocabCSV, 'vocab-paste': vocabPaste, decks: decksScreen });
-const TAB_OF = { datacheck: 'settings', 'listening-run': 'home', 'speaking-run': 'home', lesson: 'home', 'lesson-run': 'home', games: 'home', game: 'home', log: 'review', grammar: 'home', toeic: 'home', listening: 'home', speaking: 'home', import: 'home', quick: 'study', 'quick-run': 'study', 'quick-result': 'study', video: 'home', 'video-play': 'home', session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
+const TAB_OF = { course: 'home', 'course-unit': 'home', 'course-puzzle': 'home', datacheck: 'settings', 'listening-run': 'home', 'speaking-run': 'home', lesson: 'home', 'lesson-run': 'home', games: 'home', game: 'home', log: 'review', grammar: 'home', toeic: 'home', listening: 'home', speaking: 'home', import: 'home', quick: 'study', 'quick-run': 'study', 'quick-result': 'study', video: 'home', 'video-play': 'home', session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
 
 screens.settings = async (el) => {
   const theme = await getSetting('theme', 'dark');
@@ -183,9 +184,9 @@ async function render() {
   const main = $('#main');
   try { await screens[route](main, currentParams()); }
   catch (e) { main.innerHTML = `<div class="card warn">エラー: ${esc(e.message)}</div>`; console.error(e); }
-  document.body.classList.toggle('focus', ['session', 'quick-run', 'speaking-run', 'listening-run', 'lesson-run', 'game'].includes(route));
+  document.body.classList.toggle('focus', ['session', 'quick-run', 'speaking-run', 'listening-run', 'lesson-run', 'game', 'course-puzzle'].includes(route));
   // language switch in the header of screens that depend on the learning language
-  if (['home', 'vocab', 'study', 'quick', 'review', 'lesson', 'speaking', 'listening', 'games'].includes(route)) {
+  if (['home', 'vocab', 'study', 'quick', 'review', 'lesson', 'speaking', 'listening', 'games', 'course'].includes(route)) {
     const h = main.querySelector('header.top');
     if (h && !h.querySelector('.langsw')) { const tmp = document.createElement('div'); tmp.innerHTML = langSwitchHTML(); const sw = tmp.firstElementChild; if (sw) { const grow = h.querySelector('.grow'); grow ? grow.after(sw) : h.appendChild(sw); } }
   }

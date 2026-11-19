@@ -1,11 +1,11 @@
 // "Tap words in a sentence and register them" dialog (listening scripts, speaking, video).
 import { $, $$, esc, toast } from './ui.js';
 import { newWord, newSense, saveWord, wordsByHead, findDuplicate, splitList } from './words.js';
-import { hasHan } from './langs.js';
+import { hasHan, isZh, langAttr } from './langs.js';
 
 // text: sentence, ja: translation, lang, source: { type, ... }
 export function pickWordsDialog({ text, ja = '', lang = 'en', source = { type: 'manual' }, title = '語句を登録' }) {
-  const cjk = lang === 'zh-TW' || hasHan(text);
+  const cjk = isZh(lang) || hasHan(text);
   let n = 0;
   const html = cjk
     ? [...text].map((ch) => (/[㐀-鿿]/.test(ch) ? `<span class="tok" data-n="${n++}">${esc(ch)}</span>` : esc(ch))).join('')
@@ -17,10 +17,10 @@ export function pickWordsDialog({ text, ja = '', lang = 'en', source = { type: '
   const dlg = $('#dialog');
   dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(title)}</h3>
     <p class="hint">${cjk ? '字をタップ（続けて選ぶと語になります）' : '語をタップ（隣り合う語を続けて選ぶと熟語）'}</p>
-    <div class="ptext" ${lang === 'zh-TW' ? 'lang="zh-Hant-TW"' : ''}>${html}</div>
+    <div class="ptext" ${langAttr(lang)}>${html}</div>
     ${ja ? `<p class="small muted">${esc(ja)}</p>` : ''}
     <label class="field"><span>登録する語句（編集可）</span><input id="wh" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-    ${lang === 'zh-TW' ? '<label class="field"><span>ピンイン（任意。hao3 のような数字でも可）</span><input id="wp" autocapitalize="off" autocorrect="off" spellcheck="false"></label>' : ''}
+    ${isZh(lang) ? '<label class="field"><span>ピンイン（任意。hao3 のような数字でも可）</span><input id="wp" autocapitalize="off" autocorrect="off" spellcheck="false"></label>' : ''}
     <label class="field"><span>意味（「/」で複数・あとで入力も可）</span><input id="wm"></label>
     <label class="chk"><input type="checkbox" id="wb"> ブックマークする</label>
     <div class="row end"><button class="btn ghost" value="cancel">キャンセル</button><button class="btn primary" value="ok">登録</button></div></form>`;

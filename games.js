@@ -65,9 +65,9 @@ export async function playGameItem(type, item, host, fbHost, ctx = {}) {
       showFeedback(fbHost, fb, () => resolve({ ok: r.ok }));
     };
     if (type === 'puzzle') {
-      renderPuzzle(host, item, (r) => done(r,
-        { wordId: item.id, direction: 'ja2x', format: 'puzzle', prompt: item.ja, answer: r.answer, results: [{ skill: item.unit === 'word' ? 'produce' : 'build', correct: r.ok, hint: false }], srs: { kind: 'puzzle', lang: 'en' }, sub: { wrongPositions: r.wrongPositions } },
-        { kind: r.ok ? 'ok' : 'ng', title: r.ok ? '正解' : '不正解', main: `<b>${esc(r.target)}</b>`, sub: esc(item.explain || ''), more: item.explainMore ? esc(item.explainMore) : '' }));
+      renderPuzzle(host, item, (r) => (speak(r.target, 0.9, item.lang || 'en'), done(r,
+        { wordId: item.id, direction: 'ja2x', format: 'puzzle', prompt: item.ja, answer: r.answer, results: [{ skill: item.unit === 'word' ? 'produce' : 'build', correct: r.ok, hint: false }], srs: { kind: 'puzzle', lang: item.lang || 'en' }, sub: { wrongPositions: r.wrongPositions } },
+        { kind: r.ok ? 'ok' : 'ng', title: r.ok ? '正解' : '不正解', main: `<b>${esc(r.target)}</b>`, sub: esc(item.explain || ''), more: item.explainMore ? esc(item.explainMore) : '' })));
     } else if (type === 'swipe') {
       const sets = await swipeSets();
       const pool = ctx.pool || (await gameItems('swipe'));

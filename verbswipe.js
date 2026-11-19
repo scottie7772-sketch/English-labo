@@ -36,7 +36,7 @@ export function renderVerbSwipe(host, w, pool, sets, onAnswer, opt = {}) {
       <div class="vs-prompt"><span class="small muted">${esc(w.swipe?.scene || '')}</span><div class="vs-ja">${esc(meaning)}</div>
         <div class="vs-preview" id="vsPrev">&nbsp;</div></div>
       <div class="vs-grid" id="vsGrid">${tiles.map((v) => `<button class="vs-tile" data-v="${esc(v)}">${esc(v)}</button>`).join('')}</div>
-      <p class="hint center">動詞を長押し→小辞の方向へスワイプして離す（タップでも選べます）<br><span class="vs-set s${setName}">セット${setName}</span></p>
+      <p class="hint center">動詞を長押し→小辞の方向へスワイプして離す（タップでも選べます。開いたまま別の動詞をタップで切り替え）<br><span class="vs-set s${setName}">セット${setName}</span></p>
     </div>`;
   const ring = document.createElement('div');
   ring.className = `vs-ring s${setName}`; ring.hidden = true;
@@ -74,7 +74,14 @@ export function renderVerbSwipe(host, w, pool, sets, onAnswer, opt = {}) {
   const start = (e, tile) => {
     if (done) return;
     if (e.touches && e.touches.length > 1) { cancel(); return; }
-    if (st?.mode === 'tap' && st.open) return;   // ring already open by tap: petals handle it
+    if (st?.mode === 'tap' && st.open) {   // ring open by tap: another verb switches the verb right away
+      if (tile.dataset.v !== st.verb) {
+        $$('.vs-tile', host).forEach((t) => t.classList.toggle('on', t === tile));
+        st.verb = tile.dataset.v;
+        const r = tile.getBoundingClientRect(); openRing(r.left + r.width / 2, r.top + r.height / 2);
+      }
+      return;
+    }
     const p = pt(e);
     st = { verb: tile.dataset.v, x0: p.clientX, y0: p.clientY, open: false, dir: null, mode: 'press', t: performance.now() };
     tile.classList.add('on');
@@ -88,7 +95,7 @@ export function renderVerbSwipe(host, w, pool, sets, onAnswer, opt = {}) {
     highlight(dirAt(p.clientX, p.clientY));
   };
   const end = (e, tile) => {
-    if (!st || st.mode !== 'press') return;
+    if (!st || st.mode !== 'press') return;   // (tap mode: switching was handled on touchstart)
     clearTimeout(st.timer);
     if (!st.open) {   // short tap -> ring stays open at the tile, choose by tapping
       const r = tile.getBoundingClientRect();

@@ -3,7 +3,7 @@
 import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, go, speak } from './ui.js';
 import { icon } from './icons.js';
-import { L, curLang } from './langs.js';
+import { L, curLang, langAttr } from './langs.js';
 import { recordAnswer } from './judge.js';
 import { listeningItems } from './content.js';
 import { shuffle } from './study.js';
@@ -102,7 +102,7 @@ export async function listeningRun(el) {
         <div class="choices">${q.choices.map((c, ci) => `<button class="choice" data-q="${qi}" data-c="${ci}"><span class="ctx">${esc(c)}</span></button>`).join('')}</div></div>`).join('')}</div>
       <div id="fb"></div></div>`;
     const drawScript = (withJa) => {
-      $('#script', el).innerHTML = it.lines.map((ln, li) => `<div class="ls-line">${it.lines.length > 1 ? `<b class="who">${ln.who}</b>` : ''}<span class="grow"><span class="ls-t" ${lang === 'zh-TW' ? 'lang="zh-Hant-TW"' : ''}>${esc(ln.text)}</span>${withJa ? `<span class="small muted ls-ja">${esc(ln.ja)}</span>` : ''}</span>${withJa ? `<button class="cbtn" data-pick="${li}">＋語</button>` : ''}</div>`).join('');
+      $('#script', el).innerHTML = it.lines.map((ln, li) => `<div class="ls-line">${it.lines.length > 1 ? `<b class="who">${ln.who}</b>` : ''}<span class="grow"><span class="ls-t" ${langAttr(lang)}>${esc(ln.text)}</span>${withJa ? `<span class="small muted ls-ja">${esc(ln.ja)}</span>` : ''}</span>${withJa ? `<button class="cbtn" data-pick="${li}">＋語</button>` : ''}</div>`).join('');
     };
     drawScript(false);
     const updPlays = () => { $('#plays', el).textContent = cfg.plays && !answered ? `あと${Math.max(0, cfg.plays - plays)}回` : `${plays}回再生`; $('#play', el).disabled = !answered && cfg.plays && plays >= cfg.plays; };

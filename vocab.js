@@ -4,7 +4,7 @@ import { $, $$, esc, toast, confirmDialog, go, speak, fmtDate } from './ui.js';
 import { SKILLS, SKILL_LABELS, LEVEL_LABELS, effLevel, status, source, overall, filterLevel, levelText, loadAllMastery, loadWordMastery, setManual, setLock, resetToAuto } from './mastery.js';
 import { videoNames } from './video.js';
 import { icon } from './icons.js';
-import { L, curLang, langOf, numToMarks, LANGS } from './langs.js';
+import { L, curLang, langOf, numToMarks, LANGS, isZh, langAttr } from './langs.js';
 import { setDue } from './srs.js';
 import { scanWords } from './datacheck.js';
 import { EXTRA_SKILLS } from './mastery.js';
@@ -90,7 +90,7 @@ export async function vocabList(el) {
       return `
       <div class="wcard" data-id="${w.id}">
         <a class="wmain" href="#word?id=${w.id}">
-          <b class="tl">${esc(w.headword)}</b>${w.ipa && langOf(w) === 'zh-TW' ? `<span class="small muted"> ${esc(numToMarks(w.ipa))}</span>` : ''}${w.review === 'unverified' ? '<span class="tagp ai">未検証</span>' : ''}${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}${headCount[headKey(w.headword)] > 1 ? '<span class="tagp">多義</span>' : ''}
+          <b class="tl">${esc(w.headword)}</b>${w.ipa && isZh(langOf(w)) ? `<span class="small muted"> ${esc(numToMarks(w.ipa))}</span>` : ''}${w.review === 'unverified' ? '<span class="tagp ai">未検証</span>' : ''}${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}${headCount[headKey(w.headword)] > 1 ? '<span class="tagp">多義</span>' : ''}
           <span class="mean">${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>
         </a>
         <div class="wact">
@@ -191,10 +191,10 @@ export async function wordDetail(el, params) {
     <form id="f" class="stack" autocomplete="off">
       <div class="card stack">
         <div class="kv"><span>言語</span><b>${esc(L(wl).name)}</b></div>
-        <label class="field"><span>${wl === 'en' ? '英単語・熟語' : wl === 'es' ? 'スペイン語' : '華語（繁体字）'}</span>
+        <label class="field"><span>${wl === 'en' ? '英単語・熟語' : wl === 'es' ? 'スペイン語' : wl === 'zh-CN' ? '中国語（簡体字）' : '華語（繁体字）'}</span>
           <div class="row"><input name="headword" value="${esc(w.headword)}" required autocapitalize="off" autocorrect="off" spellcheck="false" class="big-input">
           <button type="button" class="icon-btn" id="say" aria-label="発音">${icon('speaker', 22)}</button></div></label>
-        <label class="field"><span>${wl === 'zh-TW' ? 'ピンイン（hǎo でも hao3 でも可。入力テストの正解にもなります）' : '発音記号（任意）'}</span><input name="ipa" value="${esc(w.ipa)}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+        <label class="field"><span>${isZh(wl) ? 'ピンイン（hǎo でも hao3 でも可。入力テストの正解にもなります）' : '発音記号（任意）'}</span><input name="ipa" value="${esc(w.ipa)}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
         ${w.review === 'unverified' ? '<label class="chk"><input type="checkbox" id="verified"> 内容を確認した（未検証の印を外す）</label>' : ''}
       </div>
 
@@ -254,7 +254,7 @@ export async function wordDetail(el, params) {
         <label class="field"><span>日本語訳（「/」で複数）</span><input data-k="meanings" value="${esc((s.meanings || []).join(' / '))}"></label>
         <label class="field"><span>品詞</span><select data-k="pos">${[...new Set([...POS_OPTIONS, s.pos || ''])].map((p) => `<option value="${esc(p)}" ${s.pos === p ? 'selected' : ''}>${p ? esc(posJa(p)) : '—'}</option>`).join('')}</select></label>
         ${wl === 'es' ? `<label class="field"><span>性（名詞のみ）</span><select data-k="gender">${[['', '—'], ['m', '男性名詞'], ['f', '女性名詞']].map(([v, l]) => `<option value="${v}" ${s.gender === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : ''}
-        <label class="field"><span>例文</span><textarea data-k="ex_en" rows="2" autocapitalize="off" ${wl === 'zh-TW' ? 'lang="zh-Hant-TW"' : ''}>${esc(s.examples?.[0]?.en || '')}</textarea></label>
+        <label class="field"><span>例文</span><textarea data-k="ex_en" rows="2" autocapitalize="off" ${langAttr(wl)}>${esc(s.examples?.[0]?.en || '')}</textarea></label>
         <label class="field"><span>例文の日本語訳</span><textarea data-k="ex_ja" rows="2">${esc(s.examples?.[0]?.ja || '')}</textarea></label>
         <details><summary class="small muted">テスト用の詳細設定</summary>
           <label class="field"><span>別解（和→英テストで正解にする表現、「/」区切り）</span><input data-k="accepted" value="${esc((s.accepted || []).join(' / '))}" autocapitalize="off"></label>

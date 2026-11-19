@@ -1,0 +1,96 @@
+// On-device speech recognition for Video Lab (experimental, free).
+// Whisper runs in the browser through Transformers.js (loaded from a public CDN; the model is downloaded once and cached).
+// Audio never leaves the device. No API key, no server.
+const TF_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1';
+const MODELS = { en: 'onnx-community/whisper-base.en', multi: 'onnx-community/whisper-base' };
+const LANG_NAME = { es: 'spanish', 'zh-TW': 'chinese', 'zh-CN': 'chinese' };
+
+const WORKER_SRC = `
+import { pipeline, env } from '${TF_URL}';
+env.allowLocalModels = false;
+self.onmessage = async (e) => {
+  const { audio, model, language } = e.data;
+  let asr = null, lastErr = null;
+  for (const device of e.data.devices) {
+    try {
+      asr = await pipeline('automatic-speech-recognition', model, {
+        device, dtype: device === 'webgpu' ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : 'q8',
+        progress_callback: (p) => self.postMessage({ type: 'load', p }),
+      });
+      self.postMessage({ type: 'device', device });
+      break;
+    } catch (err) { lastErr = err; }
+  }
+  if (!asr) { self.postMessage({ type: 'error', message: String(lastErr?.message || lastErr) }); return; }
+  try {
+    self.postMessage({ type: 'run' });
+    const out = await asr(audio, { chunk_length_s: 30, stride_length_s: 5, return_timestamps: true, ...(language ? { language, task: 'transcribe' } : {}) });
+    self.postMessage({ type: 'done', chunks: out.chunks || [], text: out.text || '' });
+  } catch (err) { self.postMessage({ type: 'error', message: String(err?.message || err) }); }
+};`;
+
+// video/audio Blob -> Float32Array, 16 kHz mono (what Whisper expects)
+export async function decodeTo16k(blob) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ac = new AC();
+  const buf = await blob.arrayBuffer();
+  const decoded = await new Promise((res, rej) => { const p = ac.decodeAudioData(buf, res, rej); if (p?.then) p.then(res, rej); });
+  ac.close?.();
+  const len = Math.max(1, Math.ceil(decoded.duration * 16000));
+  const off = new OfflineAudioContext(1, len, 16000);
+  const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();
+  const rendered = await off.startRendering();
+  return { audio: rendered.getChannelData(0), duration: decoded.duration };
+}
+
+// Whisper chunks -> subtitle lines. Long chunks are split at sentence ends; noise tags like [Music] are dropped.
+export function chunksToCues(chunks, duration) {
+  const out = [];
+  for (const ch of chunks) {
+    let text = String(ch.text || '').replace(/\s+/g, ' ').trim();
+    if (!text || /^[\[(（].*[\])）]$/.test(text) || /^(♪|\.\.\.)+$/.test(text)) continue;
+    let [s, e] = ch.timestamp || [];
+    s = s ?? (out.length ? out[out.length - 1].end : 0); e = e ?? Math.min(duration || s + 4, s + 8);
+    if (e <= s) e = s + 1.5;
+    const parts = text.match(/[^.!?。！？]+[.!?。！？]+["”’)]?|[^.!?。！？]+$/g)?.map((x) => x.trim()).filter(Boolean) || [text];
+    if (parts.length > 1 && e - s > 5) {   // distribute time by length
+      const total = parts.reduce((a, b) => a + b.length, 0); let t = s;
+      for (const p of parts) { const d = ((e - s) * p.length) / total; out.push({ start: +t.toFixed(2), end: +(t + d).toFixed(2), text: p }); t += d; }
+    } else out.push({ start: +s.toFixed(2), end: +e.toFixed(2), text });
+  }
+  return out;
+}
+
+export async function transcribe(blob, { lang = 'en', onProgress = () => {}, isCancelled = () => false } = {}) {
+  onProgress('動画から音声を取り出しています…', 0.03);
+  let decoded;
+  try { decoded = await decodeTo16k(blob); }
+  catch (e) { throw new Error('この動画の音声を読み込めませんでした（形式に対応していない可能性）: ' + (e?.message || e)); }
+  if (isCancelled()) return [];
+  const { audio, duration } = decoded;
+  const model = lang === 'en' ? MODELS.en : MODELS.multi;
+  const devices = 'gpu' in navigator ? ['webgpu', 'wasm'] : ['wasm'];
+  const worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })), { type: 'module' });
+  return new Promise((resolve, reject) => {
+    const files = {};
+    let runTimer = null;
+    const stop = () => { clearInterval(runTimer); worker.terminate(); };
+    const cancelPoll = setInterval(() => { if (isCancelled()) { clearInterval(cancelPoll); stop(); resolve([]); } }, 500);
+    worker.onerror = (e) => { clearInterval(cancelPoll); stop(); reject(new Error('音声認識の部品を読み込めませんでした（ネット接続を確認してください）' + (e?.message ? '：' + e.message : ''))); };
+    worker.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === 'load' && m.p?.status === 'progress' && m.p.total) {
+        files[m.p.file] = [m.p.loaded, m.p.total];
+        const [a, b] = Object.values(files).reduce((x, y) => [x[0] + y[0], x[1] + y[1]], [0, 0]);
+        onProgress(`音声認識モデルを準備しています（初回のみ）… ${Math.round((a / b) * 100)}%`, 0.05 + 0.35 * (a / b));
+      } else if (m.type === 'device') onProgress(`モデルの準備ができました（${m.device === 'webgpu' ? 'GPU' : 'CPU'}で処理）`, 0.4);
+      else if (m.type === 'run') {
+        const t0 = Date.now(), est = Math.max(20, duration * 1.5) * 1000;   // rough guess just for the bar
+        onProgress('文字起こし中…（動画の長さの数倍かかることがあります）', 0.42);
+        runTimer = setInterval(() => onProgress(`文字起こし中…（${Math.round((Date.now() - t0) / 1000)}秒経過）`, Math.min(0.97, 0.42 + 0.55 * ((Date.now() - t0) / est))), 1000);
+      } else if (m.type === 'done') { clearInterval(cancelPoll); stop(); resolve(chunksToCues(m.chunks, duration)); }
+      else if (m.type === 'error') { clearInterval(cancelPoll); stop(); reject(new Error(m.message)); }
+    };
+    worker.postMessage({ audio, model, language: LANG_NAME[lang] || null, devices }, [audio.buffer]);
+  });
+}

@@ -2,9 +2,11 @@
 import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go } from './ui.js';
 import { icon } from './icons.js';
-import { L, curLang } from './langs.js';
+import { L, curLang, langAttr } from './langs.js';
 import { pickWordsDialog } from './pick.js';
 import { headKey, wordsByHead, findDuplicate, newWord, newSense, saveWord, splitList } from './words.js';
+import { clozeHTML, toggleToken, candidates } from './cloze.js';
+import { recordAnswer } from './judge.js';
 
 // ---------- subtitles ----------
 const TIME = /((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})\s*-->\s*((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})/;
@@ -114,97 +116,153 @@ function probeDuration(file) {
 }
 
 // ================= Player =================
-const SPEEDS = [0.5, 0.75, 0.9, 1, 1.25, 1.5];
+const SPEEDS = [0.75, 0.9, 1, 1.25, 1.5];
+const VIEW_DEFAULTS = { mode: 'both', order: 'en', opEn: 1, opJa: 1, fsEn: 19, fsJa: 15, step: false, test: false, cloze: false, clozeUnit: 'phrase', clozeAuto: false, jaHint: true, loopMax: 0 };
+const OPS = [1, 0.7, 0.4, 0.2], FS_EN = [[15, '小'], [19, '中'], [23, '大'], [28, '特大']], FS_JA = [[12, '小'], [15, '中'], [18, '大'], [22, '特大']];
+const MODES = [['both', '英＋日'], ['en', '英語のみ'], ['ja', '日本語のみ'], ['none', '字幕なし']];
+async function loadView() {
+  const v = await getSetting('video.view', null);
+  if (v) return { ...VIEW_DEFAULTS, ...v };
+  // from the older separate settings
+  const en = await getSetting('video.en', true), ja = await getSetting('video.ja', true), step = await getSetting('video.step', false);
+  return { ...VIEW_DEFAULTS, mode: en && ja ? 'both' : en ? 'en' : ja ? 'ja' : 'none', step };
+}
+
 export async function videoPlay(el, params) {
   setCleanup(null);
   const v = await db.get('videos', params.get('id'));
   if (!v) { el.innerHTML = `<header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>動画が見つかりません</h1></header><div class="card muted">削除された可能性があります。</div>`; return; }
+  const vlang = v.lang || 'en';
+  const TL = L(vlang).name;
   let cues = await cuesOf(v.id);
-  let showEn = await getSetting('video.en', true), showJa = await getSetting('video.ja', true);
-  let loop = null, ab = null, curId = null, rafId = 0, saveT = 0;
-  let step = await getSetting('video.step', false), hide = false, revealed = false, loopMax = 0, loopN = 0, stepCue = null;
-  const TL = L(v.lang || 'en').name;
+  const view = await loadView();
+  const saveView = () => setSetting('video.view', view);
+  let loop = null, ab = null, curId = null, rafId = 0, saveT = 0, loopN = 0, stepCue = null, revealedCue = null, editing = false;
+  const revealed = new Map();   // cueId -> Set(hole index)
   const url = v.blob ? URL.createObjectURL(v.blob) : '';
+  const MLABEL = (m) => MODES.find((x) => x[0] === m)[1].replace('英', L(vlang).ch);
 
   el.innerHTML = `
-    <header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1 class="vtitle">${esc(v.name)}</h1><span class="grow"></span><button class="icon-btn" id="menu">⋯</button></header>
+    <div class="vp-root" id="vroot">
+    <header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1 class="vtitle">${esc(v.name)}</h1><span class="grow"></span><button class="icon-btn" id="menu" aria-label="メニュー">⋯</button></header>
     <div class="vwrap">${url ? `<video id="vid" src="${url}" playsinline webkit-playsinline preload="metadata"></video>` : '<div class="card warn">動画ファイルがありません（バックアップから復元した場合は、動画をもう一度追加してください）</div>'}</div>
     <div class="subbox" id="sub"></div>
+    <div id="grade"></div>
     <div class="vctl">
       <button class="btn" id="prevCue" aria-label="前の文">⏮</button>
-      <button class="btn" id="back3">⟲3</button>
-      <button class="btn primary" id="play">▶︎</button>
-      <button class="btn" id="fwd5">5⟳</button>
+      <button class="btn" id="again" aria-label="直前のフレーズをもう一度">↺</button>
+      <button class="btn primary" id="play" aria-label="再生">▶︎</button>
       <button class="btn" id="nextCue" aria-label="次の文">⏭</button>
-      <button class="btn" id="speed">1.0×</button>
+      <button class="btn" id="speed">1×</button>
     </div>
-    <div class="vctl2">
-      <button class="tgl" id="tEn">${esc(TL)}字幕</button>
-      <button class="tgl" id="tJa">日本語訳</button>
-      <button class="tgl" id="tHide">伏せる</button>
-      <button class="tgl" id="tStep">1文ずつ停止</button>
-      <button class="tgl" id="tLoop">字幕リピート</button>
-      <button class="tgl" id="tAB">A-B</button>
+    <div class="vquick">
+      <button class="tgl" id="qMode"></button>
+      <button class="tgl" id="qCloze">穴埋め</button>
+      <button class="tgl" id="qLoop">ループ</button>
+      <button class="tgl" id="qTest">字幕なしテスト</button>
     </div>
-    <p class="small muted center" id="mode"></p>
-    <div class="row between"><h2 class="sec" style="margin:14px 4px 6px">字幕 <span class="muted small">${cues.length}行</span></h2><button class="link small" id="addCue">＋ 現在位置に追加</button></div>
-    <div class="cuelist" id="cl"></div>`;
-
-  const vid = $('#vid', el);
-  const sub = $('#sub', el), cl = $('#cl', el);
-
-  function drawToggles() {
-    $('#tEn', el).classList.toggle('on', showEn); $('#tJa', el).classList.toggle('on', showJa);
-    $('#tLoop', el).classList.toggle('on', !!loop); $('#tAB', el).classList.toggle('on', !!ab);
-    $('#tLoop', el).textContent = !loop ? '字幕リピート' : loopMax ? `リピート${loopMax}回→次` : 'リピート∞';
-    $('#tStep', el).classList.toggle('on', step); $('#tHide', el).classList.toggle('on', hide);
-    $('#tAB', el).textContent = !ab ? 'A-B' : ab.b == null ? 'Bを設定' : `A-B ${fmtT(ab.a)}–${fmtT(ab.b)}`;
-    $('#mode', el).textContent = `表示：${showEn && showJa ? `${TL}字幕＋日本語訳` : showEn ? `${TL}字幕のみ` : showJa ? '日本語訳のみ' : '字幕なし'}${hide ? '（伏せ字：タップで表示）' : ''}${step ? '・1文ごとに停止' : ''}`;
-  }
-  function drawList() {
-    if (!cues.length) {
-      cl.innerHTML = `<div class="card stack">
-        <p class="small muted">字幕がまだありません。英語と日本語は別々に読み込めます（SRT / VTT）。</p>
-        <label class="btn" for="fEn">${esc(TL)}字幕ファイルを読み込む</label>
+    <details class="card details vset" id="set"><summary>表示・学習の設定</summary>
+      <div class="fgrp"><span>2言語のとき</span><div class="seg" id="order"><button data-v="en">${esc(L(vlang).ch)}が上</button><button data-v="ja">日本語が上</button></div></div>
+      <div class="fgrp"><span>${esc(TL)}の透明度</span><div class="seg" id="opEn">${OPS.map((o) => `<button data-v="${o}">${o * 100}%</button>`).join('')}</div></div>
+      <div class="fgrp"><span>${esc(TL)}の文字</span><div class="seg" id="fsEn">${FS_EN.map(([n, l]) => `<button data-v="${n}">${l}</button>`).join('')}</div></div>
+      <div class="fgrp"><span>日本語の透明度</span><div class="seg" id="opJa">${OPS.map((o) => `<button data-v="${o}">${o * 100}%</button>`).join('')}</div></div>
+      <div class="fgrp"><span>日本語の文字</span><div class="seg" id="fsJa">${FS_JA.map(([n, l]) => `<button data-v="${n}">${l}</button>`).join('')}</div></div>
+      <label class="chk"><input type="checkbox" id="step"> 1文ごとに一時停止</label>
+      <div class="fgrp"><span>ループ</span><div class="seg" id="loopMax"><button data-v="0">ずっと</button><button data-v="3">3回で次の文へ</button></div></div>
+      <button class="btn sm" id="tAB">A-B区間リピート</button>
+      <h3 class="sub">穴埋め</h3>
+      <div class="fgrp"><span>隠す単位</span><div class="seg" id="clozeUnit"><button data-v="word">単語</button><button data-v="phrase">熟語（続けて選ぶとまとまる）</button></div></div>
+      <div class="fgrp"><span>穴の選び方</span><div class="seg" id="clozeAuto"><button data-v="0">手動</button><button data-v="1">自動の候補を使う</button></div></div>
+      <label class="chk"><input type="checkbox" id="jaHint"> 日本語訳をヒントとして表示（字幕モードに関係なく）</label>
+      <div class="row"><button class="btn sm grow" id="edit">穴を選ぶ（語をタップ）</button><button class="btn sm grow" id="autoGo">自動の候補で穴を作る</button></div>
+      <div id="czStats" class="small"></div>
+    </details>
+    <details class="card details" id="make"><summary>字幕を作る・読み込む</summary>
+      <div class="stack" style="margin-top:8px">
+        <button class="btn" id="asr">${icon('mic', 18)} 音声から${esc(TL)}字幕を作る（iPhone内・試験的）</button>
+        <p class="hint">無料。動画は外部に送りません。初回だけ音声認識モデル（約40〜80MB）をダウンロードします。iPhoneでは数分かかることがあり、うまく動かない場合もあります。</p>
+        <button class="btn" id="askClaude" ${cues.some((c) => c.en) ? '' : 'disabled'}>日本語訳をClaudeに頼む（依頼文ごとコピー）</button>
+        <button class="btn" data-paste="ja">返ってきた日本語訳を貼り付け</button>
+        <label class="btn" for="fEn">${esc(TL)}字幕ファイル（SRT/VTT）を読み込む</label>
         <label class="btn" for="fJa">日本語訳ファイルを読み込む</label>
         <button class="btn" data-paste="en">${esc(TL)}字幕を貼り付け</button>
-        <button class="btn" data-paste="ja">日本語訳を貼り付け</button></div>`;
-    } else {
-      cl.innerHTML = cues.map((c) => `
-        <div class="cue ${c.id === curId ? 'cur' : ''}" data-id="${c.id}">
-          <span class="ct">${fmtT(c.start)}</span>
-          <span class="grow ctext${hide ? ' veil' : ''}">${showEn && c.en ? `<span class="cen">${esc(c.en)}</span>` : ''}${showJa && c.ja ? `<span class="cja">${esc(c.ja)}</span>` : ''}${(!showEn || !c.en) && (!showJa || !c.ja) ? '<span class="muted small">（非表示）</span>' : ''}</span>
-          ${c.en ? `<button class="cbtn" data-word="${c.id}" aria-label="単語登録">＋語</button>` : ''}
-          <button class="cbtn" data-edit="${c.id}" aria-label="編集">✎</button>
-        </div>`).join('');
-    }
-    cl.insertAdjacentHTML('beforeend', `<input type="file" id="fEn" hidden><input type="file" id="fJa" hidden>`);
-    $('#fEn', cl).onchange = (e) => importFile(e, 'en');
-    $('#fJa', cl).onchange = (e) => importFile(e, 'ja');
+      </div></details>
+    <p class="small muted center" id="modeTxt"></p>
+    <div class="row between"><h2 class="sec" style="margin:14px 4px 6px">字幕 <span class="muted small">${cues.length}行</span></h2><button class="link small" id="addCue">＋ 現在位置に追加</button></div>
+    <div class="cuelist" id="cl"></div>
+    <input type="file" id="fEn" hidden><input type="file" id="fJa" hidden>
+    </div>`;
+
+  const root = $('#vroot', el), vid = $('#vid', el), sub = $('#sub', el), cl = $('#cl', el);
+  const showEn = () => view.mode === 'both' || view.mode === 'en';
+  const showJa = () => view.mode === 'both' || view.mode === 'ja' || (view.cloze && view.jaHint);
+
+  // ---- appearance (CSS variables / classes only: never touches playback) ----
+  function applyView() {
+    root.style.setProperty('--fsEn', view.fsEn + 'px'); root.style.setProperty('--fsJa', view.fsJa + 'px');
+    root.style.setProperty('--opEn', view.opEn); root.style.setProperty('--opJa', view.opJa);
+    root.classList.toggle('jatop', view.order === 'ja');
+    const segOn = (id, val) => $$(`#${id} button`, el).forEach((b) => b.classList.toggle('on', String(b.dataset.v) === String(val)));
+    segOn('order', view.order); segOn('opEn', view.opEn); segOn('opJa', view.opJa); segOn('fsEn', view.fsEn); segOn('fsJa', view.fsJa);
+    segOn('loopMax', view.loopMax); segOn('clozeUnit', view.clozeUnit); segOn('clozeAuto', view.clozeAuto ? 1 : 0);
+    $('#step', el).checked = view.step; $('#jaHint', el).checked = view.jaHint;
+    $('#qMode', el).textContent = `字幕：${MLABEL(view.mode)}`;
+    $('#qCloze', el).classList.toggle('on', view.cloze);
+    $('#qLoop', el).classList.toggle('on', !!loop); $('#qLoop', el).textContent = !loop ? 'ループ' : view.loopMax ? `ループ${view.loopMax}回` : 'ループ∞';
+    $('#qTest', el).classList.toggle('on', view.test);
+    $('#tAB', el).classList.toggle('on', !!ab); $('#tAB', el).textContent = !ab ? 'A-B区間リピート' : ab.b == null ? 'B地点を押す' : `A-B ${fmtT(ab.a)}–${fmtT(ab.b)}（押すと解除）`;
+    $('#edit', el).classList.toggle('on', editing); $('#edit', el).textContent = editing ? '穴を選び終える' : '穴を選ぶ（語をタップ）';
+    $('#autoGo', el).hidden = !view.clozeAuto;
+    $('#modeTxt', el).textContent = [view.test ? '聞き取りテスト中：字幕はタップで表示' : '', view.cloze ? '穴埋め：_____ をタップで答え' : '', editing ? '穴を選ぶ：字幕の語をタップ' : '', view.step && !view.test ? '1文ごとに停止' : ''].filter(Boolean).join('・');
+    drawSub(); drawList();
   }
+  const textHTML = (c, where) => {
+    const en = c.en ? (view.cloze || editing ? clozeHTML(c.en, c.holes || [], { lang: vlang, revealed: revealed.get(c.id) || new Set(), editing, cueId: c.id }) : esc(c.en)) : '';
+    const veil = where === 'sub' && view.test && revealedCue !== c.id ? ' veil' : '';
+    const parts = [];
+    if (showEn() && c.en) parts.push(`<div class="sen${veil}" ${langAttr(vlang)}>${en}</div>`);
+    if (showJa() && c.ja) parts.push(`<div class="sja${veil}">${esc(c.ja)}</div>`);
+    return parts.join('');
+  };
   function drawSub() {
     const c = cues.find((x) => x.id === curId);
-    const veil = hide && !revealed ? ' veil' : '';
-    sub.innerHTML = c ? `${showEn && c.en ? `<div class="sen${veil}">${esc(c.en)}</div>` : ''}${showJa && c.ja ? `<div class="sja${veil}">${esc(c.ja)}</div>` : ''}${c.en ? '<span class="subhint">タップで語句登録</span>' : ''}` : '';
+    sub.innerHTML = c ? textHTML(c, 'sub') + (view.test && revealedCue !== c.id ? '<span class="subhint">タップで字幕を表示</span>' : '') : '';
     sub.classList.toggle('empty', !sub.innerHTML);
   }
+  function drawList() {
+    if (!cues.length) { cl.innerHTML = `<div class="card stack"><p class="small muted">字幕がまだありません。上の「字幕を作る・読み込む」から作成・読み込みできます。</p></div>`; return; }
+    cl.innerHTML = cues.map((c) => `
+      <div class="cue ${c.id === curId ? 'cur' : ''}" data-id="${c.id}">
+        <span class="ct">${fmtT(c.start)}</span>
+        <span class="grow ctext ${view.test ? 'veil' : ''}">${textHTML(c, 'list') || '<span class="muted small">（非表示）</span>'}</span>
+        ${c.en ? `<button class="cbtn" data-word="${c.id}" aria-label="単語登録">＋語</button>` : ''}
+        <button class="cbtn" data-edit="${c.id}" aria-label="編集">✎</button>
+      </div>`).join('');
+  }
+  function drawStats() {
+    const holes = cues.flatMap((c) => (c.holes || []).map((h, i) => ({ c, h, i })));
+    const ok = holes.filter((x) => x.h.last === 'ok').length, ng = holes.filter((x) => x.h.last === 'ng');
+    $('#czStats', el).innerHTML = holes.length ? `穴 ${holes.length}個（聞けた ${ok}・聞けなかった ${ng.length}・未回答 ${holes.length - ok - ng.length}）
+      ${ng.length ? `<div class="stack" style="margin-top:6px">${ng.map((x) => `<div class="row between"><span>「${esc(x.h.text)}」</span><button class="btn sm" data-addng="${x.c.id}:${x.i}">単語帳に追加</button></div>`).join('')}</div>` : ''}` : '<span class="muted">まだ穴がありません</span>';
+  }
+
   function cueAt(t) { let r = null; for (const c of cues) { if (c.start <= t && t < c.end) r = c; if (c.start > t) break; } return r; }
   function tick() {
     if (!vid) return;
     const t = vid.currentTime;
     if (loop && t >= loop.end) {
       loopN++;
-      if (loopMax && loopN >= loopMax) {   // repeated enough: move on to the next cue and keep repeating that one
+      if (view.loopMax && loopN >= view.loopMax) {
         const nx = cues.find((x) => x.start >= loop.end - 0.01);
-        if (nx) { loop = { start: nx.start, end: nx.end }; loopN = 0; vid.currentTime = nx.start; } else { loop = null; vid.pause(); drawToggles(); }
+        if (nx) { loop = { start: nx.start, end: nx.end }; loopN = 0; vid.currentTime = nx.start; } else { loop = null; vid.pause(); applyView(); }
       } else vid.currentTime = loop.start;
     }
-    if (step && !loop && stepCue && t >= stepCue.end - 0.03 && !vid.paused) { vid.pause(); vid.currentTime = Math.max(stepCue.start, stepCue.end - 0.05); stepCue = null; }
     if (ab?.b != null && t >= ab.b) vid.currentTime = ab.a;
-    const c = cueAt(t);
-    const id = c?.id || null;
+    if ((view.step || view.test) && !loop && stepCue && t >= stepCue.end - 0.03 && !vid.paused) { vid.pause(); vid.currentTime = Math.max(stepCue.start, stepCue.end - 0.05); stepCue = null; }
+    const c = cueAt(t), id = c?.id || null;
     if (id !== curId) {
-      curId = id; revealed = false; if (c) stepCue = c; drawSub();
+      curId = id; if (c) { stepCue = c; revealedCue = null; }
+      drawSub();
       $$('.cue.cur', cl).forEach((x) => x.classList.remove('cur'));
       const row = id && cl.querySelector(`[data-id="${id}"]`);
       if (row) { row.classList.add('cur'); cl.scrollTop = row.offsetTop - cl.offsetTop - cl.clientHeight / 3; }
@@ -213,7 +271,176 @@ export async function videoPlay(el, params) {
     rafId = requestAnimationFrame(tick);
   }
   async function savePos() { if (!vid) return; const cur = await db.get('videos', v.id); if (cur) { cur.lastTime = vid.currentTime; await db.put('videos', cur); } }
+  const playFrom = (c) => { if (!vid || !c) return; vid.currentTime = c.start + 0.01; stepCue = c; revealedCue = null; if (loop) { loop = { start: c.start, end: c.end }; loopN = 0; } vid.play(); };
 
+  // ---- cloze grading ----
+  async function gradeHole(c, hi, ok) {
+    const h = c.holes[hi];
+    h[ok ? 'ok' : 'ng'] = (h[ok ? 'ok' : 'ng'] || 0) + 1; h.last = ok ? 'ok' : 'ng'; h.lastAt = Date.now();
+    await db.put('cues', c);
+    const vocab = (await wordsByHead(vlang)).get(headKey(h.text))?.[0];
+    await recordAnswer({ sessionId: 'video:' + v.id, qid: `${c.id}:${hi}:${Date.now()}`, wordId: vocab ? vocab.id : `cz_${c.id}_${h.s}`, direction: 'audio', format: 'video-cloze', mode: 'video', prompt: c.en, answer: ok ? '聞けた' : '聞けなかった', ms: 0, self: true,
+      results: [{ skill: 'listening', correct: ok, hint: false }], srs: vocab ? { kind: 'word', lang: vlang } : { kind: 'cloze', lang: vlang } });
+    $('#grade', el).innerHTML = ok ? '' : `<div class="hgrade">「${esc(h.text)}」を記録しました <button class="btn sm" data-addng="${c.id}:${hi}">単語帳に追加</button></div>`;
+    drawSub(); drawList(); drawStats();
+  }
+  async function addToVocab(c, hi) {
+    const h = c.holes[hi];
+    const ref = { videoId: v.id, cueId: c.id, time: c.start, text: c.en };
+    const exist = (await wordsByHead(vlang)).get(headKey(h.text))?.[0];
+    if (exist) {
+      exist.videoRefs = [...(exist.videoRefs || []).filter((r) => r.cueId !== c.id), ref];
+      const s0 = exist.senses[0]; if (!(s0.examples || []).some((x) => x.en === c.en)) s0.examples = [...(s0.examples || []), { en: c.en, ja: c.ja || '' }];
+      await saveWord(exist); toast(`「${exist.headword}」は登録済み：例文と動画の位置を追加しました`); return;
+    }
+    const w = newWord({ lang: vlang, headword: h.text, source: { type: 'video', ...ref }, tags: ['動画の穴埋め'], senses: [newSense({ examples: [{ en: c.en, ja: c.ja || '' }] })] });
+    w.videoRefs = [ref]; await saveWord(w);
+    toast(`「${w.headword}」を単語帳に追加しました（意味は詳細画面で入力）`);
+  }
+
+  // ---- subtitle box & list taps ----
+  function onTextTap(e) {
+    const hole = e.target.closest('.hole');
+    if (hole) {
+      e.stopPropagation();
+      const c = cues.find((x) => x.id === hole.dataset.cue), hi = +hole.dataset.hole;
+      const set = revealed.get(c.id) || new Set(); revealed.set(c.id, set);
+      if (set.has(hi)) { set.delete(hi); $('#grade', el).innerHTML = ''; }
+      else {
+        set.add(hi);
+        $('#grade', el).innerHTML = `<div class="hgrade">「${esc(c.holes[hi].text)}」 <button class="btn sm ok" data-g="1" data-c="${c.id}" data-h="${hi}">聞けた</button><button class="btn sm ng" data-g="0" data-c="${c.id}" data-h="${hi}">聞けなかった</button></div>`;
+      }
+      drawSub(); drawList(); return true;
+    }
+    const tok = e.target.closest('.ctok');
+    if (tok && editing) {
+      e.stopPropagation();
+      const c = cues.find((x) => x.id === tok.dataset.cue);
+      toggleToken(c, +tok.dataset.t, view.clozeUnit, vlang);
+      db.put('cues', c); revealed.delete(c.id);
+      drawSub(); drawList(); drawStats(); return true;
+    }
+    return false;
+  }
+  sub.addEventListener('click', (e) => {
+    if (onTextTap(e)) return;
+    const c = cues.find((x) => x.id === curId); if (!c) return;
+    if (view.test && revealedCue !== c.id) { revealedCue = c.id; drawSub(); return; }
+    if (!editing && c.en) wordFromCue(c.id);
+  });
+  $('#grade', el).addEventListener('click', async (e) => {
+    const g = e.target.closest('[data-g]');
+    if (g) { const c = cues.find((x) => x.id === g.dataset.c); return gradeHole(c, +g.dataset.h, g.dataset.g === '1'); }
+    const a = e.target.closest('[data-addng]'); if (a) { const [cid, hi] = a.dataset.addng.split(':'); await addToVocab(cues.find((x) => x.id === cid), +hi); $('#grade', el).innerHTML = ''; }
+  });
+  $('#czStats', el).addEventListener('click', async (e) => { const a = e.target.closest('[data-addng]'); if (a) { const [cid, hi] = a.dataset.addng.split(':'); await addToVocab(cues.find((x) => x.id === cid), +hi); a.disabled = true; } });
+  cl.addEventListener('click', (e) => {
+    if (onTextTap(e)) return;
+    const w = e.target.closest('[data-word]'); if (w) return wordFromCue(w.dataset.word);
+    const ed = e.target.closest('[data-edit]'); if (ed) return editCue(ed.dataset.edit);
+    const row = e.target.closest('.cue'); if (row) playFrom(cues.find((x) => x.id === row.dataset.id));
+  });
+
+  // ---- controls ----
+  const jump = (dir) => {
+    if (!vid || !cues.length) return;
+    const t = vid.currentTime, i = cues.findIndex((x) => x.id === curId);
+    const c = dir < 0 ? [...cues].reverse().find((x) => x.start < (i >= 0 ? cues[i].start : t) - 0.05) || cues[0] : cues.find((x) => x.start > t + 0.05);
+    playFrom(c);
+  };
+  $('#prevCue', el).onclick = () => jump(-1);
+  $('#nextCue', el).onclick = () => jump(1);
+  $('#again', el).onclick = () => {   // the phrase being heard, or the one just before if we're between phrases / at its start
+    if (!vid || !cues.length) return;
+    const t = vid.currentTime;
+    const c = cueAt(t) && t - cueAt(t).start > 0.4 ? cueAt(t) : [...cues].reverse().find((x) => x.start < t - 0.05) || cues[0];
+    playFrom(c);
+  };
+  $('#play', el).onclick = () => vid && (vid.paused ? vid.play() : vid.pause());
+  $('#speed', el).onclick = async () => {
+    const cur = vid?.playbackRate || 1;
+    const nx = SPEEDS[(SPEEDS.indexOf(cur) + 1) % SPEEDS.length] || 1;
+    if (vid) vid.playbackRate = nx; $('#speed', el).textContent = `${nx}×`; await setSetting('video.speed', nx);
+  };
+  $('#qMode', el).onclick = () => { const i = MODES.findIndex((m) => m[0] === view.mode); view.mode = MODES[(i + 1) % MODES.length][0]; saveView(); applyView(); };
+  $('#qCloze', el).onclick = () => { view.cloze = !view.cloze; if (!view.cloze) editing = false; saveView(); applyView(); drawStats(); if (view.cloze && !cues.some((c) => c.holes?.length)) toast(view.clozeAuto ? '設定の「自動の候補で穴を作る」で穴を作れます' : '設定の「穴を選ぶ」で、字幕の語をタップして隠せます', 3200); };
+  $('#qLoop', el).onclick = () => {
+    if (loop) loop = null;
+    else {
+      const t = vid?.currentTime || 0;
+      const c = cues.find((x) => x.id === curId) || [...cues].reverse().find((x) => x.start <= t);
+      if (!c) return toast('ループする字幕がありません');
+      loop = { start: c.start, end: c.end }; loopN = 0; ab = null; if (vid) { vid.currentTime = c.start; vid.play(); }
+    }
+    applyView();
+  };
+  $('#qTest', el).onclick = () => { view.test = !view.test; revealedCue = null; saveView(); applyView(); };
+  const seg = (id, key, num = true) => ($('#' + id, el).onclick = (e) => { const b = e.target.closest('button'); if (!b) return; view[key] = num ? +b.dataset.v : b.dataset.v; saveView(); applyView(); });
+  seg('order', 'order', false); seg('opEn', 'opEn'); seg('opJa', 'opJa'); seg('fsEn', 'fsEn'); seg('fsJa', 'fsJa'); seg('loopMax', 'loopMax'); seg('clozeUnit', 'clozeUnit', false);
+  $('#clozeAuto', el).onclick = (e) => { const b = e.target.closest('button'); if (!b) return; view.clozeAuto = b.dataset.v === '1'; saveView(); applyView(); };
+  $('#step', el).onchange = (e) => { view.step = e.target.checked; saveView(); applyView(); };
+  $('#jaHint', el).onchange = (e) => { view.jaHint = e.target.checked; saveView(); applyView(); };
+  $('#tAB', el).onclick = () => {
+    const t = vid?.currentTime || 0;
+    if (!ab) { ab = { a: t, b: null }; loop = null; toast('A地点を設定。もう一度押すとB地点'); }
+    else if (ab.b == null) { if (t <= ab.a + 0.3) return toast('A地点より後で押してください'); ab.b = t; if (vid) vid.currentTime = ab.a; }
+    else ab = null;
+    applyView();
+  };
+  $('#edit', el).onclick = () => { editing = !editing; if (editing && !view.cloze) view.cloze = true; applyView(); };
+  $('#autoGo', el).onclick = async () => {
+    const vocab = (await db.all('words')).filter((w) => (w.lang || 'en') === vlang);
+    let n = 0;
+    for (const c of cues) {
+      if (!c.en) continue;
+      const manual = (c.holes || []).filter((h) => !h.auto);
+      const cand = candidates(c.en, vocab, view.clozeUnit, vlang).filter((x) => !manual.some((h) => !(x.e < h.s || x.s > h.e)));
+      const keepStats = Object.fromEntries((c.holes || []).filter((h) => h.auto).map((h) => [`${h.s}-${h.e}`, h]));
+      c.holes = [...manual, ...cand.map((x) => ({ ...(keepStats[`${x.s}-${x.e}`] || {}), s: x.s, e: x.e, text: x.text, auto: true, why: x.why }))].sort((a, b) => a.s - b.s);
+      n += cand.length;
+    }
+    await db.tx(['cues'], 'readwrite', (t) => cues.forEach((c) => t.objectStore('cues').put(c)));
+    view.cloze = true; saveView(); revealed.clear(); applyView(); drawStats();
+    toast(n ? `${n}か所を穴にしました（単語帳の語・句動詞・TOEIC頻出語）。手動の穴はそのままです` : '候補が見つかりませんでした');
+  };
+  $('#askClaude', el).onclick = async () => {
+    const srt = toSRT(cues, 'en');
+    const text = `次の${TL}のSRT字幕を、自然な日本語に訳してください。番号と時刻はそのまま、同じSRT形式で訳文だけを返してください（説明は不要です）。\n\n${srt}`;
+    try { await navigator.clipboard.writeText(text); toast('依頼文をコピーしました。Claudeのチャットに貼り付けて送り、返ってきた字幕を「返ってきた日本語訳を貼り付け」で取り込んでください', 6000); }
+    catch { confirmDialog({ title: '依頼文', body: `<p class="hint">全選択してコピーしてください</p><textarea rows="10" readonly style="width:100%">${esc(text)}</textarea>`, okLabel: '閉じる', cancelLabel: null }); }
+  };
+  $('#asr', el).onclick = () => runASR();
+  $('#make', el).addEventListener('click', (e) => { const p = e.target.closest('[data-paste]'); if (p) pasteDialog(p.dataset.paste); });
+  $('#fEn', el).onchange = (e) => importFile(e, 'en');
+  $('#fJa', el).onchange = (e) => importFile(e, 'ja');
+  $('#addCue', el).onclick = () => editCue(null);
+  $('#menu', el).onclick = menu;
+
+  // ---- on-device transcription (experimental) ----
+  async function runASR() {
+    if (!v.blob) return toast('動画ファイルがありません');
+    if (cues.some((c) => c.en) && !(await confirmDialog({ title: `${TL}字幕を作り直しますか？`, body: '<p>今の字幕（と穴埋め）は置き換わります。日本語訳は時間の重なる行に付け直します。</p>', okLabel: '作る' }))) return;
+    const dlg = $('#dialog');
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>字幕を作成中</h3><p id="asrMsg" class="small">準備しています…</p><div class="progress"><i id="asrBar" style="width:2%"></i></div><p class="hint">画面を閉じたりアプリを切り替えたりすると止まることがあります。</p><button class="btn ghost" value="cancel">中止</button></form>`;
+    let cancelled = false;
+    dlg.onclose = () => { cancelled = true; };
+    dlg.showModal();
+    try {
+      const { transcribe } = await import('./asr.js');
+      const out = await transcribe(v.blob, { lang: vlang, onProgress: (msg, p) => { if (cancelled) return; const m = $('#asrMsg', dlg); if (m) m.textContent = msg; const b = $('#asrBar', dlg); if (b && p != null) b.style.width = Math.max(2, p * 100) + '%'; }, isCancelled: () => cancelled });
+      if (cancelled) return;
+      dlg.close();
+      if (!out.length) return toast('音声から文字を取り出せませんでした');
+      const jaOld = cues.filter((c) => c.ja).map((c) => ({ start: c.start, end: c.end, text: c.ja }));
+      cues = mergeJa(out.map((x) => ({ id: uid('c_'), videoId: v.id, start: x.start, end: x.end, en: x.text, ja: '', auto: true })), jaOld, v.id);
+      await replaceCues(v.id, cues);
+      toast(`${out.length}行の字幕を作りました。誤りは ✎ で直せます`);
+      videoPlay(el, params);
+    } catch (err) {
+      if (dlg.open) dlg.close();
+      confirmDialog({ title: '字幕を作れませんでした', body: `<p class="small">${esc(err?.message || String(err))}</p><p class="hint">初回はネット接続が必要です（モデルのダウンロード）。メモリ不足の場合は、短い動画で試すか、SRT字幕の読み込みを使ってください。</p>`, okLabel: '閉じる', cancelLabel: null });
+    }
+  }
   async function importText(text, lang) {
     const list = parseSubs(text);
     if (!list.length) return toast('字幕を読み取れませんでした（SRT / VTT形式か確認してください）');
@@ -263,11 +490,13 @@ export async function videoPlay(el, params) {
       if (dlg.returnValue !== 'ok') return;
       const s = parseT($('#es', dlg).value), e = parseT($('#ee', dlg).value);
       if (!(s >= 0) || !(e > s)) return toast('時間が正しくありません（終了は開始より後）');
-      Object.assign(c, { start: s, end: e, en: $('#een', dlg).value.trim(), ja: $('#eja', dlg).value.trim() });
+      const newEn = $('#een', dlg).value.trim();
+      if (newEn !== c.en) c.holes = [];   // token positions changed
+      Object.assign(c, { start: s, end: e, en: newEn, ja: $('#eja', dlg).value.trim() });
       await db.put('cues', c);
       if (isNew) cues.push(c);
       cues.sort((a, b) => a.start - b.start);
-      curId = null; drawList(); toast('保存しました');
+      curId = null; drawList(); drawSub(); toast('保存しました');
     };
     dlg.showModal();
   }
@@ -357,8 +586,9 @@ export async function videoPlay(el, params) {
     confirmDialog({ title: `${TL}字幕（SRT）`, body: `<p class="hint">全選択してコピーしてください</p><textarea rows="10" readonly style="width:100%">${esc(text)}</textarea>`, okLabel: '閉じる', cancelLabel: null });
   }
 
-  // ---- wiring ----
-  drawToggles(); drawList(); drawSub();
+
+  // ---- start ----
+  applyView(); drawStats();
   if (vid) {
     const t0 = params.get('t') != null ? Math.max(0, +params.get('t') - 0.3) : v.lastTime || 0;
     vid.addEventListener('loadedmetadata', () => { if (t0 && t0 < vid.duration) vid.currentTime = t0; }, { once: true });
@@ -368,68 +598,7 @@ export async function videoPlay(el, params) {
     rafId = requestAnimationFrame(tick);
   }
   const speed = await getSetting('video.speed', 1);
-  if (vid) vid.playbackRate = speed;
-  $('#speed', el).textContent = `${speed}×`;
-  $('#play', el).onclick = () => vid && (vid.paused ? vid.play() : vid.pause());
-  $('#back3', el).onclick = () => { if (vid) vid.currentTime = Math.max(0, vid.currentTime - 3); };
-  $('#fwd5', el).onclick = () => { if (vid) vid.currentTime = Math.min(vid.duration || 1e9, vid.currentTime + 5); };
-  $('#speed', el).onclick = async () => {
-    const cur = vid?.playbackRate || 1;
-    const nx = SPEEDS[(SPEEDS.indexOf(cur) + 1) % SPEEDS.length] || 1;
-    if (vid) vid.playbackRate = nx; $('#speed', el).textContent = `${nx}×`; await setSetting('video.speed', nx);
-  };
-  $('#tEn', el).onclick = () => { showEn = !showEn; drawToggles(); drawList(); drawSub(); setSetting('video.en', showEn); };
-  $('#tJa', el).onclick = () => { showJa = !showJa; drawToggles(); drawList(); drawSub(); setSetting('video.ja', showJa); };
-  $('#tLoop', el).onclick = () => {
-    if (loop && !loopMax) { loopMax = 3; loopN = 0; }          // ∞ -> 3回で次へ
-    else if (loop) { loop = null; loopMax = 0; }              // -> オフ
-    else {
-      const c = cues.find((x) => x.id === curId) || cueAt((vid?.currentTime || 0) + 0.05) || [...cues].reverse().find((x) => x.start <= (vid?.currentTime || 0));
-      if (!c) return toast('リピートする字幕がありません');
-      loop = { start: c.start, end: c.end }; ab = null;
-      if (vid) { vid.currentTime = c.start; vid.play(); }
-    }
-    drawToggles();
-  };
-  $('#tAB', el).onclick = () => {
-    const t = vid?.currentTime || 0;
-    if (!ab) { ab = { a: t, b: null }; loop = null; toast('A地点を設定。もう一度押すとB地点'); }
-    else if (ab.b == null) { if (t <= ab.a + 0.3) return toast('A地点より後で押してください'); ab.b = t; if (vid) vid.currentTime = ab.a; }
-    else ab = null;
-    drawToggles();
-  };
-  $('#addCue', el).onclick = () => editCue(null);
-  const jump = (dir) => {
-    if (!vid || !cues.length) return;
-    const t = vid.currentTime;
-    const i = cues.findIndex((x) => x.id === curId);
-    let c;
-    if (dir < 0) c = i >= 0 && t - cues[i].start > 1 ? cues[i] : [...cues].reverse().find((x) => x.start < (i >= 0 ? cues[i].start : t) - 0.05) || cues[0];
-    else c = cues.find((x) => x.start > t + 0.05);
-    if (!c) return;
-    vid.currentTime = c.start + 0.01; stepCue = c;
-    if (loop) { loop = { start: c.start, end: c.end }; loopN = 0; }
-    vid.play(); drawToggles();
-  };
-  $('#prevCue', el).onclick = () => jump(-1);
-  $('#nextCue', el).onclick = () => jump(1);
-  $('#tStep', el).onclick = () => { step = !step; setSetting('video.step', step); drawToggles(); };
-  $('#tHide', el).onclick = () => { hide = !hide; revealed = false; drawToggles(); drawSub(); drawList(); };
-  sub.addEventListener('click', () => {
-    if (hide && !revealed) { revealed = true; drawSub(); return; }
-    if (curId && cues.find((x) => x.id === curId)?.en) wordFromCue(curId);
-  });
-  $('#menu', el).onclick = menu;
-  cl.addEventListener('click', (e) => {
-    const p = e.target.closest('[data-paste]'); if (p) return pasteDialog(p.dataset.paste);
-    const w = e.target.closest('[data-word]'); if (w) return wordFromCue(w.dataset.word);
-    const ed = e.target.closest('[data-edit]'); if (ed) return editCue(ed.dataset.edit);
-    const row = e.target.closest('.cue'); if (row && vid) {
-      const c = cues.find((x) => x.id === row.dataset.id);
-      vid.currentTime = c.start + 0.01;
-      if (loop) loop = { start: c.start, end: c.end };
-      vid.play(); drawToggles();
-    }
-  });
+  if (vid) vid.playbackRate = SPEEDS.includes(speed) ? speed : 1;
+  $('#speed', el).textContent = `${vid?.playbackRate || 1}×`;
   setCleanup(() => { cancelAnimationFrame(rafId); savePos(); vid?.pause(); if (url) setTimeout(() => URL.revokeObjectURL(url), 1000); });
 }

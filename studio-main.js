@@ -7,7 +7,7 @@ import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
 import { decodeTo16k, openTranscriber, speechPieces } from './asr.js';
 
-export const STUDIO_VERSION = '0.3.5';
+export const STUDIO_VERSION = '0.3.6';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -75,7 +75,7 @@ async function setsScreen(el) {
     ${editing ? `<div class="row"><button class="btn sm" id="eAll">すべて選ぶ</button><button class="btn sm" id="eNone">解除</button><button class="btn sm danger grow" id="eDel" ${chosen.size ? '' : 'disabled'}>${chosen.size}セットを削除</button></div>` : ''}
     <div class="card list">${sets.map((s) => {
       const src = srcs[s.sourceId];
-      const info = `<span class="grow"><b>${esc(s.title)}</b><small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${src.stored ? (src.derived === 'audio16k' ? `節約保存（${src.codec === 'aac' ? '圧縮' : '非圧縮'}・${fmtSize(src.blob?.size || 0)}）` : '端末に保存') : '保存しない'}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
+      const info = `<span class="grow"><b>${esc(s.title)}</b><small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${src.stored ? (src.derived === 'audio16k' ? `節約保存（${src.codec === 'wav' ? '非圧縮' : '圧縮'}・${fmtSize(src.blob?.size || 0)}）` : '端末に保存') : '保存しない'}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
       return editing ? `<label class="st-setrow"><input type="checkbox" class="st-cb" data-id="${s.id}" ${chosen.has(s.id) ? 'checked' : ''}>${info}</label>` : `<a class="st-setrow" href="#${BASE}set?id=${s.id}">${info}›</a>`;
     }).join('')}</div>` : '<p class="empty">まだ教材セットがありません。「一括登録」から動画・音声と字幕を選んでください。</p>'}
     <p class="hint">このスタジオは単体で動く試作版です（データはこのアプリの中だけに保存）。後で English Labo の中に組み込み、ここで作った教材は「書き出し」→ English Labo で読み込みで移せます。</p>`;
@@ -248,11 +248,10 @@ function wav16(f32) {
 const withTimeout = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
 async function aac16(f32) {
   if (typeof AudioEncoder === 'undefined' || typeof AudioData === 'undefined') return null;
-  const base = { codec: 'mp4a.40.2', sampleRate: 16000, numberOfChannels: 1, bitrate: 32000 };
-  let cfg = { ...base, aac: { format: 'adts' } }, adts = true;
-  try { if (!(await AudioEncoder.isConfigSupported(cfg)).supported) { cfg = base; adts = false; if (!(await AudioEncoder.isConfigSupported(cfg)).supported) return null; } } catch { return null; }
-  const frames = []; let err = null;
-  const enc = new AudioEncoder({ output: (c) => { const b = new Uint8Array(c.byteLength); c.copyTo(b); frames.push(b); }, error: (e) => (err = e) });
+  const cfg = { codec: 'mp4a.40.2', sampleRate: 16000, numberOfChannels: 1, bitrate: 32000 };
+  try { if (!(await AudioEncoder.isConfigSupported(cfg)).supported) return null; } catch { return null; }
+  const frames = []; let err = null, asc = null;
+  const enc = new AudioEncoder({ output: (c, meta) => { const b = new Uint8Array(c.byteLength); c.copyTo(b); frames.push(b); if (meta?.decoderConfig?.description && !asc) asc = new Uint8Array(meta.decoderConfig.description.buffer || meta.decoderConfig.description); }, error: (e) => (err = e) });
   enc.configure(cfg);
   const N = 16000;
   for (let i = 0; i < f32.length; i += N) {
@@ -263,9 +262,41 @@ async function aac16(f32) {
   }
   await enc.flush(); enc.close();
   if (err || !frames.length) return null;
-  const out = adts ? frames : frames.map((f) => { const len = f.length + 7, h = new Uint8Array(len);
-    h.set([0xff, 0xf1, 0x60, 0x40 | (len >> 11), (len >> 3) & 0xff, ((len & 7) << 5) | 0x1f, 0xfc]); h.set(f, 7); return h; });
-  return new Blob(out, { type: 'audio/aac' });
+  // some encoders still emit ADTS headers: strip them (7 bytes, no CRC)
+  const raw = frames.map((f) => (f.length > 7 && f[0] === 0xff && (f[1] & 0xf0) === 0xf0 ? f.subarray((f[1] & 1) ? 7 : 9) : f));
+  return new Blob([mp4Audio(raw, asc || new Uint8Array([0x14, 0x08]))], { type: 'audio/mp4' });
+}
+// minimal .m4a (MP4) for AAC frames: the index lets iPhone seek exactly (raw ADTS/VBR mp3 seeking is only estimated)
+function mp4Audio(frames, asc, rate = 16000) {
+  const u32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255], u16 = (n) => [(n >> 8) & 255, n & 255];
+  const str = (t) => [...t].map((c) => c.charCodeAt(0));
+  const box = (type, ...parts) => { const body = parts.flatMap((p) => (p instanceof Uint8Array ? [...p] : p)); return [...u32(body.length + 8), ...str(type), ...body]; };
+  const full = (type, v, f, ...parts) => box(type, [v, ...u32(f).slice(1)], ...parts);
+  const n = frames.length, dur = n * 1024;
+  const matrix = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000].flatMap(u32);
+  const desc = (tag, body) => [tag, body.length, ...body];
+  const esds = full('esds', 0, 0, desc(3, [...u16(1), 0, ...desc(4, [0x40, 0x15, 0, 0, 0, ...u32(48000), ...u32(32000), ...desc(5, [...asc])]), ...desc(6, [2])]));
+  const mp4a = box('mp4a', [0, 0, 0, 0, 0, 0, ...u16(1), 0, 0, 0, 0, 0, 0, 0, 0, ...u16(1), ...u16(16), 0, 0, 0, 0, ...u32(rate * 65536)], esds);
+  const moov = (off) => box('moov',
+    full('mvhd', 0, 0, [...u32(0), ...u32(0), ...u32(rate), ...u32(dur), ...u32(0x00010000), ...u16(0x0100), ...Array(10).fill(0), ...matrix, ...Array(24).fill(0), ...u32(2)]),
+    box('trak',
+      full('tkhd', 0, 3, [...u32(0), ...u32(0), ...u32(1), ...u32(0), ...u32(dur), ...Array(8).fill(0), ...u16(0), ...u16(0), ...u16(0x0100), 0, 0, ...matrix, ...u32(0), ...u32(0)]),
+      box('mdia',
+        full('mdhd', 0, 0, [...u32(0), ...u32(0), ...u32(rate), ...u32(dur), ...u16(0x55c4), 0, 0]),
+        full('hdlr', 0, 0, [...u32(0), ...str('soun'), ...Array(12).fill(0), ...str('SoundHandler'), 0]),
+        box('minf',
+          full('smhd', 0, 0, [0, 0, 0, 0]),
+          box('dinf', full('dref', 0, 0, [...u32(1)], full('url ', 0, 1))),
+          box('stbl',
+            full('stsd', 0, 0, [...u32(1)], mp4a),
+            full('stts', 0, 0, [...u32(1), ...u32(n), ...u32(1024)]),
+            full('stsc', 0, 0, [...u32(1), ...u32(1), ...u32(n), ...u32(1)]),
+            full('stsz', 0, 0, [...u32(0), ...u32(n), ...frames.flatMap((f) => u32(f.length))]),
+            full('stco', 0, 0, [...u32(1), ...u32(off)]))))));
+  const ftyp = box('ftyp', str('M4A '), u32(0), str('M4A '), str('isom'), str('mp42'));
+  const off = ftyp.length + moov(0).length + 8;
+  const mdatLen = frames.reduce((a, f) => a + f.length, 0) + 8;
+  return new Blob([new Uint8Array(ftyp), new Uint8Array(moov(off)), new Uint8Array([...u32(mdatLen), ...str('mdat')]), ...frames]);
 }
 // smallest playable copy of the sound: AAC if the device can encode and play it, otherwise 16 kHz WAV (video) or null (audio file kept as is)
 async function shrink(blob, name, isVideo, say = () => {}) {
@@ -274,9 +305,9 @@ async function shrink(blob, name, isVideo, say = () => {}) {
   let peak = 0; for (let i = 0; i < audio.length; i += 160) peak = Math.max(peak, Math.abs(audio[i]));
   if (peak < 0.001) throw new Error('音声が無音のまま取り出されました（この動画からは音声を取り出せません）');
   say('小さくしています…');
-  const a = localStorage.getItem('st-noaac') ? null : await withTimeout(aac16(audio).catch(() => null), 15000 + duration * 300);
-  if (!a && typeof AudioEncoder !== 'undefined') try { localStorage.setItem('st-noaac', '1'); } catch {}   // do not try again on this device
-  if (a) { const f = new File([a], name.replace(/\.[^.]+$/, '') + '.aac', { type: 'audio/aac' }); const m = await readDuration(f); if (m.playable && m.duration && Math.abs(m.duration - duration) < Math.max(2, duration * 0.03)) return { file: f, duration, codec: 'aac' }; }
+  const a = localStorage.getItem('st-noaac2') ? null : await withTimeout(aac16(audio).catch(() => null), 15000 + duration * 300);
+  if (!a && typeof AudioEncoder !== 'undefined') try { localStorage.setItem('st-noaac2', '1'); } catch {}   // do not try again on this device
+  if (a) { const f = new File([a], name.replace(/\.[^.]+$/, '') + '.m4a', { type: 'audio/mp4' }); const m = await readDuration(f); if (m.playable && m.duration && Math.abs(m.duration - duration) < Math.max(2, duration * 0.03)) return { file: f, duration, codec: 'm4a' }; }
   if (isVideo) return { file: new File([wav16(audio)], name.replace(/\.[^.]+$/, '') + '.wav', { type: 'audio/wav' }), duration, codec: 'wav' };
   return null;
 }
@@ -712,7 +743,7 @@ async function editorScreen(el, params) {
     if (ok) { try { await navigator.clipboard.writeText(blocks.map((b) => b.text).filter(Boolean).join('\n')); toast('コピーしました'); } catch { toast('コピーできませんでした'); } }
   }
   async function toAudio() {
-    const ids = [...new Set(blocks.flatMap((b) => b.segments.map((x) => x.sourceId)))].filter((id) => srcs[id]?.stored && srcs[id].derived !== 'audio16k');
+    const ids = [...new Set(blocks.flatMap((b) => b.segments.map((x) => x.sourceId)))].filter((id) => srcs[id]?.stored && (srcs[id].derived !== 'audio16k' || srcs[id].codec === 'aac'));
     if (!ids.length) return toast('容量を減らせるファイルがありません（すでに節約済み）');
     const size = ids.reduce((a, id) => a + (srcs[id].blob?.size || srcs[id].size), 0);
     if (!(await confirmDialog({ title: '容量を減らす', body: `<p>${ids.length}ファイル（${fmtSize(size)}）を、音声だけ・低音質に変換します。字幕・編集・時間はそのままです。</p><p class="hint">動画の映像と元の音質は戻せません（元のファイルは「ファイル」アプリなどに残っています）。文字起こしが途中で止まる場合にも有効です。</p>`, okLabel: '変換する', danger: true }))) return;
@@ -722,7 +753,7 @@ async function editorScreen(el, params) {
       try {
         const src = await sdb.get('sources', id); const before = src.blob.size;
         const small = await shrink(src.blob, src.name, src.kind !== 'audio', (t) => toast(`${n} / ${ids.length}：${t}`, 4000));
-        if (!small || small.file.size >= before) continue;
+        if (!small || (small.file.size >= before && src.codec !== 'aac' && !/mpeg|mp3/.test(src.mime || ''))) continue;
         Object.assign(src, { blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: src.size, duration: small.duration || src.duration });
         await sdb.put('sources', src); URL.revokeObjectURL(urlCache.get(id) || ''); urlCache.delete(id); saved += before - small.file.size;
       } catch (e) { await confirmDialog({ title: '変換できませんでした', body: `<p class="small">${esc(srcs[id].name)}<br>${esc(e.message)}</p><p class="hint">元のまま残しています。</p>`, okLabel: '閉じる', cancelLabel: null }); }
@@ -758,7 +789,7 @@ async function editorScreen(el, params) {
       <button class="btn" value="asr">文字起こし（端末内・試験的）</button>
       <button class="btn" value="words">単語リストを作る</button>
       <button class="btn" value="txt">テキストを書き出す</button>
-      ${Object.values(srcs).some((x) => x.stored && x.derived !== 'audio16k') ? '<button class="btn" value="toaudio">容量を減らす（音声だけ・低音質に）</button>' : ''}
+      ${Object.values(srcs).some((x) => x.stored && (x.derived !== 'audio16k' || x.codec === 'aac')) ? '<button class="btn" value="toaudio">容量を減らす（音声だけ・低音質に）</button>' : ''}
       <button class="btn" value="ren">名前を変える</button>
       <button class="btn danger" value="del">このセットを削除</button>
       <button class="btn ghost" value="cancel">閉じる</button></form>`;

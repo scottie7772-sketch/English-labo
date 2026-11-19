@@ -9,7 +9,7 @@ import { decodeTo16k, openTranscriber, speechPieces, captureTo16k } from './asr.
 import { extractPhrases, extractWords } from './studio-words.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 
-export const STUDIO_VERSION = '0.5.0';
+export const STUDIO_VERSION = '0.5.2';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -20,6 +20,10 @@ const fmtMin = (s) => `${Math.floor(s / 60)}分${String(Math.round(s % 60)).padS
 const fmtSize = (n) => (n > 1 << 30 ? (n / (1 << 30)).toFixed(2) + ' GB' : n > 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB');
 const icon = (n) => ({ back: '‹', undo: '↶', redo: '↷', play: '▶︎', pause: '❚❚', more: '⋯' }[n] || n);
 
+// breadcrumbs survive a crash (iOS reloads the page when memory runs out); shown at the next start
+const crumbs = (() => { try { return JSON.parse(localStorage.getItem('st-crumbs') || '[]'); } catch { return []; } })();
+function crumb(msg) { crumbs.push(`${new Date().toLocaleTimeString('ja-JP')} ${msg}`); while (crumbs.length > 40) crumbs.shift(); try { localStorage.setItem('st-crumbs', JSON.stringify(crumbs)); } catch {} }
+function running(what) { try { what ? localStorage.setItem('st-running', what) : localStorage.removeItem('st-running'); } catch {} if (what) crumb('開始：' + what); }
 const errLog = [];
 function logErr(msg) { errLog.push(`${new Date().toLocaleTimeString('ja-JP')} ${msg}`); if (errLog.length > 50) errLog.shift(); toast('エラー：' + msg, 5000); }
 export function mount(el, { base = '' } = {}) {
@@ -27,6 +31,15 @@ export function mount(el, { base = '' } = {}) {
   addEventListener('error', (e) => logErr(`${e.message} (${(e.filename || '').split('/').pop()}:${e.lineno})`));
   addEventListener('unhandledrejection', (e) => logErr(String(e.reason?.message || e.reason)));
   addEventListener('hashchange', route);
+  let crashed = null; try { crashed = localStorage.getItem('st-running'); } catch {}
+  if (crashed) {
+    running(null);
+    if (location.hash.slice(1).startsWith(BASE + 'set')) history.replaceState(null, '', '#' + BASE + 'sets');   // do not reopen the screen that stopped
+    route();
+    const last = crumbs.slice(-12).join('\n');
+    setTimeout(() => confirmDialog({ title: '前回、処理の途中で止まりました', body: `<p class="small">「${esc(crashed)}」の途中でアプリが閉じました。iPhoneのメモリが足りなくなった可能性が高いです。保存済みの分は残っています。</p><pre class="st-log">${esc(last)}</pre>`, okLabel: '記録をコピー', cancelLabel: '閉じる' }).then((ok) => ok && navigator.clipboard.writeText(`${crashed}\n${last}`).then(() => toast('コピーしました'), () => {})), 300);
+    return;
+  }
   route();
 }
 function parseHash() {
@@ -229,13 +242,14 @@ async function importScreen(el) {
     navigator.storage?.persist?.().catch(() => {});
     $('#go', el).disabled = true;
     const results = [];
+    running('一括登録');
     for (let i = 0; i < list.length; i++) {
       const s = list[i];
       prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}</p>`;
       try { results.push({ s, id: await createSet(s, mode, (k, n, t = '') => (prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}（${k} / ${n}）${t ? `<br>${esc(t)}` : ''}</p>`)) }); }
       catch (e) { results.push({ s, err: (e?.message || String(e)) }); }
     }
-    lock?.release?.();
+    lock?.release?.(); running(null);
     prog.innerHTML = `<div class="card stack"><b>登録 ${results.filter((r) => r.id).length}セット・失敗 ${results.filter((r) => r.err).length}</b>
       ${results.map((r) => `<div class="small">${r.id ? `✓ <a class="link" href="#${BASE}set?id=${r.id}">${esc(r.s.title)}</a>` : `✕ ${esc(r.s.title)}：${esc(r.err)}`}</div>`).join('')}
       <a class="btn" href="#${BASE}sets">一覧へ</a></div>`;
@@ -252,6 +266,7 @@ const stageErr = (stage, e) => Object.assign(new Error(`${stage}：${e?.message 
 // track choice for a file: auto when clear, otherwise the user picks (with preview). Returns the audio record kept on the source
 async function decideTrack(src, blob, say = () => {}) {
   if (!isContainer(src, blob)) return null;
+  crumb(`トラック判定 ${src.name} ${fmtSize(blob.size)}`);
   let info; try { say('音声トラックを調べています…'); info = await probeSource(src, blob); } catch { return null; }   // not mp4/mov: normal decoding
   const at = audioTracks(info);
   if (at.length <= 1) return at.length ? { trackId: at[0].id, index: 0, count: 1, method: 'auto', reason: '音声トラックは1本', codec: at[0].codec } : { trackId: null, count: 0, reason: '音声トラックがありません' };
@@ -293,14 +308,14 @@ async function sourceAudio16k(src, blob, { box = null, say = () => {} } = {}) {
     if (at.length) {
       const t = at.find((x) => x.id === src.audio?.trackId) || at[src.audio?.index ?? 0] || at[0];
       if (canExtract(t)) {
-        let x; try { say('選んだ音声トラックを取り出しています…'); x = await extractTrack(blob, t); } catch (e) { throw stageErr('音声の取り出し', e); }
-        try { say('音声を展開しています…'); const r = await decodeTo16k(x.blob); return { ...r, method: `トラック${at.indexOf(t) + 1}を取り出し` }; } catch (e) { if (!box) throw stageErr('音声の展開', e); }
+        let x; try { say('選んだ音声トラックを取り出しています…'); crumb(`取り出し 音声${at.indexOf(t) + 1} ${t.codec}`); x = await extractTrack(blob, t); } catch (e) { throw stageErr('音声の取り出し', e); }
+        try { say('音声を展開しています…'); crumb(`展開 ${fmtSize(x.blob.size)}`); const r = await decodeTo16k(x.blob); return { ...r, method: `トラック${at.indexOf(t) + 1}を取り出し` }; } catch (e) { if (!box) throw stageErr('音声の展開', e); }
       }
       if (box) { const r = await captureWithTap(blob, box, src.name, src.duration, at.length > 1 ? at.indexOf(t) : null); return { ...r, method: '再生しながら取り出し' }; }
       throw stageErr('音声の取り出し', `この音声の形式（${t.codec}）は直接取り出せません`);
     }
   }
-  try { say('音声を展開しています…'); const r = await decodeTo16k(blob); return { ...r, method: '展開' }; }
+  try { say('音声を展開しています…'); crumb(`展開（ファイル全体）${fmtSize(blob.size)}`); const r = await decodeTo16k(blob); return { ...r, method: '展開' }; }
   catch (e) { if (!box) throw stageErr('音声の展開', e); const r = await captureWithTap(blob, box, src.name, src.duration, null); return { ...r, method: '再生しながら取り出し' }; }
 }
 
@@ -374,6 +389,12 @@ function groupsOf(list) {
   for (const s of list) { const d = dirOf(s.media?.name || s.en?.name || s.ja?.name || '') || 'まとめ'; if (!m.has(d)) m.set(d, []); m.get(d).push(s); }
   return [...m].map(([d, items]) => ({ title: d.split('/').filter(Boolean).join(' / '), items }));
 }
+// read the file into memory in pieces and make a new Blob, so the saved data does not depend on a temporary file
+async function copyBlob(file, say = () => {}) {
+  const parts = []; const N = 8 * 1024 * 1024;
+  for (let o = 0; o < file.size; o += N) { parts.push(await file.slice(o, Math.min(file.size, o + N)).arrayBuffer()); if (file.size > 50e6) say(`保存しています… ${Math.round((o / file.size) * 100)}%`); }
+  return new File(parts, file.name, { type: file.type });
+}
 async function putSource(media, mode, say = () => {}) {
   const exist = await sdb.get('sources', media.fp.id);
   const src = exist || { id: media.fp.id, kind: media.kind, name: media.name.split('/').pop(), size: media.file.size, mime: media.file.type, duration: media.duration, playable: media.playable, head: media.fp.head, tail: media.fp.tail, addedAt: Date.now(), stored: false };
@@ -381,7 +402,7 @@ async function putSource(media, mode, say = () => {}) {
   const small = mode === 'store-audio' && !src.stored ? await sourceAudio16k(src, media.file, { say }).then((a) => { say('小さくしています…'); return shrinkAudio(a, src.name, media.kind !== 'audio', say); }).catch((e) => { src.audioError = e.message; return null; }) : null;
   if (small && small.file.size < media.file.size) {   // data saver: sound only, low quality
     Object.assign(src, { stored: true, blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: media.file.size, duration: small.duration || src.duration });
-  } else if (mode.startsWith('store') && !src.stored) { src.stored = true; src.blob = media.file; }
+  } else if (mode.startsWith('store') && !src.stored) { src.stored = true; src.blob = media.file.size <= 300 * 1024 * 1024 ? await copyBlob(media.file, say) : media.file; }
   else if (!src.stored) sessionFiles.set(src.id, media.file);
   await sdb.put('sources', src);   // a big file is written from disk; may take a while
   return src;
@@ -437,6 +458,7 @@ async function createSet(group, mode, onStep = () => {}) {
 async function editorScreen(el, params) {
   let set = await sdb.get('sets', params.get('id'));
   if (!set) return nav('sets');
+  running(`教材を開く（${set.title}）`); setTimeout(() => { if (localStorage.getItem('st-running')?.startsWith('教材を開く')) running(null); }, 4000);
   let srcs = await sourcesMap();
   let blocks = [], byId = {};
   const sel = new Set();
@@ -445,7 +467,7 @@ async function editorScreen(el, params) {
   await reload();
   const src = srcs[set.sourceId];
   el.innerHTML = `${head(set.title, 'sets', `<button class="icon-btn" id="undoB" aria-label="元に戻す">${icon('undo')}</button><button class="icon-btn" id="redoB" aria-label="やり直す">${icon('redo')}</button><button class="icon-btn" id="moreB" aria-label="メニュー">${icon('more')}</button>`)}
-    <div id="relink"></div>
+    <div id="relink"></div>${(() => { const x = srcs[set.sourceId]; return x?.audioError ? `<div class="notice warn small">取り込み時の音声処理で失敗したため、元のまま保存しています：${esc(x.audioError)}</div>` : ''; })()}
     <div class="st-player"><div class="st-vwrap"><video id="vid" playsinline webkit-playsinline preload="metadata"></video><div class="st-ov" id="ov"></div></div>
       <div class="st-sub" id="sub"></div>
       <div class="row st-ctl"><button class="btn sm" id="back3">⟲3</button><button class="btn sm primary" id="pp">${icon('play')}</button><button class="btn sm" id="fwd3">3⟳</button><span class="small muted" id="tnow">0:00.0</span><span class="grow"></span><button class="btn sm" id="selB">選択</button></div></div>
@@ -748,7 +770,7 @@ async function editorScreen(el, params) {
     const msg = (t) => { const m = $('#asrMsg', dlg); if (m) m.textContent = t; };
     const bar = () => { const pr = total ? done / total : 0; const b = $('#asrBar', dlg); if (b) { b.style.width = `${pr * 100}%`; $('#asrPct', dlg).textContent = `${Math.round(pr * 100)}%`; } };
     const lock = await navigator.wakeLock?.request?.('screen').catch(() => null);
-    let tr = null;
+    let tr = null; running(`文字起こし（${set.title}）`);
     try {
       tr = openTranscriber('en', msg, { fast });
       for (const [sid, ids] of bySrc) {
@@ -768,7 +790,7 @@ async function editorScreen(el, params) {
             const ps = ps0, pe = pi === pieces.length - 1 ? sg.end : pieces[pi + 1][0];   // the gap after a piece is silence: it is skipped
             if (cancelled) break;
             const t0 = Date.now(), lbl = `${src.name}：${fmt(ps0)}〜${fmt(pe0)}`;
-            msg(`${lbl} を文字起こし中…`);
+            msg(`${lbl} を文字起こし中…`); crumb(`文字起こし ${lbl}`);
             const tick = setInterval(() => msg(`${lbl} を文字起こし中…（${Math.round((Date.now() - t0) / 1000)}秒）${speed ? `・残り目安 ${fmtMin(Math.max(0, (total - done) / speed))}` : ''}`), 1000);
             const piece = audio.slice(Math.floor(ps0 * 16000), Math.floor(pe0 * 16000));
             let cues; try { cues = await tr.run(piece); } finally { clearInterval(tick); }
@@ -791,10 +813,10 @@ async function editorScreen(el, params) {
         }
       }
     } catch (e) {
-      lock?.release?.(); tr?.close(); if (dlg.open) dlg.close();
+      running(null); crumb('失敗：' + (e?.message || e)); lock?.release?.(); tr?.close(); if (dlg.open) dlg.close();
       return confirmDialog({ title: '文字起こしが止まりました', body: `<p class="small">${esc((e?.message || String(e)))}</p><p class="hint">${lines ? `${lines}行は保存済みです。もう一度実行すると続きから始まります。` : '初回はネット接続が必要です（モデルのダウンロード）。'}</p>`, okLabel: '閉じる', cancelLabel: null });
     }
-    lock?.release?.(); tr?.close(); const wasCancelled = cancelled; if (dlg.open) { dlg.onclose = null; dlg.close(); }
+    running(null); lock?.release?.(); tr?.close(); const wasCancelled = cancelled; if (dlg.open) { dlg.onclose = null; dlg.close(); }
     if (!lines) return wasCancelled ? toast('中止しました') : confirmDialog({ title: '文字にできませんでした', body: noSpeech.length ? `<p class="small">${noSpeech.map(esc).join('<br>')}</p><p>音声が見つかりませんでした（無音のまま取り出された可能性）。編集した動画は音声を取り出せないことがあります。写真アプリで「ビデオを複製」または「ファイルに保存」で書き出したものを取り込み直してください。</p>` : '<p>英語の話し声を文字にできませんでした。「正確さ優先」で試すか、別の音声で試してください。</p>', okLabel: '閉じる', cancelLabel: null });
     const ok = await confirmDialog({ title: wasCancelled ? `${lines}行で中止しました` : `文字起こしが終わりました（${lines}行）`,
       body: `<p>結果は、この画面の一覧（動画の下）に「自動起こし」の印つきで並んでいます。行をタップすると、その部分を再生します。✎で直せます。</p>${wasCancelled ? '<p class="hint">もう一度実行すると続きから始まります。</p>' : ''}<p class="hint">テキストだけ使いたいときは「⋯」→「テキストを書き出す」。単語帳に入れるときは「⋯」→「単語リストを作る」。</p>`,
@@ -819,7 +841,7 @@ async function editorScreen(el, params) {
     if (!ids.length) return toast('容量を減らせるファイルがありません（すでに節約済み）');
     const size = ids.reduce((a, id) => a + (srcs[id].blob?.size || srcs[id].size), 0);
     if (!(await confirmDialog({ title: '容量を減らす', body: `<p>${ids.length}ファイル（${fmtSize(size)}）を、音声だけ・低音質に変換します。字幕・編集・時間はそのままです。</p><p class="hint">動画の映像と元の音質は戻せません（元のファイルは「ファイル」アプリなどに残っています）。文字起こしが途中で止まる場合にも有効です。</p>`, okLabel: '変換する', danger: true }))) return;
-    let saved = 0, n = 0;
+    let saved = 0, n = 0; running('容量を減らす');
     for (const id of ids) {
       toast(`変換中 ${++n} / ${ids.length}：${srcs[id].name}`, 4000);
       try {
@@ -837,9 +859,9 @@ async function editorScreen(el, params) {
         if (!small || (small.file.size >= before && src.codec !== 'aac' && !/mpeg|mp3/.test(src.mime || ''))) continue;
         Object.assign(src, { blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: src.size, duration: small.duration || src.duration });
         await sdb.put('sources', src); URL.revokeObjectURL(urlCache.get(id) || ''); urlCache.delete(id); saved += before - small.file.size;
-      } catch (e) { await confirmDialog({ title: '変換できませんでした', body: `<p class="small">${esc(srcs[id].name)}<br>${esc((e?.message || String(e)))}</p><p class="hint">元のまま残しています。</p>`, okLabel: '閉じる', cancelLabel: null }); }
+      } catch (e) { running(null); await confirmDialog({ title: '変換できませんでした', body: `<p class="small">${esc(srcs[id].name)}<br>${esc((e?.message || String(e)))}</p><p class="hint">元のまま残しています。</p>`, okLabel: '閉じる', cancelLabel: null }); }
     }
-    toast(saved ? `${fmtSize(saved)} 減らしました` : 'この端末では、これ以上小さくできませんでした', 3500); route();
+    running(null); toast(saved ? `${fmtSize(saved)} 減らしました` : 'この端末では、これ以上小さくできませんでした', 3500); route();
   }
   async function exportText() {
     const pad = (n, l = 2) => String(n).padStart(l, '0');
@@ -1103,6 +1125,7 @@ async function labScreen(el) {
   $('#chk', el).onclick = async () => {
     out(`バージョン ${STUDIO_VERSION}・audioSession: ${navigator.audioSession?.type ?? 'なし'}`);
     if (errLog.length) out('最近のエラー:\n  ' + errLog.join('\n  '));
+    if (crumbs.length) out('最近の処理の記録:\n  ' + crumbs.slice(-15).join('\n  '));
     const all = await sdb.all('sources');
     if (!all.length) return out('保存した音声・動画がありません');
     const v = $('#p3v', el); v.muted = false;
@@ -1110,6 +1133,9 @@ async function labScreen(el) {
       const blob = x.stored ? x.blob : null;
       let line = `・${x.name}｜${x.kind}｜${x.mime || '?'}｜${x.codec || '元のまま'}｜${blob ? fmtSize(blob.size) : '保存なし'}｜長さ${fmt(x.duration)}`;
       if (!blob) { out(line); continue; }
+      if (x.audio) line += `｜音声${(x.audio.index ?? 0) + 1}/${x.audio.count}（${x.audio.method}）`;
+      if (x.audioError) line += `｜取り込み時の失敗：${x.audioError}`;
+      try { await blob.slice(0, 16).arrayBuffer(); } catch (e) { out(line + `→ 保存データを読めません（${e.name}）`); continue; }
       const u = URL.createObjectURL(blob);
       const r = await new Promise((res) => { let done = false; const fin = (t) => { if (!done) { done = true; res(t); } };
         v.onloadedmetadata = () => fin(`読込OK 長さ${fmt(v.duration)}・音声トラック${v.audioTracks ? v.audioTracks.length : '?'}`); v.onerror = () => fin(`読込エラー コード${v.error?.code}`); setTimeout(() => fin('読込が終わらない'), 8000); v.src = u; });

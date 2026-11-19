@@ -38,7 +38,7 @@ export async function decodeTo16k(blob) {
   const ac = new AC();
   const buf = await blob.arrayBuffer();
   let decoded;
-  try { decoded = await new Promise((res, rej) => { const p = ac.decodeAudioData(buf, res, rej); if (p?.then) p.then(res, rej); setTimeout(() => rej(new Error('音声の取り出しに時間がかかりすぎました')), 120000); }); }
+  try { decoded = await new Promise((res, rej) => { const no = (e) => rej(e instanceof Error ? e : new Error('音声を取り出せませんでした（音声が入っていないか、対応していない形式です）')); const p = ac.decodeAudioData(buf, res, no); if (p?.then) p.then(res, no); setTimeout(() => rej(new Error('音声の取り出しに時間がかかりすぎました')), 120000); }); }
   finally { ac.close?.(); try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} }
   const len = Math.max(1, Math.ceil(decoded.duration * 16000));
   const off = new OfflineAudioContext(1, len, 16000);

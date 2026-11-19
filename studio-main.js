@@ -7,7 +7,7 @@ import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
 import { decodeTo16k, openTranscriber, speechPieces } from './asr.js';
 
-export const STUDIO_VERSION = '0.3.7';
+export const STUDIO_VERSION = '0.3.8';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -39,7 +39,7 @@ async function route() {
   const { path, params } = parseHash();
   const screens = { sets: setsScreen, import: importScreen, set: editorScreen, versions: versionsScreen, lab: labScreen, io: ioScreen, words: wordsScreen };
   try { await (screens[path] || setsScreen)(ROOT, params); }
-  catch (e) { console.error(e); ROOT.innerHTML = `<div class="card warn">エラー：${esc(e.message)}</div><a class="btn" href="#${BASE}sets">一覧に戻る</a>`; }
+  catch (e) { console.error(e); ROOT.innerHTML = `<div class="card warn">エラー：${esc((e?.message || String(e)))}</div><a class="btn" href="#${BASE}sets">一覧に戻る</a>`; }
   scrollTo(0, 0);
 }
 const head = (title, backPath = null, right = '') => `
@@ -231,7 +231,7 @@ async function importScreen(el) {
       const s = list[i];
       prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}</p>`;
       try { results.push({ s, id: await createSet(s, mode, (k, n, t = '') => (prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}（${k} / ${n}）${t ? `<br>${esc(t)}` : ''}</p>`)) }); }
-      catch (e) { results.push({ s, err: e.message }); }
+      catch (e) { results.push({ s, err: (e?.message || String(e)) }); }
     }
     lock?.release?.();
     prog.innerHTML = `<div class="card stack"><b>登録 ${results.filter((r) => r.id).length}セット・失敗 ${results.filter((r) => r.err).length}</b>
@@ -572,7 +572,7 @@ async function editorScreen(el, params) {
   const ordered = () => ops.orderedSelection(set.order, sel).map((id) => byId[id]).filter(Boolean);
   async function run(label, changes) {
     try { await commit(set, label, changes, srcs); await reload(); drawList(); toast(`${label}しました`, 1200); }
-    catch (e) { toast(e.message, 3500); }
+    catch (e) { toast((e?.message || String(e)), 3500); }
   }
   async function action(a) {
     const list0 = ordered();
@@ -654,7 +654,7 @@ async function editorScreen(el, params) {
           const order = set.order.slice(); order.splice(order.indexOf(b.id), 1, A.id, B.id);
           await run('分割', { blocks: [A, B, { ...b, deleted: true }], order });
           if (A.sync === 'estimated') toast('音声の切れ目は文字数から推定しました。編集で開始・終了を調整してください', 4000);
-        } catch (e) { toast(e.message, 3000); }
+        } catch (e) { toast((e?.message || String(e)), 3000); }
       }));
       $$('[data-adj]', dlg).forEach((x) => (x.onclick = () => { readText(); const [i, edge, d] = x.dataset.adj.split(':'); const s = work.segments[+i]; s[edge] = Math.max(0, +(s[edge] + +d).toFixed(2)); work.sync = 'manual'; draw(); }));
       $$('[data-now]', dlg).forEach((x) => (x.onclick = () => { readText(); const [i, edge] = x.dataset.now.split(':'); const s = work.segments[+i]; if (vid.dataset.src !== s.sourceId) return toast('この区間のファイルを再生してから押してください'); s[edge] = +vid.currentTime.toFixed(2); work.sync = 'manual'; draw(); }));
@@ -738,7 +738,7 @@ async function editorScreen(el, params) {
       }
     } catch (e) {
       lock?.release?.(); tr?.close(); if (dlg.open) dlg.close();
-      return confirmDialog({ title: '文字起こしが止まりました', body: `<p class="small">${esc(e.message)}</p><p class="hint">${lines ? `${lines}行は保存済みです。もう一度実行すると続きから始まります。` : '初回はネット接続が必要です（モデルのダウンロード）。'}</p>`, okLabel: '閉じる', cancelLabel: null });
+      return confirmDialog({ title: '文字起こしが止まりました', body: `<p class="small">${esc((e?.message || String(e)))}</p><p class="hint">${lines ? `${lines}行は保存済みです。もう一度実行すると続きから始まります。` : '初回はネット接続が必要です（モデルのダウンロード）。'}</p>`, okLabel: '閉じる', cancelLabel: null });
     }
     lock?.release?.(); tr?.close(); const wasCancelled = cancelled; if (dlg.open) { dlg.onclose = null; dlg.close(); }
     if (!lines) return wasCancelled ? toast('中止しました') : confirmDialog({ title: '文字にできませんでした', body: noSpeech.length ? `<p class="small">${noSpeech.map(esc).join('<br>')}</p><p>音声が見つかりませんでした（無音のまま取り出された可能性）。編集した動画は音声を取り出せないことがあります。写真アプリで「ビデオを複製」または「ファイルに保存」で書き出したものを取り込み直してください。</p>` : '<p>英語の話し声を文字にできませんでした。「正確さ優先」で試すか、別の音声で試してください。</p>', okLabel: '閉じる', cancelLabel: null });
@@ -761,7 +761,7 @@ async function editorScreen(el, params) {
         if (!small || (small.file.size >= before && src.codec !== 'aac' && !/mpeg|mp3/.test(src.mime || ''))) continue;
         Object.assign(src, { blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: src.size, duration: small.duration || src.duration });
         await sdb.put('sources', src); URL.revokeObjectURL(urlCache.get(id) || ''); urlCache.delete(id); saved += before - small.file.size;
-      } catch (e) { await confirmDialog({ title: '変換できませんでした', body: `<p class="small">${esc(srcs[id].name)}<br>${esc(e.message)}</p><p class="hint">元のまま残しています。</p>`, okLabel: '閉じる', cancelLabel: null }); }
+      } catch (e) { await confirmDialog({ title: '変換できませんでした', body: `<p class="small">${esc(srcs[id].name)}<br>${esc((e?.message || String(e)))}</p><p class="hint">元のまま残しています。</p>`, okLabel: '閉じる', cancelLabel: null }); }
     }
     toast(saved ? `${fmtSize(saved)} 減らしました` : 'この端末では、これ以上小さくできませんでした', 3500); route();
   }
@@ -1029,7 +1029,7 @@ async function labScreen(el) {
     t = performance.now(); const meta = await readDuration(f); out(`  長さ ${fmt(meta.duration)}・再生可能 ${meta.playable}（${Math.round(performance.now() - t)}ms）`);
     t = performance.now();
     try { await lab.put('files', { id: 'p1', name: f.name, blob: f, fp: fp.id, size: f.size }); out(`  端末に保存 ${((performance.now() - t) / 1000).toFixed(1)}秒 ✓`); }
-    catch (e) { out(`  端末に保存 失敗：${e.name} ${e.message}`); return; }
+    catch (e) { out(`  端末に保存 失敗：${e.name} ${(e?.message || String(e))}`); return; }
     await playTest('p1');
   };
   async function playTest(id) {
@@ -1039,7 +1039,7 @@ async function labScreen(el) {
     out(`  読み出し→再生準備 ${Math.round(performance.now() - t)}ms・長さ ${fmt(v.duration)}`);
     t = performance.now(); v.currentTime = (v.duration || 10) * 0.8; await new Promise((r) => { v.onseeked = r; setTimeout(r, 8000); });
     out(`  80%地点へシーク ${Math.round(performance.now() - t)}ms`);
-    try { await v.play(); await new Promise((r) => setTimeout(r, 800)); v.pause(); out('  再生 ✓'); } catch (e) { out(`  再生 失敗：${e.message}`); }
+    try { await v.play(); await new Promise((r) => setTimeout(r, 800)); v.pause(); out('  再生 ✓'); } catch (e) { out(`  再生 失敗：${(e?.message || String(e))}`); }
   }
   $('#p1r', el).onclick = () => { out('P1(再起動後):'); playTest('p1'); };
   $('#p1d', el).onclick = async () => { await lab.del('files', 'p1'); out('テスト用データを削除しました'); };
@@ -1096,7 +1096,7 @@ async function labScreen(el) {
       const th = rms.slice().sort((a, b) => a - b)[Math.floor(rms.length * 0.2)] * 2.5 + 1e-4;
       for (const v of rms) { if (v < th) { sil++; if (sil === 30 && !inSil) { runs++; inSil = true; } } else { sil = 0; inSil = false; } }
       out(`  無音検出 ${Math.round(performance.now() - t)}ms・0.6秒以上の無音 ${runs}か所 ✓`);
-    } catch (e) { out(`  失敗：${e.name} ${e.message}`); }
+    } catch (e) { out(`  失敗：${e.name} ${(e?.message || String(e))}`); }
   };
   // one test at a time (overlapping runs on the same video gave false time-outs)
   let busy = false;

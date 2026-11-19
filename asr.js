@@ -8,10 +8,11 @@ const LANG_NAME = { es: 'spanish', 'zh-TW': 'chinese', 'zh-CN': 'chinese' };
 const WORKER_SRC = `
 import { pipeline, env } from '${TF_URL}';
 env.allowLocalModels = false;
+let asr = null;
 self.onmessage = async (e) => {
   const { audio, model, language } = e.data;
-  let asr = null, lastErr = null;
-  for (const device of e.data.devices) {
+  let lastErr = null;
+  if (!asr) for (const device of e.data.devices) {
     try {
       asr = await pipeline('automatic-speech-recognition', model, {
         device, dtype: device === 'webgpu' ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : 'q8',
@@ -93,4 +94,46 @@ export async function transcribe(blob, { lang = 'en', onProgress = () => {}, isC
     };
     worker.postMessage({ audio, model, language: LANG_NAME[lang] || null, devices }, [audio.buffer]);
   });
+}
+
+// Keeps one worker (model loaded once) for several pieces of audio. run(audio16k) -> cues with times relative to the piece.
+export function openTranscriber(lang = 'en', onProgress = () => {}) {
+  const model = lang === 'en' ? MODELS.en : MODELS.multi;
+  const devices = 'gpu' in navigator ? ['webgpu', 'wasm'] : ['wasm'];
+  const worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })), { type: 'module' });
+  const files = {};
+  let pending = null;
+  worker.onerror = (e) => { pending?.reject(new Error('音声認識の部品を読み込めませんでした（ネット接続を確認してください）' + (e?.message ? '：' + e.message : ''))); pending = null; };
+  worker.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === 'load' && m.p?.status === 'progress' && m.p.total) {
+      files[m.p.file] = [m.p.loaded, m.p.total];
+      const [a, b] = Object.values(files).reduce((x, y) => [x[0] + y[0], x[1] + y[1]], [0, 0]);
+      onProgress(`音声認識モデルを準備しています（初回のみダウンロード）… ${Math.round((a / b) * 100)}%`);
+    } else if (m.type === 'device') onProgress(`モデルの準備ができました（${m.device === 'webgpu' ? 'GPU' : 'CPU'}で処理）`);
+    else if (m.type === 'done') { pending?.resolve(chunksToCues(m.chunks, pending.duration)); pending = null; }
+    else if (m.type === 'error') { pending?.reject(new Error(m.message)); pending = null; }
+  };
+  return {
+    run(audio) {
+      const duration = audio.length / 16000;
+      return new Promise((resolve, reject) => { pending = { resolve, reject, duration }; worker.postMessage({ audio, model, language: LANG_NAME[lang] || null, devices }, [audio.buffer]); });
+    },
+    close() { worker.terminate(); pending?.resolve([]); pending = null; },
+  };
+}
+// split [a, b] seconds of 16 kHz audio into pieces of about `len` seconds, cutting at the quietest point near each boundary
+export function pieceRanges(audio, a, b, len = 120) {
+  const out = []; let s = a;
+  while (b - s > len * 1.3) {
+    const target = s + len, F = 320; let best = target, bestE = Infinity;
+    for (let t = target - 6; t <= target + 6; t += 0.02) {
+      const i0 = Math.floor(t * 16000); if (i0 < 0 || i0 + F > audio.length) continue;
+      let e = 0; for (let k = 0; k < F; k++) e += audio[i0 + k] * audio[i0 + k];
+      if (e < bestE) { bestE = e; best = t; }
+    }
+    out.push([s, best]); s = best;
+  }
+  out.push([s, b]);
+  return out;
 }

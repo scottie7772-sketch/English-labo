@@ -100,7 +100,7 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
 .icon-btn { background: none; border: 0; font-size: 20px; padding: 6px 8px; color: var(--text); min-width: 40px; min-height: 40px; }
 .top .icon-btn { font-size: 28px; color: var(--accent); }
 .btn.sm { padding: 7px 12px; min-height: 36px; font-size: 14px; width: auto; }
-select, textarea, .searchbar input, .card input:not([type=checkbox]) {
+select, textarea, .searchbar input, .card input:not([type=checkbox]):not([type=radio]) {
   font: inherit; font-size: 16px; width: 100%; padding: 10px 12px; border-radius: 10px;
   border: 1px solid var(--line); background: var(--bg); color: var(--text);
 }
@@ -313,7 +313,7 @@ b, strong { font-weight: 700; }
 .chips button.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--text); font-weight: 800; }
 .chk { font-size: var(--fs-m); gap: 10px; min-height: 36px; }
 .chk input { width: 22px; height: 22px; }
-select, textarea, .searchbar input, .card input:not([type=checkbox]) { font-size: var(--fs-m); padding: 12px 14px; border-radius: 12px; }
+select, textarea, .searchbar input, .card input:not([type=checkbox]):not([type=radio]) { font-size: var(--fs-m); padding: 12px 14px; border-radius: 12px; }
 
 /* home */
 .stat { border-radius: var(--radius); padding: 14px 6px; }
@@ -463,7 +463,7 @@ b, strong { font-weight: 600; }
 .chips button.on::before { content: '✓ '; color: var(--accent); }
 .chips button:disabled { opacity: 1; }
 .chk { font-size: var(--fs-m); min-height: 44px; }
-select, textarea, .searchbar input, .card input:not([type=checkbox]), .numin { font-size: var(--fs-m); padding: 10px 12px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--surface2); color: var(--text); }
+select, textarea, .searchbar input, .card input:not([type=checkbox]):not([type=radio]), .numin { font-size: var(--fs-m); padding: 10px 12px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--surface2); color: var(--text); }
 .numin { width: 110px; margin-top: 8px; }
 .link { color: var(--accent); }
 
@@ -843,7 +843,9 @@ label.prow input, .dcrow input { width: 22px; height: 22px; flex: 0 0 auto; marg
 .selbar .row { gap: 8px; }
 body[data-lang="zh-CN"] .fc-en, body[data-lang="zh-CN"] .tl, [lang="zh-Hans-CN"] { font-family: "PingFang SC", "Heiti SC", "Noto Sans SC", -apple-system, sans-serif; }
 .ptile.picked { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--surface)); transform: translateY(-2px); }
-.ptile.dragging { opacity: .3; }
+.ptile.dragging { opacity: .35; border-style: dashed; transition: none; }
+.pz-answer.out { border-color: var(--ng); }
+.ptile.ghost.out { opacity: .6; outline: 2px solid var(--ng); }
 .ptile.ghost { position: fixed; z-index: 60; pointer-events: none; box-shadow: 0 8px 22px rgba(0,0,0,.35); transform: scale(1.06); }
 .ptile.insbefore { box-shadow: -4px 0 0 0 var(--accent); }
 .pz-answer.insend::after { content: ''; width: 4px; align-self: stretch; min-height: 40px; background: var(--accent); border-radius: 2px; }
@@ -869,3 +871,7 @@ body[data-lang="zh-CN"] .fc-en, body[data-lang="zh-CN"] .tl, [lang="zh-Hans-CN"]
 .exrow .tl { font-size: 17px; }
 .pinyin { color: var(--accent); font-size: 14px; }
 .gram { margin-bottom: 10px; } .gram p { margin: 0; line-height: 1.6; }
+
+/* no zoom on double-tap; inputs at 16px so iOS does not zoom in when focusing */
+html, body { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
+input, select, textarea { font-size: max(16px, 1em); }

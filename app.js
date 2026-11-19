@@ -17,7 +17,7 @@ import { dataCheckScreen, scanWords } from './datacheck.js';
 import { courseScreen, courseUnit, coursePuzzle } from './course.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.2.1';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -199,6 +199,7 @@ function renderTabs() {
 }
 
 async function boot() {
+  document.addEventListener('gesturestart', (e) => e.preventDefault());   // no pinch zoom (iOS)
   try { await openDB(); }
   catch (e) { $('#main').innerHTML = `<div class="card warn">データベースを開けません: ${esc(e.message)}<br>プライベートブラウズでは保存できません。</div>`; return; }
   await applyTheme();

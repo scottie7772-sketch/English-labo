@@ -27,7 +27,7 @@ export function renderPuzzle(host, pz, onAnswer) {
     $('#pool', host).innerHTML = pool.map((p) => `<button class="ptile ${order.includes(p.i) ? 'used' : ''}" data-i="${p.i}" ${order.includes(p.i) ? 'disabled' : ''}>${esc(p.t)}</button>`).join('');
     $('#pzCheck', host).disabled = !order.length || done;
     $('#pzUndo', host).disabled = !history.length || done;
-    $('#pzHint', host).textContent = picked >= 0 ? '入れ替えたいタイルをタップ（同じタイルをもう一度で下に戻す／下のタイルをタップでこの前に入れる）' : order.length > 1 ? '並べたタイルはタップで選んで入れ替え、ドラッグで移動できます' : '';
+    $('#pzHint', host).textContent = picked >= 0 ? '入れ替えたいタイルをタップ（同じタイルをもう一度で下に戻す／下のタイルをタップでこの前に入れる）' : order.length > 1 ? '並べたタイルは指でつかんで好きな位置へ動かせます（タップで入れ替え、外へ出すと下に戻ります）' : '';
   };
   draw();
   const commit = (next) => { history.push([...order]); order = next; picked = -1; draw(); };
@@ -48,41 +48,52 @@ export function renderPuzzle(host, pz, onAnswer) {
   const ans = $('#ans', host);
   let drag = null;
   const pt = (e) => e.touches?.[0] || e.changedTouches?.[0] || e;
-  const insertIndex = (x, y) => {
-    const tiles = $$('.ptile.in', ans).filter((t) => +t.dataset.k !== drag.k);
-    for (const t of tiles) { const r = t.getBoundingClientRect(); if (y < r.top) return +t.dataset.k; if (y <= r.bottom && x < r.left + r.width / 2) return +t.dataset.k; }
-    return order.length;
+  // position among the other placed tiles (by finger position)
+  const insertAt = (x, y) => {
+    const tiles = $$('.ptile.in', ans).filter((t) => t !== drag.el);
+    for (let i = 0; i < tiles.length; i++) { const r = tiles[i].getBoundingClientRect(); if (y < r.top) return i; if (y <= r.bottom && x < r.left + r.width / 2) return i; }
+    return tiles.length;
   };
   const start = (e) => {
     const t = e.target.closest('.ptile.in'); if (!t || done) return;
-    const p = pt(e); drag = { k: +t.dataset.k, el: t, x0: p.clientX, y0: p.clientY, moving: false, ghost: null, to: null };
+    const p = pt(e); drag = { k: +t.dataset.k, el: t, x0: p.clientX, y0: p.clientY, moving: false, ghost: null, out: false };
   };
   const move = (e) => {
     if (!drag) return;
     const p = pt(e);
     if (!drag.moving) {
-      if (Math.hypot(p.clientX - drag.x0, p.clientY - drag.y0) < 8) return;
-      drag.moving = true; picked = -1;
+      if (Math.hypot(p.clientX - drag.x0, p.clientY - drag.y0) < 6) return;
+      drag.moving = true; picked = -1; $$('.ptile.picked', ans).forEach((t) => t.classList.remove('picked'));
       const r = drag.el.getBoundingClientRect();
       drag.ghost = drag.el.cloneNode(true); drag.ghost.classList.add('ghost');
       Object.assign(drag.ghost.style, { width: r.width + 'px', left: r.left + 'px', top: r.top + 'px' });
       drag.dx = p.clientX - r.left; drag.dy = p.clientY - r.top;
       document.body.appendChild(drag.ghost); drag.el.classList.add('dragging');
+      $('#pzHint', host).textContent = '離した位置に入ります（枠の外に出すと下に戻ります）';
     }
-    e.preventDefault();
+    if (e.cancelable) e.preventDefault();
     drag.ghost.style.left = p.clientX - drag.dx + 'px'; drag.ghost.style.top = p.clientY - drag.dy + 'px';
-    drag.to = insertIndex(p.clientX, p.clientY);
-    $$('.ptile.in', ans).forEach((t) => t.classList.toggle('insbefore', +t.dataset.k === drag.to));
-    ans.classList.toggle('insend', drag.to === order.length);
+    const ar = ans.getBoundingClientRect();
+    drag.out = p.clientY > ar.bottom + 36 || p.clientY < ar.top - 48;
+    ans.classList.toggle('out', drag.out); drag.ghost.classList.toggle('out', drag.out);
+    if (drag.out) return;
+    // live reflow: the other tiles make room where the finger is
+    const others = $$('.ptile.in', ans).filter((t) => t !== drag.el);
+    const i = insertAt(p.clientX, p.clientY);
+    const ref = others[i] || null;
+    if (drag.el.nextElementSibling !== ref || (ref === null && ans.lastElementChild !== drag.el)) ans.insertBefore(drag.el, ref);
   };
   const end = (e) => {
     if (!drag) return;
     const d = drag; drag = null;
     if (!d.moving) { tapPlaced(d.k); return; }
-    e.preventDefault();
-    d.ghost.remove(); ans.classList.remove('insend');
-    if (d.to == null) { draw(); return; }
-    const n = [...order]; const [x] = n.splice(d.k, 1); n.splice(d.to > d.k ? d.to - 1 : d.to, 0, x);
+    if (e.cancelable) e.preventDefault();
+    d.ghost.remove(); ans.classList.remove('out');
+    const n = [...order]; const [x] = n.splice(d.k, 1);
+    if (d.out) { commit(n); return; }   // dragged out of the answer area: back to the pool
+    const idx = $$('.ptile.in', ans).indexOf(d.el);
+    n.splice(idx < 0 ? n.length : idx, 0, x);
+    if (n.join() === order.join()) { draw(); return; }
     commit(n);
   };
   ans.addEventListener('touchstart', start, { passive: true });

@@ -5,10 +5,10 @@ import { sdb, newId, commit, undo, redo, saveVersion, restoreVersion, liveBlocks
 import { parseScript, SUB_EXT, isJa, langFromName, autoPair, alignJa } from './studio-subs.js';
 import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
-import { transcribe } from './asr.js';
+import { decodeTo16k, openTranscriber, pieceRanges } from './asr.js';
 
-export const STUDIO_VERSION = '0.2.0';
-const LIMIT_SEC = 15 * 60;   // one import: up to 15 minutes in total (user decision)
+export const STUDIO_VERSION = '0.3.0';
+const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
 const urlCache = new Map();
@@ -66,24 +66,49 @@ async function setsScreen(el) {
   const sets = (await sdb.all('sets')).sort((a, b) => b.updatedAt - a.updatedAt);
   const srcs = await sourcesMap();
   const est = await navigator.storage?.estimate?.().catch(() => null);
-  el.innerHTML = `${head('教材セット', null, `<a class="btn sm" href="#${BASE}lab">技術検証</a>`)}
+  let editing = false; const chosen = new Set();
+  const draw = () => {
+    el.innerHTML = `${head('教材セット', null, `<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#${BASE}lab">技術検証</a>`)}
     <div class="row"><a class="btn primary grow" href="#${BASE}import">＋ 一括登録（動画・音声・字幕）</a><a class="btn" href="#${BASE}io">読み込み</a></div>
     ${est ? `<p class="small muted">端末の保存量：${fmtSize(est.usage || 0)}${est.quota ? ` / 目安の上限 ${fmtSize(est.quota)}` : ''}</p>` : ''}
-    ${sets.length ? `<div class="card list">${sets.map((s) => {
+    ${sets.length ? `<div class="row"><span class="grow small muted">${sets.length}セット</span><button class="btn sm" id="edit">${editing ? '完了' : '選んで削除'}</button></div>
+    ${editing ? `<div class="row"><button class="btn sm" id="eAll">すべて選ぶ</button><button class="btn sm" id="eNone">解除</button><button class="btn sm danger grow" id="eDel" ${chosen.size ? '' : 'disabled'}>${chosen.size}セットを削除</button></div>` : ''}
+    <div class="card list">${sets.map((s) => {
       const src = srcs[s.sourceId];
-      return `<a class="st-setrow" href="#${BASE}set?id=${s.id}"><span class="grow"><b>${esc(s.title)}</b>
-        <small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${src.stored ? '端末に保存' : '保存しない'}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>›</a>`;
+      const info = `<span class="grow"><b>${esc(s.title)}</b><small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${src.stored ? (src.derived === 'audio16k' ? '音声だけ保存' : '端末に保存') : '保存しない'}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
+      return editing ? `<label class="st-setrow"><input type="checkbox" class="st-cb" data-id="${s.id}" ${chosen.has(s.id) ? 'checked' : ''}>${info}</label>` : `<a class="st-setrow" href="#${BASE}set?id=${s.id}">${info}›</a>`;
     }).join('')}</div>` : '<p class="empty">まだ教材セットがありません。「一括登録」から動画・音声と字幕を選んでください。</p>'}
     <p class="hint">このスタジオは単体で動く試作版です（データはこのアプリの中だけに保存）。後で English Labo の中に組み込み、ここで作った教材は「書き出し」→ English Labo で読み込みで移せます。</p>`;
+    $('#upd', el).onclick = checkUpdate;
+    $('#edit', el)?.addEventListener('click', () => { editing = !editing; chosen.clear(); draw(); });
+    $('#eAll', el)?.addEventListener('click', () => { sets.forEach((x) => chosen.add(x.id)); draw(); });
+    $('#eNone', el)?.addEventListener('click', () => { chosen.clear(); draw(); });
+    $$('.st-cb', el).forEach((c) => (c.onchange = () => { c.checked ? chosen.add(c.dataset.id) : chosen.delete(c.dataset.id); draw(); }));
+    $('#eDel', el)?.addEventListener('click', async () => {
+      const list = sets.filter((x) => chosen.has(x.id));
+      if (!(await confirmDialog({ title: `${list.length}セットを削除`, body: `<p>${list.map((x) => esc(x.title)).join('<br>')}</p><p class="hint">字幕・編集・版も削除します（元に戻せません）。必要なら先に「⋯」→「書き出す」で保存してください。</p>`, okLabel: '削除', danger: true }))) return;
+      for (const x of list) await deleteSet(x);
+      toast(`${list.length}セットを削除しました`); route();
+    });
+  };
+  draw();
+}
+async function checkUpdate() {
+  toast('最新版を確認しています…', 2000);
+  try {
+    for (const r of (await navigator.serviceWorker?.getRegistrations?.()) || []) await r.update().catch(() => {});
+    for (const k of await caches.keys()) await caches.delete(k);
+  } catch {}
+  location.replace(location.pathname + '?v=' + Date.now() + location.hash);
 }
 
 // ================= bulk import =================
 async function importScreen(el) {
   const files = { media: [], subs: [] };   // analysed entries
-  let sets = null, storeMode = 'store', groupMode = 'file';
+  let sets = null, storeMode = 'store', groupMode = 'file', videoQ = 'audio';
   el.innerHTML = `${head('一括登録', 'sets')}
     <div class="card stack">
-      <p class="small">動画・音声と、英語・日本語の字幕（SRT・VTT・TXT・CSV）をまとめて選びます。ファイル名・言語・長さから自動で組み合わせます。<b>1回の取り込みは合計15分まで</b>。</p>
+      <p class="small">動画・音声と、英語・日本語の字幕（SRT・VTT・TXT・CSV）をまとめて選びます。ファイル名・言語・長さから自動で組み合わせます。<b>1回の取り込みは合計で、動画15分・音声75分まで</b>。</p>
       <label class="btn" for="fz">📦 ZIPを選ぶ（フォルダを圧縮したもの）</label><input type="file" id="fz" hidden>
       <label class="btn" for="fm">🎬 動画・音声を選ぶ（複数可）</label><input type="file" id="fm" multiple hidden>
       <label class="btn" for="fs">📄 字幕・スクリプトを選ぶ（複数可）</label><input type="file" id="fs" multiple hidden>
@@ -144,7 +169,11 @@ async function importScreen(el) {
   function draw() {
     if (!sets?.length) { $('#pairs', el).innerHTML = ''; return; }
     const total = sets.filter((s) => s.include && s.media).reduce((a, s) => a + (s.media.duration || 0), 0);
-    const over = total > LIMIT_SEC;
+    const inc = sets.filter((s) => s.include && s.media);
+    const tv = inc.filter((s) => s.media.kind !== 'audio').reduce((a, s) => a + (s.media.duration || 0), 0);
+    const ta = inc.filter((s) => s.media.kind === 'audio').reduce((a, s) => a + (s.media.duration || 0), 0);
+    const overV = tv > LIMIT.video, overA = ta > LIMIT.audio, over = overV || overA;
+    const meter = (t, lim, label, ov) => `<div class="st-meter ${ov ? 'over' : ''}"><i style="width:${Math.min(100, (t / lim) * 100)}%"></i><span>${label} ${fmtMin(t)} / ${lim / 60}分</span></div>`;
     const opt = (arr, cur, label) => `<option value="">（なし）</option>${arr.map((x) => `<option value="${x.key}" ${cur === x ? 'selected' : ''}>${esc(label(x))}</option>`).join('')}`;
     const needBytes = storeMode === 'store' ? sets.filter((s) => s.include && s.media).reduce((a, s) => a + s.media.file.size, 0) : 0;
     $('#pairs', el).innerHTML = `
@@ -153,8 +182,8 @@ async function importScreen(el) {
         ${groupMode === 'folder' ? `<small class="muted">${groupsOf(sets.filter((s) => s.include)).map((g) => `📁 ${esc(g.title)}（${g.items.length}件）`).join('<br>')}</small>` : ''}</div>
       <h2 class="sec">組み合わせ（${sets.length}件）</h2>
       <div class="row"><button class="btn sm" id="incAll">すべて入れる</button><button class="btn sm" id="incNone">すべて外す</button></div>
-      <div class="st-meter ${over ? 'over' : ''}"><i style="width:${Math.min(100, (total / LIMIT_SEC) * 100)}%"></i><span>${fmtMin(total)} / 15分</span></div>
-      ${over ? '<p class="warn-text small">合計が15分を超えています。いくつかのセットのチェックを外してください。</p>' : ''}
+      ${tv || !ta ? meter(tv, LIMIT.video, '🎬 動画', overV) : ''}${ta ? meter(ta, LIMIT.audio, '🎧 音声', overA) : ''}
+      ${over ? `<p class="warn-text small">${overV ? '動画の合計が15分' : '音声の合計が75分'}を超えています。いくつかのチェックを外してください。</p>` : ''}
       ${sets.map((s, i) => `<div class="card stack st-pair ${s.confidence}">
         <div class="row"><label class="chk grow"><input type="checkbox" data-inc="${i}" ${s.include ? 'checked' : ''}> <input class="st-title" data-title="${i}" value="${esc(s.title)}"></label>
           <span class="tagp">${s.confidence === 'high' ? '確か' : s.confidence === 'mid' ? 'たぶん' : '要確認'}</span></div>
@@ -165,7 +194,10 @@ async function importScreen(el) {
       <div class="card stack"><span class="small">動画・音声の保存</span>
         <label class="chk"><input type="radio" name="sm" value="store" ${storeMode === 'store' ? 'checked' : ''}> 端末に保存（おすすめ・すぐ再生できる）</label>
         <label class="chk"><input type="radio" name="sm" value="ref" ${storeMode === 'ref' ? 'checked' : ''}> 保存しない（開くたびに同じファイルを選び直す）</label>
-        ${needBytes ? `<small class="muted">必要な容量：約${fmtSize(needBytes)}</small>` : ''}</div>
+        ${inc.some((x) => x.media.kind !== 'audio') && storeMode === 'store' ? `<span class="small">動画の保存のしかた</span>
+        <label class="chk"><input type="radio" name="vq" value="audio" ${videoQ === 'audio' ? 'checked' : ''}> 音声だけ保存（とても小さい・映像なし）</label>
+        <label class="chk"><input type="radio" name="vq" value="orig" ${videoQ === 'orig' ? 'checked' : ''}> 動画のまま保存（映像も見る教材）</label>` : ''}
+        ${needBytes ? `<small class="muted">必要な容量：約${fmtSize(storeMode === 'store' && videoQ === 'audio' ? inc.reduce((a, x) => a + (x.media.kind === 'audio' ? x.media.file.size : (x.media.duration || 0) * 32000), 0) : needBytes)}</small>` : ''}</div>
       <button class="btn primary" id="go" ${over || !sets.some((s) => s.include) ? 'disabled' : ''}>登録する</button>
       <div id="prog"></div>`;
     $$('[data-inc]', el).forEach((c) => (c.onchange = () => { sets[+c.dataset.inc].include = c.checked; draw(); }));
@@ -179,10 +211,11 @@ async function importScreen(el) {
       draw();
     }));
     $$('input[name=sm]', el).forEach((r) => (r.onchange = () => { storeMode = r.value; draw(); }));
+    $$('input[name=vq]', el).forEach((r) => (r.onchange = () => { videoQ = r.value; draw(); }));
     $('#gm', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { groupMode = v; draw(); } };
     $('#incAll', el).onclick = () => { sets.forEach((s) => (s.include = true)); draw(); };
     $('#incNone', el).onclick = () => { sets.forEach((s) => (s.include = false)); draw(); };
-    $('#go', el).onclick = () => { const inc = sets.filter((s) => s.include); runImport(groupMode === 'folder' ? groupsOf(inc) : inc.map((s) => ({ title: s.title, items: [s] })), storeMode); };
+    $('#go', el).onclick = () => { const inc = sets.filter((s) => s.include); runImport(groupMode === 'folder' ? groupsOf(inc) : inc.map((s) => ({ title: s.title, items: [s] })), storeMode === 'store' && videoQ === 'audio' ? 'store-audio' : storeMode); };
   }
   async function runImport(list, mode) {
     const prog = $('#prog', el);
@@ -203,6 +236,14 @@ async function importScreen(el) {
   }
 }
 
+function wav16(f32) {
+  const n = f32.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0, o = 44; i < n; i++, o += 2) { const x = Math.max(-1, Math.min(1, f32[i])); v.setInt16(o, x < 0 ? x * 0x8000 : x * 0x7fff, true); }
+  return buf;
+}
 const MEDIA_EXT = /\.(mp4|m4v|mov|mp3|m4a|wav|aac|caf|aif|aiff)$/i, AUDIO_EXT = /\.(mp3|m4a|wav|aac|caf|aif|aiff)$/i;
 const MIME = { mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', aac: 'audio/aac', caf: 'audio/x-caf', aif: 'audio/aiff', aiff: 'audio/aiff' };
 const mimeOf = (n) => MIME[(n.match(/\.(\w+)$/) || [])[1]?.toLowerCase()] || '';
@@ -216,7 +257,11 @@ function groupsOf(list) {
 async function putSource(media, mode) {
   const exist = await sdb.get('sources', media.fp.id);
   const src = exist || { id: media.fp.id, kind: media.kind, name: media.name.split('/').pop(), size: media.file.size, mime: media.file.type, duration: media.duration, playable: media.playable, head: media.fp.head, tail: media.fp.tail, addedAt: Date.now(), stored: false };
-  if (mode === 'store' && !src.stored) { src.stored = true; src.blob = media.file; }
+  if (mode === 'store-audio' && media.kind !== 'audio' && !src.stored) {   // keep only the sound: 16 kHz mono WAV (~1.9 MB/min)
+    const { audio, duration } = await decodeTo16k(media.file);
+    src.blob = new File([wav16(audio)], src.name.replace(/\.[^.]+$/, '') + '.wav', { type: 'audio/wav' });
+    Object.assign(src, { stored: true, kind: 'audio', mime: 'audio/wav', derived: 'audio16k', origSize: media.file.size, duration: duration || src.duration });
+  } else if (mode.startsWith('store') && !src.stored) { src.stored = true; src.blob = media.file; }
   else if (!src.stored) sessionFiles.set(src.id, media.file);
   await sdb.put('sources', src);   // a big file is written from disk; may take a while
   return src;
@@ -552,44 +597,95 @@ async function editorScreen(el, params) {
   }
 
   // ---------- transcription (Whisper in the browser; audio never leaves the device) ----------
+  // Pieces of ~2 min are transcribed one by one and saved as they finish. The block that still has no text keeps the rest,
+  // so if iOS reloads the page, running it again continues from where it stopped.
   async function runAsr() {
     const pool = sel.size ? ordered() : blocks;
     const targets = pool.filter((b) => !b.text.trim() && b.segments.length === 1);
     if (!targets.length) return toast(sel.size ? '選んだ項目に、英文のない音声がありません' : '英文のない音声項目がありません（文字起こしは英文が空の項目だけに行います）', 4000);
-    const bySrc = new Map(); for (const b of targets) { const id = b.segments[0].sourceId; if (!bySrc.has(id)) bySrc.set(id, []); bySrc.get(id).push(b); }
-    const missing = [...bySrc.keys()].filter((id) => !(srcs[id]?.stored ? srcs[id].blob : sessionFiles.get(id)));
-    if (missing.length) return toast('動画・音声ファイルを選び直してから実行してください', 4000);
-    const total = [...bySrc.keys()].reduce((a, id) => a + (srcs[id].duration || 0), 0);
-    if (!(await confirmDialog({ title: '文字起こし（試験的）', body: `<p>${targets.length}項目・音声 ${bySrc.size}ファイル（合計 ${fmtMin(total)}）を、この端末の中で英語の文字に起こします。</p>
-      <p class="hint">・最初の1回だけ音声認識モデル（約80MB）をダウンロードします（無料・Wi-Fi推奨）。音声は外部に送りません。<br>・音声の長さの数倍かかることがあります。画面は開いたままにしてください。<br>・結果は自動の下書きです。聞きながら直してください。1回の操作として記録されるので ↶ で取り消せます。</p>`, okLabel: '始める' }))) return;
-    let cancelled = false;
+    const bySrc = new Map(); for (const b of targets) { const id = b.segments[0].sourceId; if (!bySrc.has(id)) bySrc.set(id, []); bySrc.get(id).push(b.id); }
+    if ([...bySrc.keys()].some((id) => !(srcs[id]?.stored ? srcs[id].blob : sessionFiles.get(id)))) return toast('動画・音声ファイルを選び直してから実行してください', 4000);
+    const total = targets.reduce((a, b) => a + blockDur(b), 0);
+    const big = [...bySrc.keys()].map((id) => srcs[id]).filter((x) => x.kind === 'video' && x.size > 150 * 1024 * 1024);
+    if (!(await confirmDialog({ title: '文字起こし（試験的）', body: `<p>${targets.length}項目（合計 ${fmtMin(total)}）を、この端末の中で英語の文字に起こします。</p>${big.length ? `<p class="warn-text small">大きな動画（${fmtSize(big[0].size)}）はメモリ不足で途中で止まることがあります。先に「⋯」→「動画を音声だけにする」をすると安定します。</p>` : ''}
+      <p class="hint">・最初の1回だけ音声認識モデル（約80MB）をダウンロードします（無料・Wi-Fi推奨）。音声は外部に送りません。<br>・約2分ずつ処理し、終わった分から保存します。途中で止まっても、もう一度実行すると続きから始まります。<br>・画面は開いたままにしてください。結果は自動の下書きです。</p>`, okLabel: '始める' }))) return;
+    let cancelled = false, done = 0, lines = 0;
     const dlg = $('#dialog');
-    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>文字起こし中</h3><p class="small" id="asrMsg">準備しています…</p><div class="st-meter"><i id="asrBar" style="width:0%"></i><span id="asrPct">0%</span></div><button class="btn ghost" value="cancel">中止</button></form>`;
-    dlg.returnValue = ''; dlg.onclose = () => { cancelled = true; }; dlg.showModal();
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>文字起こし中</h3><p class="small" id="asrMsg">準備しています…</p><div class="st-meter"><i id="asrBar" style="width:0%"></i><span id="asrPct">0%</span></div><p class="small muted" id="asrDone"></p><button class="btn ghost" value="cancel">中止（ここまでは保存済み）</button></form>`;
+    dlg.returnValue = ''; dlg.onclose = () => { cancelled = true; tr?.close(); }; dlg.showModal();
+    const msg = (t) => { const m = $('#asrMsg', dlg); if (m) m.textContent = t; };
+    const bar = () => { const pr = total ? done / total : 0; const b = $('#asrBar', dlg); if (b) { b.style.width = `${pr * 100}%`; $('#asrPct', dlg).textContent = `${Math.round(pr * 100)}%`; } };
     const lock = await navigator.wakeLock?.request?.('screen').catch(() => null);
-    const changed = []; let order = set.order.slice(), k = 0, made = 0;
+    let tr = null;
     try {
-      for (const [sid, list] of bySrc) {
-        const src = srcs[sid];
-        const cues = await transcribe(src.stored ? src.blob : sessionFiles.get(sid), { lang: 'en', isCancelled: () => cancelled,
-          onProgress: (msg, r) => { const pr = (k + r) / bySrc.size; $('#asrMsg', dlg).textContent = `${src.name}：${msg}`; $('#asrBar', dlg).style.width = `${pr * 100}%`; $('#asrPct', dlg).textContent = `${Math.round(pr * 100)}%`; } });
+      tr = openTranscriber('en', msg);
+      for (const [sid, ids] of bySrc) {
         if (cancelled) break;
-        k++;
-        for (const b of list) {
-          const sg = b.segments[0];
-          const inside = cues.filter((c) => c.end > sg.start + 0.05 && c.start < sg.end - 0.05);
-          if (!inside.length) continue;
-          const parts = inside.map((c, i) => newBlock(set.id, { segments: [{ sourceId: sid, start: Math.max(sg.start, c.start), end: Math.min(sg.end, c.end) }], text: c.text, ja: '', sync: 'auto', asr: true,
-            ...(i === 0 && b.label ? { label: b.label } : {}), lineage: { op: 'split', from: [`${b.id}@${b.rev}`], at: Date.now() },
-            align: tokensOf(c.text).length ? [{ s: 0, e: tokensOf(c.text).length - 1, v0: 0, v1: Math.min(sg.end, c.end) - Math.max(sg.start, c.start) }] : [] }));
-          changed.push(...parts, { ...b, deleted: true }); order.splice(order.indexOf(b.id), 1, ...parts.map((x) => x.id)); made += parts.length;
+        const src = srcs[sid];
+        msg(`${src.name}：音声を取り出しています…`);
+        const { audio } = await decodeTo16k(src.stored ? src.blob : sessionFiles.get(sid));
+        for (const bid of ids) {
+          const b0 = byId[bid]; const sg = b0.segments[0];
+          for (const [ps, pe] of pieceRanges(audio, sg.start, sg.end)) {
+            if (cancelled) break;
+            msg(`${src.name}：${fmt(ps)}〜${fmt(pe)} を文字起こし中…（音声の長さの半分ほどかかります）`);
+            const piece = audio.slice(Math.floor(ps * 16000), Math.floor(pe * 16000));
+            const cues = await tr.run(piece);
+            if (cancelled) break;
+            const b = byId[bid];   // latest revision (its start moves forward)
+            const parts = cues.map((c) => ({ s: ps + c.start, e: Math.min(pe, ps + c.end), text: c.text })).filter((c) => c.e - c.s > 0.05)
+              .map((c, i) => newBlock(set.id, { segments: [{ sourceId: sid, start: +c.s.toFixed(2), end: +c.e.toFixed(2) }], text: c.text, ja: '', sync: 'auto', asr: true,
+                ...(i === 0 && b.label && b.segments[0].start === sg.start ? { label: b.label } : {}), lineage: { op: 'split', from: [`${b.id}@${b.rev}`], at: Date.now() },
+                align: tokensOf(c.text).length ? [{ s: 0, e: tokensOf(c.text).length - 1, v0: 0, v1: +(c.e - c.s).toFixed(2) }] : [] }));
+            const rest = pe < sg.end - 0.5 ? { ...b, segments: [{ ...b.segments[0], start: +pe.toFixed(2) }], align: [] } : { ...b, deleted: true };
+            const order = set.order.slice(); const at = order.indexOf(b.id);
+            order.splice(at, rest.deleted ? 1 : 0, ...parts.map((x) => x.id));
+            await commit(set, `文字起こし ${fmt(ps)}〜${fmt(pe)}`, { blocks: [...parts, rest], order }, srcs);
+            await reload(); drawList();
+            done += pe - ps; lines += parts.length; bar();
+            const dd = $('#asrDone', dlg); if (dd) dd.textContent = `保存済み：${lines}行`;
+          }
+          if (cancelled) break;
         }
       }
-    } catch (e) { lock?.release?.(); dlg.close(); return toast('文字起こしできませんでした：' + e.message, 5000); }
-    lock?.release?.(); if (dlg.open) dlg.close();
-    if (cancelled && !changed.length) return toast('中止しました');
-    if (!changed.length) return toast('英語の音声を見つけられませんでした', 3500);
-    await run(`文字起こし（${made}行）`, { blocks: changed, order });
+    } catch (e) {
+      lock?.release?.(); tr?.close(); if (dlg.open) dlg.close();
+      return confirmDialog({ title: '文字起こしが止まりました', body: `<p class="small">${esc(e.message)}</p><p class="hint">${lines ? `${lines}行は保存済みです。もう一度実行すると続きから始まります。` : '初回はネット接続が必要です（モデルのダウンロード）。'}</p>`, okLabel: '閉じる', cancelLabel: null });
+    }
+    lock?.release?.(); tr?.close(); const wasCancelled = cancelled; if (dlg.open) { dlg.onclose = null; dlg.close(); }
+    if (!lines) return toast(wasCancelled ? '中止しました' : '英語の音声を見つけられませんでした', 3500);
+    const ok = await confirmDialog({ title: wasCancelled ? `${lines}行で中止しました` : `文字起こしが終わりました（${lines}行）`,
+      body: `<p>結果は、この画面の一覧（動画の下）に「自動起こし」の印つきで並んでいます。行をタップすると、その部分を再生します。✎で直せます。</p>${wasCancelled ? '<p class="hint">もう一度実行すると続きから始まります。</p>' : ''}<p class="hint">テキストだけ使いたいときは「⋯」→「テキストを書き出す」。単語帳に入れるときは「⋯」→「単語リストを作る」。</p>`,
+      okLabel: '英文をコピー', cancelLabel: '閉じる' });
+    if (ok) { try { await navigator.clipboard.writeText(blocks.map((b) => b.text).filter(Boolean).join('\n')); toast('コピーしました'); } catch { toast('コピーできませんでした'); } }
+  }
+  async function toAudio() {
+    const ids = [...new Set(blocks.flatMap((b) => b.segments.map((x) => x.sourceId)))].filter((id) => srcs[id]?.stored && srcs[id].kind === 'video');
+    if (!ids.length) return toast('端末に保存した動画がありません');
+    const size = ids.reduce((a, id) => a + srcs[id].size, 0);
+    if (!(await confirmDialog({ title: '音声だけにする', body: `<p>動画 ${ids.length}件（${fmtSize(size)}）の映像を捨てて、音声だけ（16kHzモノラル）を残します。字幕・編集・時間はそのままです。</p><p class="hint">映像は元に戻せません（元のファイルは「ファイル」アプリなどに残っています）。文字起こしが途中で止まる場合にも有効です。</p>`, okLabel: '音声だけにする', danger: true }))) return;
+    for (const id of ids) {
+      toast(`変換中：${srcs[id].name}`, 3000);
+      try {
+        const src = await sdb.get('sources', id); const { audio, duration } = await decodeTo16k(src.blob);
+        src.blob = new File([wav16(audio)], src.name.replace(/\.[^.]+$/, '') + '.wav', { type: 'audio/wav' });
+        Object.assign(src, { kind: 'audio', mime: 'audio/wav', derived: 'audio16k', origSize: src.size, duration: duration || src.duration });
+        await sdb.put('sources', src); urlCache.delete(id);
+      } catch (e) { return toast('変換できませんでした：' + e.message, 4000); }
+    }
+    toast('音声だけにしました'); route();
+  }
+  async function exportText() {
+    const pad = (n, l = 2) => String(n).padStart(l, '0');
+    const ts = (t) => `${pad(Math.floor(t / 3600))}:${pad(Math.floor(t / 60) % 60)}:${pad(Math.floor(t % 60))},${pad(Math.round((t % 1) * 1000), 3)}`;
+    let acc = 0;
+    const srt = blocks.filter((b) => b.text || b.ja).map((b, i) => { const s0 = set.sourceId && b.segments.length === 1 && b.segments[0].sourceId === set.sourceId ? b.segments[0].start : acc; const d = blockDur(b) || 2; acc = s0 + d; return `${i + 1}\n${ts(s0)} --> ${ts(s0 + d)}\n${b.text}${b.ja ? '\n' + b.ja : ''}\n`; }).join('\n');
+    const txt = blocks.filter((b) => b.text || b.ja).map((b) => [b.label ? `【${b.label}】` : '', b.text, b.ja].filter(Boolean).join('\n')).join('\n\n');
+    const which = await confirmDialog({ title: 'テキストを書き出す', body: '<p>どちらの形式にしますか？</p><p class="hint">TXT：英文（と和訳）を並べた文書。SRT：時間つき字幕（動画アプリやEnglaboの動画ラボで使える）。</p>', okLabel: 'TXT', cancelLabel: 'SRT' });
+    const name = set.title.replace(/[\\/:*?"<>|]/g, '_');
+    const file = which ? new File([txt], `${name}.txt`, { type: 'text/plain' }) : new File([srt], `${name}.en.srt`, { type: 'text/plain' });
+    if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click();
   }
 
   // ---------- header buttons ----------
@@ -607,6 +703,8 @@ async function editorScreen(el, params) {
       <button class="btn" value="exp">教材パックとして書き出す</button>
       <button class="btn" value="asr">文字起こし（端末内・試験的）</button>
       <button class="btn" value="words">単語リストを作る</button>
+      <button class="btn" value="txt">テキストを書き出す</button>
+      ${Object.values(srcs).some((x) => x.stored && x.kind === 'video') ? '<button class="btn" value="toaudio">動画を音声だけにする（容量を減らす）</button>' : ''}
       <button class="btn" value="ren">名前を変える</button>
       <button class="btn danger" value="del">このセットを削除</button>
       <button class="btn ghost" value="cancel">閉じる</button></form>`;
@@ -617,6 +715,8 @@ async function editorScreen(el, params) {
       if (v === 'exp') exportSet(set);
       if (v === 'asr') runAsr();
       if (v === 'words') nav(`words?id=${set.id}`);
+      if (v === 'txt') exportText();
+      if (v === 'toaudio') toAudio();
       if (v === 'ren') { const t = prompt('新しい名前', set.title); if (t) { set.title = t; await sdb.put('sets', set); route(); } }
       if (v === 'del' && (await confirmDialog({ title: 'セットを削除', body: '<p>字幕・編集・版も削除します（元に戻せません）。動画本体は、ほかのセットで使っていなければ削除します。</p>', okLabel: '削除', danger: true }))) { await deleteSet(set); nav('sets'); }
     };
@@ -888,5 +988,11 @@ async function labScreen(el) {
       out(`  無音検出 ${Math.round(performance.now() - t)}ms・0.6秒以上の無音 ${runs}か所 ✓`);
     } catch (e) { out(`  失敗：${e.name} ${e.message}`); }
   };
+  // one test at a time (overlapping runs on the same video gave false time-outs)
+  let busy = false;
+  for (const x of $$('button, input[type=file]', el)) for (const k of ['onclick', 'onchange']) {
+    const f = x[k]; if (!f || x.id === 'cp') continue;
+    x[k] = async (ev) => { if (busy) { ev.preventDefault?.(); return toast('前のテストが終わるまで待ってください'); } busy = true; el.classList.add('st-busy'); try { await f(ev); } finally { busy = false; el.classList.remove('st-busy'); } };
+  }
   $('#cp', el).onclick = async () => { try { await navigator.clipboard.writeText(log.join('\n')); toast('コピーしました'); } catch { toast('コピーできませんでした。長押しで選択してください'); } };
 }

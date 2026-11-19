@@ -7,7 +7,7 @@ import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
 import { decodeTo16k, openTranscriber, speechPieces } from './asr.js';
 
-export const STUDIO_VERSION = '0.3.3';
+export const STUDIO_VERSION = '0.3.4';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -271,6 +271,8 @@ async function aac16(f32) {
 async function shrink(blob, name, isVideo, say = () => {}) {
   say('音声を取り出しています…');
   const { audio, duration } = await decodeTo16k(blob);
+  let peak = 0; for (let i = 0; i < audio.length; i += 160) peak = Math.max(peak, Math.abs(audio[i]));
+  if (peak < 0.001) throw new Error('音声が無音のまま取り出されました（この動画からは音声を取り出せません）');
   say('小さくしています…');
   const a = localStorage.getItem('st-noaac') ? null : await withTimeout(aac16(audio).catch(() => null), 15000 + duration * 300);
   if (!a && typeof AudioEncoder !== 'undefined') try { localStorage.setItem('st-noaac', '1'); } catch {}   // do not try again on this device
@@ -407,6 +409,7 @@ async function editorScreen(el, params) {
     const p = playing; if (!p) return;
     const s = p.b.segments[p.i];
     if (!attach(s.sourceId, s.start)) { playing = null; return toast('ファイルを選んでください'); }
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
     vid.play().catch((e) => { if (e.name === 'NotAllowedError') toast('もう一度タップしてください'); });
   }
   let raf = 0;
@@ -649,7 +652,7 @@ async function editorScreen(el, params) {
       <p class="hint">・最初の1回だけモデルをダウンロードします（無料・Wi-Fi推奨）。音声は外部に送りません。<br>・無音の部分は飛ばし、話している部分を少しずつ処理して、終わった分から保存します。止まっても、もう一度実行すると続きから。<br>・画面は開いたままにしてください。結果は自動の下書きです。</p>`, okLabel: '始める' }))) return;
     const fast = ($('#dialog input[name=asrq]:checked')?.value || 'fast') === 'fast';
     try { localStorage.setItem('st-asrq', fast ? 'fast' : 'acc'); } catch {}
-    let cancelled = false, done = 0, lines = 0, speed = 0; const speedSamples = [];
+    let cancelled = false, done = 0, lines = 0, speed = 0; const speedSamples = [], noSpeech = [];
     const dlg = $('#dialog');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>文字起こし中</h3><p class="small" id="asrMsg">準備しています…</p><div class="st-meter"><i id="asrBar" style="width:0%"></i><span id="asrPct">0%</span></div><p class="small muted" id="asrDone"></p><button class="btn ghost" value="cancel">中止（ここまでは保存済み）</button></form>`;
     dlg.returnValue = ''; dlg.onclose = () => { cancelled = true; tr?.close(); }; dlg.showModal();
@@ -668,7 +671,7 @@ async function editorScreen(el, params) {
           const b0 = byId[bid]; const sg = b0.segments[0];
           const pieces = speechPieces(audio, sg.start, sg.end, { len: 45 });
           const skipped = (sg.end - sg.start) - pieces.reduce((a, [x, y]) => a + y - x, 0);
-          if (!pieces.length) { done += sg.end - sg.start; bar(); continue; }
+          if (!pieces.length) { done += sg.end - sg.start; bar(); noSpeech.push(src.name); continue; }
           for (let pi = 0; pi < pieces.length; pi++) {
             const [ps0, pe0] = pieces[pi];
             const ps = ps0, pe = pi === pieces.length - 1 ? sg.end : pieces[pi + 1][0];   // the gap after a piece is silence: it is skipped
@@ -701,7 +704,7 @@ async function editorScreen(el, params) {
       return confirmDialog({ title: '文字起こしが止まりました', body: `<p class="small">${esc(e.message)}</p><p class="hint">${lines ? `${lines}行は保存済みです。もう一度実行すると続きから始まります。` : '初回はネット接続が必要です（モデルのダウンロード）。'}</p>`, okLabel: '閉じる', cancelLabel: null });
     }
     lock?.release?.(); tr?.close(); const wasCancelled = cancelled; if (dlg.open) { dlg.onclose = null; dlg.close(); }
-    if (!lines) return toast(wasCancelled ? '中止しました' : '英語の音声を見つけられませんでした', 3500);
+    if (!lines) return wasCancelled ? toast('中止しました') : confirmDialog({ title: '文字にできませんでした', body: noSpeech.length ? `<p class="small">${noSpeech.map(esc).join('<br>')}</p><p>音声が見つかりませんでした（無音のまま取り出された可能性）。編集した動画は音声を取り出せないことがあります。写真アプリで「ビデオを複製」または「ファイルに保存」で書き出したものを取り込み直してください。</p>` : '<p>英語の話し声を文字にできませんでした。「正確さ優先」で試すか、別の音声で試してください。</p>', okLabel: '閉じる', cancelLabel: null });
     const ok = await confirmDialog({ title: wasCancelled ? `${lines}行で中止しました` : `文字起こしが終わりました（${lines}行）`,
       body: `<p>結果は、この画面の一覧（動画の下）に「自動起こし」の印つきで並んでいます。行をタップすると、その部分を再生します。✎で直せます。</p>${wasCancelled ? '<p class="hint">もう一度実行すると続きから始まります。</p>' : ''}<p class="hint">テキストだけ使いたいときは「⋯」→「テキストを書き出す」。単語帳に入れるときは「⋯」→「単語リストを作る」。</p>`,
       okLabel: '英文をコピー', cancelLabel: '閉じる' });
@@ -721,7 +724,7 @@ async function editorScreen(el, params) {
         if (!small || small.file.size >= before) continue;
         Object.assign(src, { blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: src.size, duration: small.duration || src.duration });
         await sdb.put('sources', src); URL.revokeObjectURL(urlCache.get(id) || ''); urlCache.delete(id); saved += before - small.file.size;
-      } catch (e) { return toast('変換できませんでした：' + e.message, 4000); }
+      } catch (e) { await confirmDialog({ title: '変換できませんでした', body: `<p class="small">${esc(srcs[id].name)}<br>${esc(e.message)}</p><p class="hint">元のまま残しています。</p>`, okLabel: '閉じる', cancelLabel: null }); }
     }
     toast(saved ? `${fmtSize(saved)} 減らしました` : 'この端末では、これ以上小さくできませんでした', 3500); route();
   }

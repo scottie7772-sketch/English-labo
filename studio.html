@@ -24,6 +24,8 @@
     import { mount } from './studio-main.js';
     document.documentElement.dataset.theme = 'dark';
     document.addEventListener('gesturestart', (e) => e.preventDefault());
+    // after Web Audio is used (decoding, speech recognition), iOS would mute video/audio when the silent switch is on; 'playback' keeps sound on
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
     mount(document.getElementById('main'), { base: '' });
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
   </script>

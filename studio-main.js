@@ -5,10 +5,11 @@ import { sdb, newId, commit, undo, redo, saveVersion, restoreVersion, liveBlocks
 import { parseScript, SUB_EXT, isJa, langFromName, autoPair, alignJa } from './studio-subs.js';
 import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
-import { decodeTo16k, openTranscriber, speechPieces } from './asr.js';
+import { decodeTo16k, openTranscriber, speechPieces, captureTo16k } from './asr.js';
 import { extractPhrases, extractWords } from './studio-words.js';
+import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 
-export const STUDIO_VERSION = '0.4.0';
+export const STUDIO_VERSION = '0.5.0';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -241,6 +242,82 @@ async function importScreen(el) {
   }
 }
 
+const probeCache = new Map();
+const isContainer = (src, blob) => /mp4|quicktime|m4a|mov/.test(blob?.type || src.mime || '') || /\.(mp4|m4v|mov|m4a)$/i.test(src.name || '');
+async function probeSource(src, blob) {
+  if (probeCache.has(src.id)) return probeCache.get(src.id);
+  const info = await probe(blob); probeCache.set(src.id, info); return info;
+}
+const stageErr = (stage, e) => Object.assign(new Error(`${stage}：${e?.message || e}`), { stage });
+// track choice for a file: auto when clear, otherwise the user picks (with preview). Returns the audio record kept on the source
+async function decideTrack(src, blob, say = () => {}) {
+  if (!isContainer(src, blob)) return null;
+  let info; try { say('音声トラックを調べています…'); info = await probeSource(src, blob); } catch { return null; }   // not mp4/mov: normal decoding
+  const at = audioTracks(info);
+  if (at.length <= 1) return at.length ? { trackId: at[0].id, index: 0, count: 1, method: 'auto', reason: '音声トラックは1本', codec: at[0].codec } : { trackId: null, count: 0, reason: '音声トラックがありません' };
+  say(`音声トラックが${at.length}本あります。内容を確かめています…`);
+  const r = await chooseTrack(blob, info, decodeTo16k);
+  const summary = r.stats.map((x) => ({ id: x.t.id, codec: x.t.codec, lang: x.t.lang, name: x.t.name, speech: x.speech, level: x.level, ok: x.ok }));
+  let chosen = r.chosen, method = 'auto';
+  if (!r.auto) { chosen = await pickTrackDialog(src, blob, info, r) || chosen; method = 'user'; }
+  if (!chosen) throw stageErr('音声トラックの選択', r.reason);
+  return { trackId: chosen.id, index: at.indexOf(chosen), count: at.length, method, reason: method === 'user' ? '利用者が選択' : r.reason, codec: chosen.codec, tracks: summary };
+}
+async function pickTrackDialog(src, blob, info, r) {
+  const at = audioTracks(info), dlg = $('#dialog');
+  await new Promise((q) => setTimeout(q, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
+  const st = (t) => r.stats.find((x) => x.t === t);
+  dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>どの音声を使いますか？</h3><p class="small">${esc(src.name)} には音声が${at.length}本入っています（${esc(r.reason)}）。聞いて、文字起こしに使う方を選んでください。</p>
+    ${at.map((t, i) => { const x = st(t); return `<div class="st-segrow"><label class="chk"><input type="radio" name="tk" value="${i}" ${t === r.chosen ? 'checked' : ''}> 音声${i + 1}${t.name ? `（${esc(t.name)}）` : ''}</label>
+      <small class="muted">${t.codec}・${t.channels || '?'}ch${t.lang && t.lang !== 'und' ? `・${t.lang}` : ''}${x?.ok ? `・話し声 ${Math.round(x.speech * 100)}%・音量 ${(20 * Math.log10(x.level || 1e-6)).toFixed(0)}dB` : x ? `・${esc(x.why)}` : ''}</small>
+      ${canExtract(t) ? `<button type="button" class="btn sm" data-prev="${i}">▶︎ 5秒聞く</button>` : ''}</div>`; }).join('')}
+    <audio id="tkPrev" playsinline></audio>
+    <div class="row end"><button class="btn primary" value="ok">これを使う</button></div></form>`;
+  const au = $('#tkPrev', dlg); const urls = {};
+  $$('[data-prev]', dlg).forEach((b) => (b.onclick = async () => {
+    const t = at[+b.dataset.prev];
+    if (!urls[b.dataset.prev]) { const D = t.duration || 30; const x = await extractTrack(blob, t, Math.max(0, D * 0.3), Math.max(0, D * 0.3) + 5); urls[b.dataset.prev] = URL.createObjectURL(x.blob); }
+    au.src = urls[b.dataset.prev]; au.play().catch(() => toast('もう一度押してください'));
+  }));
+  dlg.returnValue = ''; dlg.showModal();
+  await new Promise((q) => (dlg.onclose = q));
+  au.pause(); Object.values(urls).forEach(URL.revokeObjectURL);
+  const v = $('input[name=tk]:checked', dlg)?.value;
+  return v != null ? at[+v] : null;
+}
+// 16 kHz mono sound of a source, from the chosen track. box: where a "tap to start" button can be shown for the last fallback
+async function sourceAudio16k(src, blob, { box = null, say = () => {} } = {}) {
+  if (src.derived !== 'audio16k' && isContainer(src, blob)) {
+    let info = null; try { info = await probeSource(src, blob); } catch {}
+    const at = info ? audioTracks(info) : [];
+    if (at.length) {
+      const t = at.find((x) => x.id === src.audio?.trackId) || at[src.audio?.index ?? 0] || at[0];
+      if (canExtract(t)) {
+        let x; try { say('選んだ音声トラックを取り出しています…'); x = await extractTrack(blob, t); } catch (e) { throw stageErr('音声の取り出し', e); }
+        try { say('音声を展開しています…'); const r = await decodeTo16k(x.blob); return { ...r, method: `トラック${at.indexOf(t) + 1}を取り出し` }; } catch (e) { if (!box) throw stageErr('音声の展開', e); }
+      }
+      if (box) { const r = await captureWithTap(blob, box, src.name, src.duration, at.length > 1 ? at.indexOf(t) : null); return { ...r, method: '再生しながら取り出し' }; }
+      throw stageErr('音声の取り出し', `この音声の形式（${t.codec}）は直接取り出せません`);
+    }
+  }
+  try { say('音声を展開しています…'); const r = await decodeTo16k(blob); return { ...r, method: '展開' }; }
+  catch (e) { if (!box) throw stageErr('音声の展開', e); const r = await captureWithTap(blob, box, src.name, src.duration, null); return { ...r, method: '再生しながら取り出し' }; }
+}
+
+// shows a button in `box`; the capture starts in the tap (iPhone needs a tap to play sound)
+function captureWithTap(blob, box, name, dur, trackIndex = null) {
+  return new Promise((resolve, reject) => {
+    box.innerHTML = `<div class="notice warn stack"><b>${esc(name)}</b><span class="small">このファイルからは音声を直接取り出せませんでした。<br>代わりに、音を出さずに2倍速で再生しながら取り出します（約${fmtMin((dur || 60) / 2)}・画面は開いたまま）。</span>
+      <button type="button" class="btn primary" id="capGo">再生しながら取り出す</button><button type="button" class="btn ghost" id="capNo">やめる</button><div class="st-meter" hidden id="capBar"><i style="width:0%"></i><span>0%</span></div></div>`;
+    box.querySelector('#capNo').onclick = () => reject(new Error('取り出しをやめました'));
+    box.querySelector('#capGo').onclick = () => {
+      const c = captureTo16k(blob, { trackIndex, onProgress: (r) => { const m = box.querySelector('#capBar'); if (m) { m.hidden = false; m.querySelector('i').style.width = `${r * 100}%`; m.querySelector('span').textContent = `${Math.round(r * 100)}%`; } } });
+      c.startNow();   // synchronous inside the tap
+      box.querySelector('#capGo').disabled = true; box.querySelector('#capNo').hidden = true;
+      c.done.then((x) => { box.innerHTML = ''; resolve(x); }, (e) => { box.innerHTML = ''; reject(e); });
+    };
+  });
+}
 function wav16(f32) {
   const n = f32.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
   const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
@@ -271,42 +348,13 @@ async function aac16(f32) {
   const raw = frames.map((f) => (f.length > 7 && f[0] === 0xff && (f[1] & 0xf0) === 0xf0 ? f.subarray((f[1] & 1) ? 7 : 9) : f));
   return new Blob([mp4Audio(raw, asc || new Uint8Array([0x14, 0x08]))], { type: 'audio/mp4' });
 }
-// minimal .m4a (MP4) for AAC frames: the index lets iPhone seek exactly (raw ADTS/VBR mp3 seeking is only estimated)
-function mp4Audio(frames, asc, rate = 16000) {
-  const u32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255], u16 = (n) => [(n >> 8) & 255, n & 255];
-  const str = (t) => [...t].map((c) => c.charCodeAt(0));
-  const box = (type, ...parts) => { const body = parts.flatMap((p) => (p instanceof Uint8Array ? [...p] : p)); return [...u32(body.length + 8), ...str(type), ...body]; };
-  const full = (type, v, f, ...parts) => box(type, [v, ...u32(f).slice(1)], ...parts);
-  const n = frames.length, dur = n * 1024;
-  const matrix = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000].flatMap(u32);
-  const desc = (tag, body) => [tag, body.length, ...body];
-  const esds = full('esds', 0, 0, desc(3, [...u16(1), 0, ...desc(4, [0x40, 0x15, 0, 0, 0, ...u32(48000), ...u32(32000), ...desc(5, [...asc])]), ...desc(6, [2])]));
-  const mp4a = box('mp4a', [0, 0, 0, 0, 0, 0, ...u16(1), 0, 0, 0, 0, 0, 0, 0, 0, ...u16(1), ...u16(16), 0, 0, 0, 0, ...u32(rate * 65536)], esds);
-  const moov = (off) => box('moov',
-    full('mvhd', 0, 0, [...u32(0), ...u32(0), ...u32(rate), ...u32(dur), ...u32(0x00010000), ...u16(0x0100), ...Array(10).fill(0), ...matrix, ...Array(24).fill(0), ...u32(2)]),
-    box('trak',
-      full('tkhd', 0, 3, [...u32(0), ...u32(0), ...u32(1), ...u32(0), ...u32(dur), ...Array(8).fill(0), ...u16(0), ...u16(0), ...u16(0x0100), 0, 0, ...matrix, ...u32(0), ...u32(0)]),
-      box('mdia',
-        full('mdhd', 0, 0, [...u32(0), ...u32(0), ...u32(rate), ...u32(dur), ...u16(0x55c4), 0, 0]),
-        full('hdlr', 0, 0, [...u32(0), ...str('soun'), ...Array(12).fill(0), ...str('SoundHandler'), 0]),
-        box('minf',
-          full('smhd', 0, 0, [0, 0, 0, 0]),
-          box('dinf', full('dref', 0, 0, [...u32(1)], full('url ', 0, 1))),
-          box('stbl',
-            full('stsd', 0, 0, [...u32(1)], mp4a),
-            full('stts', 0, 0, [...u32(1), ...u32(n), ...u32(1024)]),
-            full('stsc', 0, 0, [...u32(1), ...u32(1), ...u32(n), ...u32(1)]),
-            full('stsz', 0, 0, [...u32(0), ...u32(n), ...frames.flatMap((f) => u32(f.length))]),
-            full('stco', 0, 0, [...u32(1), ...u32(off)]))))));
-  const ftyp = box('ftyp', str('M4A '), u32(0), str('M4A '), str('isom'), str('mp42'));
-  const off = ftyp.length + moov(0).length + 8;
-  const mdatLen = frames.reduce((a, f) => a + f.length, 0) + 8;
-  return new Blob([new Uint8Array(ftyp), new Uint8Array(moov(off)), new Uint8Array([...u32(mdatLen), ...str('mdat')]), ...frames]);
-}
 // smallest playable copy of the sound: AAC if the device can encode and play it, otherwise 16 kHz WAV (video) or null (audio file kept as is)
 async function shrink(blob, name, isVideo, say = () => {}) {
   say('音声を取り出しています…');
-  const { audio, duration } = await decodeTo16k(blob);
+  const dec = await decodeTo16k(blob);
+  return shrinkAudio(dec, name, isVideo, say);
+}
+async function shrinkAudio({ audio, duration }, name, isVideo, say = () => {}) {
   let peak = 0; for (let i = 0; i < audio.length; i += 160) peak = Math.max(peak, Math.abs(audio[i]));
   if (peak < 0.001) throw new Error('音声が無音のまま取り出されました（この動画からは音声を取り出せません）');
   say('小さくしています…');
@@ -329,7 +377,8 @@ function groupsOf(list) {
 async function putSource(media, mode, say = () => {}) {
   const exist = await sdb.get('sources', media.fp.id);
   const src = exist || { id: media.fp.id, kind: media.kind, name: media.name.split('/').pop(), size: media.file.size, mime: media.file.type, duration: media.duration, playable: media.playable, head: media.fp.head, tail: media.fp.tail, addedAt: Date.now(), stored: false };
-  const small = mode === 'store-audio' && !src.stored ? await shrink(media.file, src.name, media.kind !== 'audio', say).catch(() => null) : null;
+  if (!src.audio && media.kind !== 'audio' || (!src.audio && isContainer(src, media.file))) { try { src.audio = await decideTrack(src, media.file, say); } catch (e) { src.audioError = e.message; } }
+  const small = mode === 'store-audio' && !src.stored ? await sourceAudio16k(src, media.file, { say }).then((a) => { say('小さくしています…'); return shrinkAudio(a, src.name, media.kind !== 'audio', say); }).catch((e) => { src.audioError = e.message; return null; }) : null;
   if (small && small.file.size < media.file.size) {   // data saver: sound only, low quality
     Object.assign(src, { stored: true, blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: media.file.size, duration: small.duration || src.duration });
   } else if (mode.startsWith('store') && !src.stored) { src.stored = true; src.blob = media.file; }
@@ -411,7 +460,8 @@ async function editorScreen(el, params) {
     <div id="list" class="st-list"></div>
     <div id="bar" class="st-bar" hidden></div>`;
   const vid = $('#vid', el), list = $('#list', el), bar = $('#bar', el);
-  vid.addEventListener('loadedmetadata', () => { const at = vid.audioTracks; if (at && at.length > 1) for (let i = 0; i < at.length; i++) at[i].enabled = true; });
+  // play only the chosen sound track (screen recordings: app sound and microphone are separate tracks; never mixed)
+  vid.addEventListener('loadedmetadata', () => { const at = vid.audioTracks, a = srcs[vid.dataset.src]?.audio; if (at && at.length > 1) { const k = a?.index ?? 0; for (let i = 0; i < at.length; i++) at[i].enabled = i === k; } });
   vid.addEventListener('error', () => { const s0 = srcs[vid.dataset.src]; logErr(`再生できません（コード${vid.error?.code}・${s0?.name}・${s0?.mime || '?'}・${s0?.codec || '元のまま'}）`); });
 
   // ---------- media ----------
@@ -693,7 +743,7 @@ async function editorScreen(el, params) {
     let cancelled = false, done = 0, lines = 0, speed = 0; const speedSamples = [], noSpeech = [];
     const dlg = $('#dialog');
     await new Promise((r) => setTimeout(r, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
-    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>文字起こし中</h3><p class="small" id="asrMsg">準備しています…</p><div class="st-meter"><i id="asrBar" style="width:0%"></i><span id="asrPct">0%</span></div><p class="small muted" id="asrDone"></p><button class="btn ghost" value="cancel">中止（ここまでは保存済み）</button></form>`;
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>文字起こし中</h3><p class="small" id="asrMsg">準備しています…</p><div class="st-meter"><i id="asrBar" style="width:0%"></i><span id="asrPct">0%</span></div><p class="small muted" id="asrDone"></p><div id="asrCap"></div><button class="btn ghost" value="cancel">中止（ここまでは保存済み）</button></form>`;
     dlg.returnValue = ''; dlg.onclose = () => { cancelled = true; tr?.close(); }; dlg.showModal();
     const msg = (t) => { const m = $('#asrMsg', dlg); if (m) m.textContent = t; };
     const bar = () => { const pr = total ? done / total : 0; const b = $('#asrBar', dlg); if (b) { b.style.width = `${pr * 100}%`; $('#asrPct', dlg).textContent = `${Math.round(pr * 100)}%`; } };
@@ -705,7 +755,9 @@ async function editorScreen(el, params) {
         if (cancelled) break;
         const src = srcs[sid];
         msg(`${src.name}：音声を取り出しています…`);
-        const { audio } = await decodeTo16k(src.stored ? src.blob : sessionFiles.get(sid));
+        const fileBlob = src.stored ? src.blob : sessionFiles.get(sid);
+        if (!src.audio && isContainer(src, fileBlob) && src.derived !== 'audio16k') { src.audio = await decideTrack(src, fileBlob, (t) => msg(`${src.name}：${t}`)); await sdb.put('sources', src); }
+        const { audio } = await sourceAudio16k(src, fileBlob, { box: $('#asrCap', dlg), say: (t) => msg(`${src.name}：${t}`) });
         for (const bid of ids) {
           const b0 = byId[bid]; const sg = b0.segments[0];
           const pieces = speechPieces(audio, sg.start, sg.end, { len: 45 });
@@ -749,6 +801,19 @@ async function editorScreen(el, params) {
       okLabel: '英文をコピー', cancelLabel: '閉じる' });
     if (ok) { try { await navigator.clipboard.writeText(blocks.map((b) => b.text).filter(Boolean).join('\n')); toast('コピーしました'); } catch { toast('コピーできませんでした'); } }
   }
+  async function chooseTrackAgain() {
+    const list = Object.values(srcs).filter((x) => x.audio?.count > 1 && x.derived !== 'audio16k' && blocks.some((b) => b.segments.some((g) => g.sourceId === x.id)));
+    for (const x of list) {
+      const blob = x.stored ? x.blob : sessionFiles.get(x.id); if (!blob) continue;
+      const info = await probeSource(x, blob);
+      const r = await chooseTrack(blob, info, decodeTo16k);
+      const t = await pickTrackDialog(x, blob, info, { ...r, chosen: audioTracks(info)[x.audio.index] || r.chosen, reason: `今は音声${x.audio.index + 1}` });
+      if (!t) continue;
+      x.audio = { ...x.audio, trackId: t.id, index: audioTracks(info).indexOf(t), method: 'user', reason: '利用者が選択' };
+      await sdb.put('sources', x); toast(`音声${x.audio.index + 1}を使います`);
+    }
+    route();
+  }
   async function toAudio() {
     const ids = [...new Set(blocks.flatMap((b) => b.segments.map((x) => x.sourceId)))].filter((id) => srcs[id]?.stored && (srcs[id].derived !== 'audio16k' || srcs[id].codec === 'aac'));
     if (!ids.length) return toast('容量を減らせるファイルがありません（すでに節約済み）');
@@ -759,7 +824,16 @@ async function editorScreen(el, params) {
       toast(`変換中 ${++n} / ${ids.length}：${srcs[id].name}`, 4000);
       try {
         const src = await sdb.get('sources', id); const before = src.blob.size;
-        const small = await shrink(src.blob, src.name, src.kind !== 'audio', (t) => toast(`${n} / ${ids.length}：${t}`, 4000));
+        const say = (t) => toast(`${n} / ${ids.length}：${t}`, 4000);
+        if (!src.audio && src.kind !== 'audio') { src.audio = await decideTrack(src, src.blob, say); await sdb.put('sources', src); }
+        let small = await sourceAudio16k(src, src.blob, { say }).then((a) => shrinkAudio(a, src.name, src.kind !== 'audio', say)).catch((e) => e);
+        if (small instanceof Error && small.stage !== '音声トラックの選択') {
+          const dlg = $('#dialog'); await new Promise((r) => setTimeout(r, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
+          dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>音声の取り出し</h3><p class="small">${esc(small.message)}</p><div id="capBox"></div></form>`; dlg.showModal();
+          try { const cap = await captureWithTap(src.blob, $('#capBox', dlg), src.name, src.duration, src.audio?.count > 1 ? src.audio.index : null); small = await shrinkAudio(cap, src.name, src.kind !== 'audio'); }
+          catch (e) { small = e; } finally { if (dlg.open) dlg.close(); }
+        }
+        if (small instanceof Error) throw small;
         if (!small || (small.file.size >= before && src.codec !== 'aac' && !/mpeg|mp3/.test(src.mime || ''))) continue;
         Object.assign(src, { blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: src.size, duration: small.duration || src.duration });
         await sdb.put('sources', src); URL.revokeObjectURL(urlCache.get(id) || ''); urlCache.delete(id); saved += before - small.file.size;
@@ -796,6 +870,7 @@ async function editorScreen(el, params) {
       <button class="btn" value="asr">文字起こし（端末内・試験的）</button>
       <button class="btn" value="words">単語リストを作る</button>
       <button class="btn" value="txt">テキストを書き出す</button>
+      ${Object.values(srcs).some((x) => x.audio?.count > 1 && x.derived !== 'audio16k') ? '<button class="btn" value="track">使う音声トラックを選ぶ</button>' : ''}
       ${Object.values(srcs).some((x) => x.stored && (x.derived !== 'audio16k' || x.codec === 'aac')) ? '<button class="btn" value="toaudio">容量を減らす（音声だけ・低音質に）</button>' : ''}
       <button class="btn" value="ren">名前を変える</button>
       <button class="btn danger" value="del">このセットを削除</button>
@@ -810,6 +885,7 @@ async function editorScreen(el, params) {
       if (v === 'words') nav(`words?id=${set.id}`);
       if (v === 'txt') exportText();
       if (v === 'toaudio') toAudio();
+      if (v === 'track') chooseTrackAgain();
       if (v === 'ren') { const t = prompt('新しい名前', set.title); if (t) { set.title = t; await sdb.put('sets', set); route(); } }
       if (v === 'del' && (await confirmDialog({ title: 'セットを削除', body: '<p>字幕・編集・版も削除します（元に戻せません）。動画本体は、ほかのセットで使っていなければ削除します。</p>', okLabel: '削除', danger: true }))) { await deleteSet(set); nav('sets'); }
     };
@@ -1003,8 +1079,27 @@ async function labScreen(el) {
       <video id="p3v" playsinline muted style="width:100%;max-height:160px;background:#000"></video><video id="p3v2" playsinline muted hidden></video></div>
     <div class="card stack"><b>P4 音声の展開（波形・無音検出用）</b><span class="small">5分・10分・15分の動画や音声で試す。落ちた場合は「落ちた」と伝えてください</span>
       <label class="btn sm" for="p4f">動画・音声を選ぶ</label><input type="file" id="p4f" hidden></div>
+    <div class="card stack"><b>音声トラックの解析</b><span class="small">動画を選ぶと、音声トラックの数・形式を調べ、自動でどれを使うか判定し、取り出しと展開を試します（保存はしません）</span>
+      <label class="btn sm" for="trf">動画を選ぶ</label><input type="file" id="trf" hidden></div>
     <div class="card stack"><b>保存した音声・動画の点検</b><span class="small">教材セットの音声・動画を1つずつ読み込んで1秒再生し、結果を下に書きます</span><button class="btn sm" id="chk">点検する</button></div>
     <div class="card stack"><b>結果</b><pre id="lo" class="st-log"></pre><button class="btn sm" id="cp">結果をコピー</button></div>`;
+  $('#trf', el).onchange = async (ev) => {
+    const f = ev.target.files[0]; if (!f) return; ev.target.value = '';
+    out(`トラック解析: ${f.name} ${fmtSize(f.size)} ${f.type}`);
+    let t = performance.now(), info;
+    try { info = await probe(f); } catch (e) { return out(`  解析で失敗：${e?.message || e}`); }
+    out(`  解析 ${Math.round(performance.now() - t)}ms・形式 ${info.container}`);
+    info.tracks.forEach((x) => out(`  ・${x.kind}｜${x.codec}｜${x.lang}｜${x.name || '名前なし'}｜${fmt(x.duration)}${x.kind === 'audio' ? `｜${x.rate}Hz ${x.channels}ch｜取り出し${canExtract(x) ? '可' : '不可'}` : ''}`));
+    t = performance.now(); const r = await chooseTrack(f, info, decodeTo16k).catch((e) => ({ err: e }));
+    if (r.err) return out(`  判定で失敗：${r.err.message}`);
+    out(`  判定 ${Math.round(performance.now() - t)}ms：${r.chosen ? `音声${audioTracks(info).indexOf(r.chosen) + 1}` : 'なし'}・${r.auto ? '自動' : '利用者に確認'}（${r.reason}）`);
+    r.stats.forEach((x, i) => out(`    音声${i + 1}: ${x.ok ? `話し声 ${Math.round(x.speech * 100)}%・音量 ${(20 * Math.log10(x.level || 1e-6)).toFixed(0)}dB` : x.why}`));
+    if (r.chosen && canExtract(r.chosen)) {
+      t = performance.now(); try { const x = await extractTrack(f, r.chosen); out(`  取り出し ${Math.round(performance.now() - t)}ms・${fmtSize(x.blob.size)}`); t = performance.now(); const d = await decodeTo16k(x.blob); out(`  展開 ${Math.round(performance.now() - t)}ms・${fmt(d.duration)} ✓（文字起こしに使えます）`);
+        const a = new Audio(URL.createObjectURL(x.blob)); a.currentTime = Math.min(5, d.duration / 2); await a.play(); await new Promise((q) => setTimeout(q, 1200)); out(`  再生 ${a.currentTime > 0.3 ? '✓' : '進まない'}`); a.pause(); }
+      catch (e) { out(`  取り出し／展開／再生で失敗：${e?.message || e}`); }
+    }
+  };
   $('#chk', el).onclick = async () => {
     out(`バージョン ${STUDIO_VERSION}・audioSession: ${navigator.audioSession?.type ?? 'なし'}`);
     if (errLog.length) out('最近のエラー:\n  ' + errLog.join('\n  '));

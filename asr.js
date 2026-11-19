@@ -162,3 +162,43 @@ export function speechPieces(audio, a, b, { len = 60, gap = 1.2 } = {}) {
   }
   return out.length ? out : [];
 }
+
+// Fallback when decodeAudioData cannot read the file (e.g. screen recordings with several sound tracks):
+// play it silently at 2x through Web Audio and record what comes out. Must be started from a tap (startNow is called in the tap).
+export function captureTo16k(blob, { rate = 2, onProgress = () => {}, trackIndex = null } = {}) {
+  let resolve, reject; const done = new Promise((a, b) => { resolve = a; reject = b; });
+  function startNow() {
+    const AC = window.AudioContext || window.webkitAudioContext; const ac = new AC();
+    const v = document.createElement('video'); v.playsInline = true; v.setAttribute('playsinline', '');
+    v.preservesPitch = false; v.webkitPreservesPitch = false; v.defaultPlaybackRate = rate; v.playbackRate = rate;
+    const url = URL.createObjectURL(blob); v.src = url;
+    const src = ac.createMediaElementSource(v);
+    const proc = ac.createScriptProcessor(4096, 1, 1); proc.channelCountMode = 'explicit'; proc.channelCount = 1;
+    const mute = ac.createGain(); mute.gain.value = 0;
+    src.connect(proc); proc.connect(mute); mute.connect(ac.destination);
+    const parts = []; let on = false, n = 0;
+    proc.onaudioprocess = (e) => { if (!on) return; const d = e.inputBuffer.getChannelData(0); parts.push(new Float32Array(d)); n += d.length; };
+    // only the chosen sound track (never mix app sound and microphone)
+    v.addEventListener('loadedmetadata', () => { const at = v.audioTracks; if (trackIndex != null && at && at.length > 1) for (let i = 0; i < at.length; i++) at[i].enabled = i === trackIndex; });
+    v.addEventListener('playing', () => { on = true; });
+    const iv = setInterval(() => { if (v.duration) onProgress(Math.min(1, v.currentTime / v.duration), v.currentTime, v.duration); }, 500);
+    const fail = (msg) => { clearInterval(iv); try { v.pause(); ac.close(); } catch {} URL.revokeObjectURL(url); reject(new Error(msg)); };
+    v.addEventListener('error', () => fail('この動画は再生もできませんでした'));
+    v.addEventListener('ended', async () => {
+      clearInterval(iv); on = false;
+      const inRate = ac.sampleRate / v.playbackRate; ac.close?.(); URL.revokeObjectURL(url);   // n samples per real second cover 'rate' seconds of the file
+      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
+      if (!n) return reject(new Error('音声を取り出せませんでした（無音）'));
+      const all = new Float32Array(n); let o = 0; for (const p of parts) { all.set(p, o); o += p.length; }
+      const duration = n / inRate;
+      const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      const off = new OAC(1, Math.max(1, Math.ceil(duration * 16000)), 16000);
+      const buf = off.createBuffer(1, n, Math.min(384000, inRate)); buf.getChannelData(0).set(all);
+      const bs = off.createBufferSource(); bs.buffer = buf; bs.connect(off.destination); bs.start();
+      const r = await off.startRendering();
+      resolve({ audio: r.getChannelData(0), duration });
+    });
+    ac.resume?.(); v.play().catch((e) => fail('再生を始められませんでした：' + (e?.name || e)));
+  }
+  return { startNow, done };
+}

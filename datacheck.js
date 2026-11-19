@@ -38,7 +38,9 @@ export async function scanWords() {
       const after = { headword: ms.join(' '), meanings: splitList(ex.en), exEn: ex.ja && !hasJa(ex.ja) ? ex.ja : '', exJa: '' };
       action = { kind: 'fix', after, text: `見出し語「${after.headword}」・意味「${after.meanings.join('、')}」に直す${after.exEn ? `（例文：${after.exEn}）` : '（例文は空にする）'}` };
     }
-    flagged.push({ w, issues, history, action });
+    const fixable = !!action;
+    if (!action) action = { kind: 'delete', text: '自動では直せないため、選んだ場合は削除', manual: true };
+    flagged.push({ w, issues, history, action, fixable });
   }
   return { flagged, total: words.length };
 }
@@ -48,22 +50,22 @@ export async function dataCheckScreen(el) {
   const last = await getMeta('repair:last', null);
   const groups = {};
   for (const f of flagged) { const k = `${SOURCE_JA[f.w.source?.type] || f.w.source?.type || '不明'}${f.w.source?.note ? '（' + f.w.source.note + '）' : ''}`; (groups[k] ||= []).push(f); }
-  const sel = new Set(flagged.filter((f) => f.action && !f.history).map((f) => f.w.id));
+  const sel = new Set(flagged.filter((f) => f.fixable && !f.history).map((f) => f.w.id));
   el.innerHTML = `
     <header class="top"><a href="#settings" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>データ点検</h1></header>
     <p class="hint">全${total}項目を調べました。列がずれて登録された可能性のある項目を、登録元ごとに表示します。チェックを入れて「実行」を押すまで、データは変更しません。実行前の状態は保存され、元に戻せます。</p>
     ${last ? `<div class="card stack"><div class="kv"><span>前回の修正</span><b>${fmtDate(last.at)}・${last.words.length}項目</b></div><button class="btn" id="undo">${icon('undo', 18)} 前回の修正を元に戻す</button></div>` : ''}
-    ${flagged.some((f) => f.action) ? '<div class="row selbar"><button class="btn sm grow" id="selAll">全てを選択</button><button class="btn sm grow" id="selNone">全ての選択を解除</button></div>' : ''}
+    ${flagged.some((f) => f.action) ? '<div class="selbar"><div class="row"><button class="btn sm grow" id="selAll">全てを選択</button><button class="btn sm grow" id="selNone">全ての選択を解除</button></div><button class="btn sm" id="selBad">自動で直せない項目を全て選択（削除）</button></div>' : ''}
     ${flagged.length ? Object.entries(groups).map(([g, list]) => `
       <h2 class="sec">登録元：${esc(g)} <span class="muted small">${list.length}件</span></h2>
       <div class="card list">${list.map((f) => `
         <label class="dcrow">
-          <input type="checkbox" data-id="${f.w.id}" ${f.action ? '' : 'disabled'} ${sel.has(f.w.id) ? 'checked' : ''}>
+          <input type="checkbox" data-id="${f.w.id}" ${sel.has(f.w.id) ? 'checked' : ''}>
           <span class="grow">
             <b>${esc(f.w.headword)}</b> <span>${esc(meaningsOf(f.w).join('、') || '（意味なし）')}</span> <span class="tagp">${esc(L(langOf(f.w)).short)}</span>
             ${exOf(f.w).en ? `<span class="small muted block">例文欄：${esc(exOf(f.w).en)}${exOf(f.w).ja ? ' / ' + esc(exOf(f.w).ja) : ''}</span>` : ''}
             <span class="small block warn-text">${f.issues.map(esc).join('・')}</span>
-            <span class="small block">${f.action ? '→ ' + esc(f.action.text) : '→ 自動では直せません。<a class="link" href="#word?id=' + f.w.id + '">詳細画面で編集</a>'}</span>
+            <span class="small block">${f.fixable ? '→ ' + esc(f.action.text) : `→ 自動では直せません。<a class="link" href="#word?id=${f.w.id}">詳細画面で編集</a>するか、選んで削除`}</span>
             ${f.history ? `<span class="small block danger-text">学習記録が${f.history}回あります（初期状態では選択していません）</span>` : ''}
             <span class="small muted block">登録 ${fmtDate(f.w.createdAt)}</span>
           </span>
@@ -75,6 +77,7 @@ export async function dataCheckScreen(el) {
   const setAll = (on) => { $$('input[data-id]:not([disabled])', el).forEach((c) => { c.checked = on; on ? sel.add(c.dataset.id) : sel.delete(c.dataset.id); }); upd(); };
   $('#selAll', el)?.addEventListener('click', () => setAll(true));
   $('#selNone', el)?.addEventListener('click', () => setAll(false));
+  $('#selBad', el)?.addEventListener('click', () => { $$('input[data-id]', el).forEach((c) => { const f = flagged.find((x) => x.w.id === c.dataset.id); if (f && !f.fixable) { c.checked = true; sel.add(f.w.id); } }); upd(); });
   $('#undo', el)?.addEventListener('click', async () => {
     if (!(await confirmDialog({ title: '前回の修正を元に戻す', body: `<p>${last.words.length}項目を修正前の状態に戻します。</p>`, okLabel: '元に戻す' }))) return;
     await db.tx(['words', 'mastery', 'reviews'], 'readwrite', (t) => {
@@ -88,7 +91,8 @@ export async function dataCheckScreen(el) {
   $('#run', el)?.addEventListener('click', async () => {
     const todo = flagged.filter((f) => sel.has(f.w.id) && f.action);
     const del = todo.filter((f) => f.action.kind === 'delete'), fix = todo.filter((f) => f.action.kind === 'fix');
-    const ok = await confirmDialog({ title: '選んだ項目を修正', okLabel: '実行', body: `<p>削除 ${del.length}件・修正 ${fix.length}件。</p><p class="hint">実行前の状態を保存するので、この画面の「元に戻す」で戻せます。念のため、設定からJSONバックアップも保存しておくと安全です。</p>` });
+    const manualDel = del.filter((f) => f.action.manual).length, hist = todo.filter((f) => f.history).length;
+    const ok = await confirmDialog({ title: '選んだ項目を修正', okLabel: '実行', danger: manualDel > 0, body: `<p>削除 ${del.length}件（うち自動で直せない項目 ${manualDel}件）・修正 ${fix.length}件。</p>${hist ? `<p class="warn-text">学習記録のある項目が${hist}件含まれています。削除すると、その項目の習得度と復習予定も消えます（元に戻すことはできます）。</p>` : ''}<p class="hint">実行前の状態を保存するので、この画面の「元に戻す」で戻せます。念のため、設定からJSONバックアップも保存しておくと安全です。</p>` });
     if (!ok) return;
     // snapshot everything that will change
     const snap = { at: Date.now(), words: todo.map((f) => structuredClone(f.w)), mastery: [], reviews: [] };

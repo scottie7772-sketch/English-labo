@@ -839,4 +839,5 @@ label.prow input, .dcrow input { width: 22px; height: 22px; flex: 0 0 auto; marg
 .ctok.on { background: var(--accent); color: var(--accent-text); border-bottom-color: transparent; }
 .hgrade { display: flex; align-items: center; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 6px; font-weight: 700; }
 .hgrade .btn.ok { color: var(--ok); border-color: var(--ok); } .hgrade .btn.ng { color: var(--ng); border-color: var(--ng); }
-.selbar { position: sticky; top: 0; z-index: 4; background: var(--bg); padding: 6px 0; gap: 8px; }
+.selbar { position: sticky; top: 0; z-index: 4; background: var(--bg); padding: 6px 0; display: flex; flex-direction: column; gap: 6px; }
+.selbar .row { gap: 8px; }

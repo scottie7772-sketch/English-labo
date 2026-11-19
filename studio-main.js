@@ -6,8 +6,9 @@ import { parseScript, SUB_EXT, isJa, langFromName, autoPair, alignJa } from './s
 import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
 import { decodeTo16k, openTranscriber, speechPieces } from './asr.js';
+import { extractPhrases, extractWords } from './studio-words.js';
 
-export const STUDIO_VERSION = '0.3.8';
+export const STUDIO_VERSION = '0.4.0';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -410,6 +411,7 @@ async function editorScreen(el, params) {
     <div id="list" class="st-list"></div>
     <div id="bar" class="st-bar" hidden></div>`;
   const vid = $('#vid', el), list = $('#list', el), bar = $('#bar', el);
+  vid.addEventListener('loadedmetadata', () => { const at = vid.audioTracks; if (at && at.length > 1) for (let i = 0; i < at.length; i++) at[i].enabled = true; });
   vid.addEventListener('error', () => { const s0 = srcs[vid.dataset.src]; logErr(`再生できません（コード${vid.error?.code}・${s0?.name}・${s0?.mime || '?'}・${s0?.codec || '元のまま'}）`); });
 
   // ---------- media ----------
@@ -833,50 +835,55 @@ async function deleteSet(set) {
 }
 
 // ================= word list (for English Labo's word book) =================
-const STOP = new Set('a an the and or but if so to of in on at by for with from as is am are was were be been being do does did have has had i you he she it we they me him her us them my your his its our their this that these those there here what who which when where why how not no yes oh ok okay will would can could shall should may might must just very also too then than um uh well'.split(' '));
-const normWord = (w) => w.toLowerCase().replace(/^[^a-z0-9']+|[^a-z0-9']+$/gi, '').replace(/[’]/g, "'");
 async function wordsScreen(el, params) {
   const set = await sdb.get('sets', params.get('id'));
   if (!set) return nav('sets');
   const blocks = await liveBlocks(set);
-  let showCommon = false, sort = 'order';
-  const all = new Map();
-  blocks.forEach((b, bi) => tokensOf(b.text).forEach((t) => {
-    const w = normWord(t); if (!w || /^\d+$/.test(w) || w.length < 2) return;
-    const base = w.replace(/'s$/, '');
-    if (!all.has(base)) all.set(base, { w: base, n: 0, first: bi, ex: b.text, exJa: b.ja || '', on: false });
-    all.get(base).n++;
-  }));
+  const items = blocks.map((b) => ({ text: b.text, ja: b.ja }));
+  let mode = localStorage.getItem('st-wmode') || 'phrase', hideBasic = true, showCommon = false, sort = 'order';
   const chosen = new Set();
   const draw = () => {
-    let list = [...all.values()].filter((x) => showCommon || !STOP.has(x.w));
-    list.sort(sort === 'freq' ? (a, b) => b.n - a.n || a.first - b.first : sort === 'abc' ? (a, b) => a.w.localeCompare(b.w) : (a, b) => a.first - b.first);
+    let list;
+    if (mode === 'phrase') list = extractPhrases(items).map((x) => ({ key: x.phrase, head: x.phrase, sub: x.ex, ex: x.ex, exJa: x.exJa, first: x.at, n: 1 }));
+    else list = extractWords(items, { hideBasic, showCommon }).map((x) => ({ key: x.w, head: x.w, sub: `×${x.n}${x.forms.size > 1 ? `（${[...x.forms].join(', ')}）` : ''}・${x.ex}`, ex: x.ex, exJa: x.exJa, first: x.first, n: x.n }));
+    list.sort(sort === 'freq' ? (a, b) => b.n - a.n || a.first - b.first : sort === 'abc' ? (a, b) => a.key.localeCompare(b.key) : (a, b) => a.first - b.first);
+    const shown = new Set(list.map((x) => x.key)); for (const k of [...chosen]) if (!shown.has(k)) chosen.delete(k);
     el.innerHTML = `${head('単語リスト', `set?id=${set.id}`)}
-      <p class="small muted">${esc(set.title)}：${blocks.length}行から ${list.length}語（選択 ${chosen.size}語）</p>
-      <div class="seg sm" id="srt"><button data-v="order" class="${sort === 'order' ? 'on' : ''}">出てきた順</button><button data-v="freq" class="${sort === 'freq' ? 'on' : ''}">多い順</button><button data-v="abc" class="${sort === 'abc' ? 'on' : ''}">ABC順</button></div>
-      <div class="row"><label class="chk"><input type="checkbox" id="cmn" ${showCommon ? 'checked' : ''}> よく使う語（the, is など）も表示</label></div>
+      <div class="seg" id="md"><button data-v="phrase" class="${mode === 'phrase' ? 'on' : ''}">熟語（見出し＋例文）</button><button data-v="word" class="${mode === 'word' ? 'on' : ''}">単語</button></div>
+      <p class="small muted" id="cnt"></p>
+      ${mode === 'word' ? `<div class="seg sm" id="srt"><button data-v="order" class="${sort === 'order' ? 'on' : ''}">出てきた順</button><button data-v="freq" class="${sort === 'freq' ? 'on' : ''}">多い順</button><button data-v="abc" class="${sort === 'abc' ? 'on' : ''}">ABC順</button></div>
+      <label class="chk"><input type="checkbox" id="hb" ${hideBasic ? 'checked' : ''}> 中学レベルの基本語を隠す</label>
+      <label class="chk"><input type="checkbox" id="cmn" ${showCommon ? 'checked' : ''}> the, is などの機能語も表示</label>
+      <p class="hint">人名・地名（文の途中の大文字）、短縮形（I'm など）、数字は外しています。変化形（-s / -ed / -ing）は1つにまとめています。</p>` :
+      '<p class="hint">「Refer to. Please refer to the map.」のように、短い見出しのすぐ後にその語を使った例文がある所を熟語として取り出します。見出しのない会話文は対象外です。</p>'}
       <div class="row"><button class="btn sm" id="wAll">表示中をすべて選ぶ</button><button class="btn sm" id="wNone">選択を解除</button></div>
-      <div class="card list">${list.map((x) => `<label class="st-wrow"><input type="checkbox" data-w="${esc(x.w)}" ${chosen.has(x.w) ? 'checked' : ''}><span class="grow"><b>${esc(x.w)}</b> <small class="muted">×${x.n}</small><br><small class="muted">${esc(x.ex)}</small></span></label>`).join('') || '<p class="empty">英文がありません。先に文字起こしか字幕の取り込みをしてください。</p>'}</div>
+      <div class="card list">${list.map((x) => `<label class="st-wrow"><input type="checkbox" data-w="${esc(x.key)}" ${chosen.has(x.key) ? 'checked' : ''}><span class="grow"><b>${esc(x.head)}</b><br><small class="muted">${esc(x.sub || '')}</small></span></label>`).join('') || `<p class="empty">${blocks.some((b) => b.text) ? (mode === 'phrase' ? '熟語の見出しが見つかりませんでした。「単語」に切り替えてください。' : '該当する語がありません') : '英文がありません。先に文字起こしか字幕の取り込みをしてください。'}</p>`}</div>
       <div class="st-bar"><div class="row">
-        <button class="btn sm grow" id="csv" ${chosen.size ? '' : 'disabled'}>CSVで書き出す</button>
-        <button class="btn sm grow" id="cl" ${chosen.size ? '' : 'disabled'}>Claude用にコピー</button></div>
+        <button class="btn sm grow" id="csv">CSVで書き出す</button>
+        <button class="btn sm grow" id="cl">Claude用にコピー</button></div>
         <small class="muted">CSVは English Labo の単語帳「CSVから登録」で読み込めます（意味は空欄）。意味もつけたいときは「Claude用にコピー」→ Claudeのチャットに貼る → 返ってきた表を「一括登録」に貼り付け。</small></div>`;
-    $('#srt', el).onclick = (e) => { if (e.target.dataset.v) { sort = e.target.dataset.v; draw(); } };
-    $('#cmn', el).onchange = (e) => { showCommon = e.target.checked; draw(); };
-    $('#wAll', el).onclick = () => { list.forEach((x) => chosen.add(x.w)); draw(); };
+    const upd = () => { $('#cnt', el).textContent = `${set.title}：${list.length}${mode === 'phrase' ? '個の熟語' : '語'}（選択 ${chosen.size}）`; $('#csv', el).disabled = $('#cl', el).disabled = !chosen.size; };
+    upd();
+    $('#md', el).onclick = (e) => { const v = e.target.dataset.v; if (v && v !== mode) { mode = v; chosen.clear(); try { localStorage.setItem('st-wmode', v); } catch {} draw(); } };
+    $('#srt', el)?.addEventListener('click', (e) => { if (e.target.dataset.v) { sort = e.target.dataset.v; draw(); } });
+    $('#hb', el)?.addEventListener('change', (e) => { hideBasic = e.target.checked; draw(); });
+    $('#cmn', el)?.addEventListener('change', (e) => { showCommon = e.target.checked; draw(); });
+    $('#wAll', el).onclick = () => { list.forEach((x) => chosen.add(x.key)); draw(); };
     $('#wNone', el).onclick = () => { chosen.clear(); draw(); };
-    $$('[data-w]', el).forEach((c) => (c.onchange = () => { c.checked ? chosen.add(c.dataset.w) : chosen.delete(c.dataset.w); $('#csv', el).disabled = $('#cl', el).disabled = !chosen.size; el.querySelector('p.small.muted').textContent = `${set.title}：${blocks.length}行から ${list.length}語（選択 ${chosen.size}語）`; }));
-    const picked = () => [...all.values()].filter((x) => chosen.has(x.w)).sort((a, b) => a.first - b.first);
+    $$('[data-w]', el).forEach((c) => (c.onchange = () => { c.checked ? chosen.add(c.dataset.w) : chosen.delete(c.dataset.w); upd(); }));
+    const picked = () => list.filter((x) => chosen.has(x.key));
     const q = (v) => `"${String(v || '').replace(/"/g, '""')}"`;
     $('#csv', el).onclick = () => {
       const tag = set.title.replace(/[,\s/]+/g, '_').replace(/_+/g, '_');
-      const csv = '﻿' + ['英語,日本語,例文,例文訳,タグ', ...picked().map((x) => [x.w, '', x.ex, x.exJa, tag].map(q).join(','))].join('\n');
-      const file = new File([csv], `${set.title.replace(/[\\/:*?"<>|]/g, '_')}-words.csv`, { type: 'text/csv' });
+      const csv = '﻿' + ['英語,日本語,例文,例文訳,タグ', ...picked().map((x) => [x.head, '', x.ex, x.exJa, tag].map(q).join(','))].join('\n');
+      const file = new File([csv], `${set.title.replace(/[\\/:*?"<>|]/g, '_')}-${mode === 'phrase' ? 'phrases' : 'words'}.csv`, { type: 'text/csv' });
       if (navigator.canShare?.({ files: [file] })) navigator.share({ files: [file] }).catch(() => {});
       else { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click(); }
     };
     $('#cl', el).onclick = async () => {
-      const text = `次の英単語を、英語学習の単語帳用にCSVにしてください。列は「英語,日本語,品詞,例文,例文訳」。日本語は例文の文脈での意味を中心に（複数あれば「;」区切り）、例文は下のものをそのまま使い、例文訳をつけてください。熟語として覚えるべきものは、熟語の形に直して構いません。CSVだけをコードブロックで返してください。\n\n` + picked().map((x) => `${x.w}\t${x.ex}`).join('\n');
+      const text = (mode === 'phrase'
+        ? `次の英語の熟語・表現を、英語学習の単語帳用にCSVにしてください。列は「英語,日本語,品詞,例文,例文訳」。英語は下の見出しをそのまま使い（X・do などの記号もそのまま）、日本語は例文の文脈での意味を中心に（複数あれば「;」区切り）、品詞は「熟語」「句動詞」など、例文は下のものをそのまま使い、例文訳をつけてください。音声の文字起こしなので、例文の明らかな聞き間違いは直して構いません（直した場合は例文訳の後ろに「※修正」）。CSVだけをコードブロックで返してください。\n\n`
+        : `次の英単語を、英語学習の単語帳用にCSVにしてください。列は「英語,日本語,品詞,例文,例文訳」。日本語は例文の文脈での意味を中心に（複数あれば「;」区切り）、例文は下のものをそのまま使い、例文訳をつけてください。熟語として覚えるべきものは、熟語の形に直して構いません。CSVだけをコードブロックで返してください。\n\n`) + picked().map((x) => `${x.head}\t${x.ex}`).join('\n');
       try { await navigator.clipboard.writeText(text); toast('コピーしました。Claudeのチャットに貼り付けてください', 3000); } catch { toast('コピーできませんでした'); }
     };
   };
@@ -1010,7 +1017,7 @@ async function labScreen(el) {
       if (!blob) { out(line); continue; }
       const u = URL.createObjectURL(blob);
       const r = await new Promise((res) => { let done = false; const fin = (t) => { if (!done) { done = true; res(t); } };
-        v.onloadedmetadata = () => fin(`読込OK 長さ${fmt(v.duration)}`); v.onerror = () => fin(`読込エラー コード${v.error?.code}`); setTimeout(() => fin('読込が終わらない'), 8000); v.src = u; });
+        v.onloadedmetadata = () => fin(`読込OK 長さ${fmt(v.duration)}・音声トラック${v.audioTracks ? v.audioTracks.length : '?'}`); v.onerror = () => fin(`読込エラー コード${v.error?.code}`); setTimeout(() => fin('読込が終わらない'), 8000); v.src = u; });
       line += `→ ${r}`;
       if (r.startsWith('読込OK')) { try { v.currentTime = Math.min(5, (v.duration || 10) / 2); await v.play(); const t0 = v.currentTime; await new Promise((q) => setTimeout(q, 1200)); line += `・再生 ${v.currentTime > t0 + 0.3 ? 'OK' : '進まない'}`; v.pause(); } catch (e) { line += `・再生エラー ${e.name}`; } }
       URL.revokeObjectURL(u); out(line);

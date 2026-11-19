@@ -13,6 +13,7 @@ export function toast(msg, ms = 2600) {
 export function confirmDialog({ title, body = '', okLabel = 'OK', cancelLabel = 'キャンセル', danger = false, requireText = null }) {
   return new Promise((resolve) => {
     const dlg = $('#dialog');
+    if (dlg.open) { dlg.onclose = null; dlg.close(); }   // Safari can still report the previous dialog as open inside its close event
     dlg.innerHTML = `
       <form method="dialog" class="dlg">
         <h3>${esc(title)}</h3>

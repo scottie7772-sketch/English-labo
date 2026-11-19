@@ -7,7 +7,7 @@ import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
 import { decodeTo16k, openTranscriber, speechPieces } from './asr.js';
 
-export const STUDIO_VERSION = '0.3.4';
+export const STUDIO_VERSION = '0.3.5';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -654,6 +654,7 @@ async function editorScreen(el, params) {
     try { localStorage.setItem('st-asrq', fast ? 'fast' : 'acc'); } catch {}
     let cancelled = false, done = 0, lines = 0, speed = 0; const speedSamples = [], noSpeech = [];
     const dlg = $('#dialog');
+    await new Promise((r) => setTimeout(r, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>文字起こし中</h3><p class="small" id="asrMsg">準備しています…</p><div class="st-meter"><i id="asrBar" style="width:0%"></i><span id="asrPct">0%</span></div><p class="small muted" id="asrDone"></p><button class="btn ghost" value="cancel">中止（ここまでは保存済み）</button></form>`;
     dlg.returnValue = ''; dlg.onclose = () => { cancelled = true; tr?.close(); }; dlg.showModal();
     const msg = (t) => { const m = $('#asrMsg', dlg); if (m) m.textContent = t; };
@@ -764,6 +765,7 @@ async function editorScreen(el, params) {
     dlg.returnValue = '';
     dlg.onclose = async () => {
       const v = dlg.returnValue;
+      await new Promise((r) => setTimeout(r, 60));   // Safari: let the menu finish closing before the next dialog opens
       if (v === 'ver') nav(`versions?id=${set.id}`);
       if (v === 'exp') exportSet(set);
       if (v === 'asr') runAsr();

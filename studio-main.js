@@ -7,7 +7,7 @@ import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
 import { decodeTo16k, openTranscriber, speechPieces } from './asr.js';
 
-export const STUDIO_VERSION = '0.3.6';
+export const STUDIO_VERSION = '0.3.7';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -18,8 +18,12 @@ const fmtMin = (s) => `${Math.floor(s / 60)}分${String(Math.round(s % 60)).padS
 const fmtSize = (n) => (n > 1 << 30 ? (n / (1 << 30)).toFixed(2) + ' GB' : n > 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB');
 const icon = (n) => ({ back: '‹', undo: '↶', redo: '↷', play: '▶︎', pause: '❚❚', more: '⋯' }[n] || n);
 
+const errLog = [];
+function logErr(msg) { errLog.push(`${new Date().toLocaleTimeString('ja-JP')} ${msg}`); if (errLog.length > 50) errLog.shift(); toast('エラー：' + msg, 5000); }
 export function mount(el, { base = '' } = {}) {
   ROOT = el; BASE = base;
+  addEventListener('error', (e) => logErr(`${e.message} (${(e.filename || '').split('/').pop()}:${e.lineno})`));
+  addEventListener('unhandledrejection', (e) => logErr(String(e.reason?.message || e.reason)));
   addEventListener('hashchange', route);
   route();
 }
@@ -406,6 +410,7 @@ async function editorScreen(el, params) {
     <div id="list" class="st-list"></div>
     <div id="bar" class="st-bar" hidden></div>`;
   const vid = $('#vid', el), list = $('#list', el), bar = $('#bar', el);
+  vid.addEventListener('error', () => { const s0 = srcs[vid.dataset.src]; logErr(`再生できません（コード${vid.error?.code}・${s0?.name}・${s0?.mime || '?'}・${s0?.codec || '元のまま'}）`); });
 
   // ---------- media ----------
   // iOS only lets a tap start sound if play() is called right away (no waiting before it), so everything here is synchronous
@@ -991,7 +996,26 @@ async function labScreen(el) {
       <video id="p3v" playsinline muted style="width:100%;max-height:160px;background:#000"></video><video id="p3v2" playsinline muted hidden></video></div>
     <div class="card stack"><b>P4 音声の展開（波形・無音検出用）</b><span class="small">5分・10分・15分の動画や音声で試す。落ちた場合は「落ちた」と伝えてください</span>
       <label class="btn sm" for="p4f">動画・音声を選ぶ</label><input type="file" id="p4f" hidden></div>
+    <div class="card stack"><b>保存した音声・動画の点検</b><span class="small">教材セットの音声・動画を1つずつ読み込んで1秒再生し、結果を下に書きます</span><button class="btn sm" id="chk">点検する</button></div>
     <div class="card stack"><b>結果</b><pre id="lo" class="st-log"></pre><button class="btn sm" id="cp">結果をコピー</button></div>`;
+  $('#chk', el).onclick = async () => {
+    out(`バージョン ${STUDIO_VERSION}・audioSession: ${navigator.audioSession?.type ?? 'なし'}`);
+    if (errLog.length) out('最近のエラー:\n  ' + errLog.join('\n  '));
+    const all = await sdb.all('sources');
+    if (!all.length) return out('保存した音声・動画がありません');
+    const v = $('#p3v', el); v.muted = false;
+    for (const x of all) {
+      const blob = x.stored ? x.blob : null;
+      let line = `・${x.name}｜${x.kind}｜${x.mime || '?'}｜${x.codec || '元のまま'}｜${blob ? fmtSize(blob.size) : '保存なし'}｜長さ${fmt(x.duration)}`;
+      if (!blob) { out(line); continue; }
+      const u = URL.createObjectURL(blob);
+      const r = await new Promise((res) => { let done = false; const fin = (t) => { if (!done) { done = true; res(t); } };
+        v.onloadedmetadata = () => fin(`読込OK 長さ${fmt(v.duration)}`); v.onerror = () => fin(`読込エラー コード${v.error?.code}`); setTimeout(() => fin('読込が終わらない'), 8000); v.src = u; });
+      line += `→ ${r}`;
+      if (r.startsWith('読込OK')) { try { v.currentTime = Math.min(5, (v.duration || 10) / 2); await v.play(); const t0 = v.currentTime; await new Promise((q) => setTimeout(q, 1200)); line += `・再生 ${v.currentTime > t0 + 0.3 ? 'OK' : '進まない'}`; v.pause(); } catch (e) { line += `・再生エラー ${e.name}`; } }
+      URL.revokeObjectURL(u); out(line);
+    }
+  };
   const lab = (await import('./common-idb.js')).makeDB('ell-studio-lab', 1, { files: { keyPath: 'id' } });
   out(`端末: ${navigator.userAgent}`); out(`表示: ${matchMedia('(display-mode: standalone)').matches ? 'ホーム画面アプリ' : 'ブラウザ'}`);
   $('#q', el).onclick = async () => {

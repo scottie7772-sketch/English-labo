@@ -2,23 +2,24 @@
 // Whisper runs in the browser through Transformers.js (loaded from a public CDN; the model is downloaded once and cached).
 // Audio never leaves the device. No API key, no server.
 const TF_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1';
-const MODELS = { en: 'onnx-community/whisper-base.en', multi: 'onnx-community/whisper-base' };
+const MODELS = { en: 'onnx-community/whisper-base.en', multi: 'onnx-community/whisper-base', enFast: 'onnx-community/whisper-tiny.en', multiFast: 'onnx-community/whisper-tiny' };
 const LANG_NAME = { es: 'spanish', 'zh-TW': 'chinese', 'zh-CN': 'chinese' };
 
 const WORKER_SRC = `
 import { pipeline, env } from '${TF_URL}';
 env.allowLocalModels = false;
-let asr = null;
+let asr = null, asrModel = null;
 self.onmessage = async (e) => {
   const { audio, model, language } = e.data;
   let lastErr = null;
+  if (asr && asrModel !== model) asr = null;
   if (!asr) for (const device of e.data.devices) {
     try {
       asr = await pipeline('automatic-speech-recognition', model, {
         device, dtype: device === 'webgpu' ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : 'q8',
         progress_callback: (p) => self.postMessage({ type: 'load', p }),
       });
-      self.postMessage({ type: 'device', device });
+      asrModel = model; self.postMessage({ type: 'device', device });
       break;
     } catch (err) { lastErr = err; }
   }
@@ -32,11 +33,11 @@ self.onmessage = async (e) => {
 
 // video/audio Blob -> Float32Array, 16 kHz mono (what Whisper expects)
 export async function decodeTo16k(blob) {
-  const AC = window.AudioContext || window.webkitAudioContext;
-  const ac = new AC();
+  // an offline context does not take over the iPhone's audio output (a normal AudioContext could stop video playback afterwards)
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const ac = new OAC(1, 16000, 16000);
   const buf = await blob.arrayBuffer();
   const decoded = await new Promise((res, rej) => { const p = ac.decodeAudioData(buf, res, rej); if (p?.then) p.then(res, rej); });
-  ac.close?.();
   const len = Math.max(1, Math.ceil(decoded.duration * 16000));
   const off = new OfflineAudioContext(1, len, 16000);
   const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();
@@ -97,8 +98,8 @@ export async function transcribe(blob, { lang = 'en', onProgress = () => {}, isC
 }
 
 // Keeps one worker (model loaded once) for several pieces of audio. run(audio16k) -> cues with times relative to the piece.
-export function openTranscriber(lang = 'en', onProgress = () => {}) {
-  const model = lang === 'en' ? MODELS.en : MODELS.multi;
+export function openTranscriber(lang = 'en', onProgress = () => {}, { fast = true } = {}) {
+  const model = lang === 'en' ? (fast ? MODELS.enFast : MODELS.en) : (fast ? MODELS.multiFast : MODELS.multi);
   const devices = 'gpu' in navigator ? ['webgpu', 'wasm'] : ['wasm'];
   const worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })), { type: 'module' });
   const files = {};
@@ -126,8 +127,8 @@ export function openTranscriber(lang = 'en', onProgress = () => {}) {
 export function pieceRanges(audio, a, b, len = 120) {
   const out = []; let s = a;
   while (b - s > len * 1.3) {
-    const target = s + len, F = 320; let best = target, bestE = Infinity;
-    for (let t = target - 6; t <= target + 6; t += 0.02) {
+    const target = s + len, F = 320, w = Math.min(6, len * 0.25); let best = target, bestE = Infinity;
+    for (let t = target - w; t <= target + w; t += 0.02) {
       const i0 = Math.floor(t * 16000); if (i0 < 0 || i0 + F > audio.length) continue;
       let e = 0; for (let k = 0; k < F; k++) e += audio[i0 + k] * audio[i0 + k];
       if (e < bestE) { bestE = e; best = t; }
@@ -136,4 +137,26 @@ export function pieceRanges(audio, a, b, len = 120) {
   }
   out.push([s, b]);
   return out;
+}
+
+// speech parts of [a, b]: long silences (> gap s) are skipped, parts are grouped into pieces of at most `len` s
+export function speechPieces(audio, a, b, { len = 60, gap = 1.2 } = {}) {
+  const F = 320, i0 = Math.floor(a * 16000), i1 = Math.min(audio.length, Math.floor(b * 16000));
+  const rms = []; for (let i = i0; i + F <= i1; i += F) { let x = 0; for (let k = 0; k < F; k++) x += audio[i + k] * audio[i + k]; rms.push(Math.sqrt(x / F)); }
+  if (!rms.length) return [[a, b]];
+  const sorted = rms.slice().sort((x, y) => x - y);
+  const th = Math.max(sorted[Math.floor(sorted.length * 0.1)] * 3, sorted[Math.floor(sorted.length * 0.9)] * 0.08, 0.004);
+  const regs = []; let st = -1, last = -1;
+  rms.forEach((v, k) => { if (v >= th) { if (st < 0) st = k; last = k; } else if (st >= 0 && (k - last) * 0.02 > gap) { regs.push([st, last]); st = -1; } });
+  if (st >= 0) regs.push([st, last]);
+  const t = (k) => a + k * 0.02;
+  const out = [];
+  for (const [s0, e0] of regs) {
+    let s = Math.max(a, t(s0) - 0.3); const e = Math.min(b, t(e0 + 1) + 0.3);
+    const prev = out[out.length - 1];
+    if (prev && e - prev[0] <= len && s - prev[1] < gap) { prev[1] = e; continue; }
+    if (e - s > len * 1.3) out.push(...pieceRanges(audio, s, e, len));   // long speech without pauses: cut at the quietest points
+    else out.push([s, e]);
+  }
+  return out.length ? out : [];
 }

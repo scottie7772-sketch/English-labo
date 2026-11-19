@@ -49,3 +49,5 @@ body.studio main { padding-bottom: 20px; }
 .card .chk { display: flex; align-items: center; text-align: left; }
 .st-busy .card .btn { opacity: .45; }
 .st-setrow input.st-cb { width: 22px; height: 22px; flex: 0 0 auto; }
+.st-vwrap.audio video { height: 44px; max-height: 44px; }
+.st-vwrap.audio { background: var(--surface2); }

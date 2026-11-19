@@ -95,7 +95,7 @@ export async function transcribe(blob, { lang = 'en', onProgress = () => {}, isC
         const t0 = Date.now(), est = Math.max(20, duration * 1.5) * 1000;   // rough guess just for the bar
         onProgress('文字起こし中…（動画の長さの数倍かかることがあります）', 0.42);
         runTimer = setInterval(() => onProgress(`文字起こし中…（${Math.round((Date.now() - t0) / 1000)}秒経過）`, Math.min(0.97, 0.42 + 0.55 * ((Date.now() - t0) / est))), 1000);
-      } else if (m.type === 'done') { clearInterval(cancelPoll); stop(); resolve(chunksToCues(m.chunks, duration)); }
+      } else if (m.type === 'done') { clearInterval(cancelPoll); stop(); resolve(chunksToCues(m.chunks?.length ? m.chunks : (m.text || '').trim() ? [{ text: m.text, timestamp: [0, null] }] : [], duration)); }
       else if (m.type === 'error') { clearInterval(cancelPoll); stop(); reject(new Error(m.message)); }
     };
     worker.postMessage({ audio, model, language: LANG_NAME[lang] || null, devices }, [audio.buffer]);
@@ -117,7 +117,12 @@ export function openTranscriber(lang = 'en', onProgress = () => {}, { fast = tru
       const [a, b] = Object.values(files).reduce((x, y) => [x[0] + y[0], x[1] + y[1]], [0, 0]);
       onProgress(`音声認識モデルを準備しています（初回のみダウンロード）… ${Math.round((a / b) * 100)}%`);
     } else if (m.type === 'device') onProgress(`モデルの準備ができました（${m.device === 'webgpu' ? 'GPU' : 'CPU'}で処理）`);
-    else if (m.type === 'done') { pending?.resolve(chunksToCues(m.chunks, pending.duration)); pending = null; }
+    else if (m.type === 'done') {
+      // some results come back as plain text without time stamps: keep the text (one line for the piece) instead of dropping it
+      const chunks = m.chunks?.length ? m.chunks : (m.text || '').trim() ? [{ text: m.text, timestamp: [0, null] }] : [];
+      pending?.resolve(Object.assign(chunksToCues(chunks, pending.duration), { raw: (m.text || chunks.map((c) => c.text).join(' ')).trim(), nChunks: (m.chunks || []).length }));
+      pending = null;
+    }
     else if (m.type === 'error') { pending?.reject(new Error(m.message)); pending = null; }
   };
   return {

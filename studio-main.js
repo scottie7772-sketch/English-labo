@@ -9,7 +9,7 @@ import { decodeTo16k, openTranscriber, speechPieces, captureTo16k } from './asr.
 import { extractPhrases, extractWords } from './studio-words.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 
-export const STUDIO_VERSION = '0.5.3';
+export const STUDIO_VERSION = '0.5.4';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -762,7 +762,7 @@ async function editorScreen(el, params) {
       <p class="hint">・最初の1回だけモデルをダウンロードします（無料・Wi-Fi推奨）。音声は外部に送りません。<br>・無音の部分は飛ばし、話している部分を少しずつ処理して、終わった分から保存します。止まっても、もう一度実行すると続きから。<br>・画面は開いたままにしてください。結果は自動の下書きです。</p>`, okLabel: '始める' }))) return;
     const fast = ($('#dialog input[name=asrq]:checked')?.value || 'fast') === 'fast';
     try { localStorage.setItem('st-asrq', fast ? 'fast' : 'acc'); } catch {}
-    let cancelled = false, done = 0, lines = 0, speed = 0; const speedSamples = [], noSpeech = [];
+    let cancelled = false, done = 0, lines = 0, speed = 0; const speedSamples = [], noSpeech = [], rawAll = [];
     const dlg = $('#dialog');
     await new Promise((r) => setTimeout(r, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>文字起こし中</h3><p class="small" id="asrMsg">準備しています…</p><div class="st-meter"><i id="asrBar" style="width:0%"></i><span id="asrPct">0%</span></div><p class="small muted" id="asrDone"></p><div id="asrCap"></div><button class="btn ghost" value="cancel">中止（ここまでは保存済み）</button></form>`;
@@ -794,6 +794,7 @@ async function editorScreen(el, params) {
             const tick = setInterval(() => msg(`${lbl} を文字起こし中…（${Math.round((Date.now() - t0) / 1000)}秒）${speed ? `・残り目安 ${fmtMin(Math.max(0, (total - done) / speed))}` : ''}`), 1000);
             const piece = audio.slice(Math.floor(ps0 * 16000), Math.floor(pe0 * 16000));
             let cues; try { cues = await tr.run(piece); } finally { clearInterval(tick); }
+            crumb(`認識結果（${cues.length}行・${Math.round((Date.now() - t0) / 1000)}秒）：${(cues.raw || '').slice(0, 80) || '（空）'}`); rawAll.push(cues.raw || '');
             speedSamples.push([pe - ps, (Date.now() - t0) / 1000]); speed = speedSamples.reduce((a, x) => a + x[0], 0) / speedSamples.reduce((a, x) => a + x[1], 0);
             if (cancelled) break;
             const b = byId[bid];   // latest revision (its start moves forward)
@@ -817,7 +818,7 @@ async function editorScreen(el, params) {
       return confirmDialog({ title: '文字起こしが止まりました', body: `<p class="small">${esc((e?.message || String(e)))}</p><p class="hint">${lines ? `${lines}行は保存済みです。もう一度実行すると続きから始まります。` : '初回はネット接続が必要です（モデルのダウンロード）。'}</p>`, okLabel: '閉じる', cancelLabel: null });
     }
     running(null); lock?.release?.(); tr?.close(); const wasCancelled = cancelled; if (dlg.open) { dlg.onclose = null; dlg.close(); }
-    if (!lines) return wasCancelled ? toast('中止しました') : confirmDialog({ title: '文字にできませんでした', body: noSpeech.length ? `<p class="small">${noSpeech.map(esc).join('<br>')}</p><p>音声が見つかりませんでした（無音のまま取り出された可能性）。編集した動画は音声を取り出せないことがあります。写真アプリで「ビデオを複製」または「ファイルに保存」で書き出したものを取り込み直してください。</p>` : '<p>英語の話し声を文字にできませんでした。「正確さ優先」で試すか、別の音声で試してください。</p>', okLabel: '閉じる', cancelLabel: null });
+    if (!lines) return wasCancelled ? toast('中止しました') : confirmDialog({ title: '文字にできませんでした', body: noSpeech.length ? `<p class="small">${noSpeech.map(esc).join('<br>')}</p><p>音声が見つかりませんでした（無音のまま取り出された可能性）。編集した動画は音声を取り出せないことがあります。写真アプリで「ビデオを複製」または「ファイルに保存」で書き出したものを取り込み直してください。</p>` : `<p>音声認識は動きましたが、文字にできる英語がありませんでした。</p><p class="small">認識された内容：${esc(rawAll.join(' ').trim().slice(0, 200) || '（何も認識されませんでした）')}</p><p class="hint">［Music］のような表示だけなら、音楽や効果音と判定されています。何も認識されない場合は、音声が英語として聞き取れていません。</p>`, okLabel: '閉じる', cancelLabel: null });
     const ok = await confirmDialog({ title: wasCancelled ? `${lines}行で中止しました` : `文字起こしが終わりました（${lines}行）`,
       body: `<p>結果は、この画面の一覧（動画の下）に「自動起こし」の印つきで並んでいます。行をタップすると、その部分を再生します。✎で直せます。</p>${wasCancelled ? '<p class="hint">もう一度実行すると続きから始まります。</p>' : ''}<p class="hint">テキストだけ使いたいときは「⋯」→「テキストを書き出す」。単語帳に入れるときは「⋯」→「単語リストを作る」。</p>`,
       okLabel: '英文をコピー', cancelLabel: '閉じる' });

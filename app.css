@@ -979,8 +979,8 @@ body.focus .vp-root { padding-bottom: 150px; }
 .vsteps span.hover { background: var(--accent); color: #fff; }
 
 /* ===== look 1.8: Claude-like — warm neutral colours, seamless (surfaces instead of hard borders), slightly rounded ===== */
-:root { --radius: 14px; --bg: #faf9f5; --surface: #ffffff; --surface2: #f0eee6; --text: #1f1e1d; --muted: #706d65; --line: #e8e5db; --accent: #c6613f; --accent-text: #fff; }
-[data-theme="dark"] { --bg: #1f1e1d; --surface: #2a2927; --surface2: #353431; --text: #f2f0ea; --muted: #a39f96; --line: #3a3936; --accent: #d97757; --accent-text: #fff; }
+:root { --radius: 14px; --bg: #f5f7f4; --surface: #ffffff; --surface2: #e8eee8; --text: #1a1f1c; --muted: #66706a; --line: #dfe6df; --accent: #2e7d5b; --accent-text: #fff; }
+[data-theme="dark"] { --bg: #18201c; --surface: #222b26; --surface2: #2c3630; --text: #eef3ef; --muted: #9eaaa2; --line: #34403a; --accent: #4f9e78; --accent-text: #fff; }   /* green (1.8.2) */
 .card, .stat, .tile, .wcard, .choice, .subbox:not(.vp-root .subbox) { border-color: transparent; }
 .btn { border-color: transparent; background: var(--surface2); border-radius: 12px; }
 .btn.primary { background: var(--accent); color: var(--accent-text); }

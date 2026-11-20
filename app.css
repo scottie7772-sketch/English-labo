@@ -939,3 +939,6 @@ input, select, textarea { font-size: max(16px, 1em); }
 .vquick-sheet .tgl { flex: 1 1 40%; min-height: 44px; }
 .vfollow { position: sticky; top: 0; z-index: 3; display: block; margin: 0 auto 6px; }
 .vfollow[hidden] { display: none; }
+.vmode-btn { position: relative; }
+.vmode-btn.on::after { content: ''; position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: #f0a030; }
+.vtitle { max-width: 46vw; }

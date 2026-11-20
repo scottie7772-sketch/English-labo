@@ -348,7 +348,7 @@ export async function videoPlay(el, params) {
 
   el.innerHTML = `
     <div class="vp-root" id="vroot">
-    <header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1 class="vtitle">${esc(v.name)}</h1><span class="grow"></span><button class="icon-btn vh-btn" id="openSet" aria-label="表示・学習の設定">⚙︎</button><button class="icon-btn vh-btn" id="openMake" aria-label="字幕・日本語訳">字</button><button class="icon-btn" id="menu" aria-label="メニュー">⋯</button></header>
+    <header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1 class="vtitle">${esc(v.name)}</h1><span class="grow"></span><button class="icon-btn vh-btn vmode-btn" id="openMode" aria-label="学習モード">🎛</button><button class="icon-btn vh-btn" id="openSet" aria-label="表示・学習の設定">⚙︎</button><button class="icon-btn vh-btn" id="openMake" aria-label="字幕・日本語訳">字</button><button class="icon-btn" id="menu" aria-label="メニュー">⋯</button></header>
     <div class="vwrap">${!url ? '<div class="card warn">動画ファイルがありません（バックアップから復元した場合は、動画をもう一度追加してください）</div>'
       : aurl ? `<video id="vpic" src="${url}" muted playsinline webkit-playsinline preload="metadata"></video><audio id="vid" src="${aurl}" preload="auto" playsinline></audio>`
       : `<video id="vid" src="${url}" playsinline webkit-playsinline preload="metadata"></video>`}</div>
@@ -366,7 +366,6 @@ export async function videoPlay(el, params) {
     </div></div>
     <div class="subbox" id="sub"></div>
     <div id="grade"></div>
-    <div class="row vmodebar"><button class="btn sm" id="openMode">🎛 学習モード</button><span class="small muted grow" id="modeOn"></span></div>
     <div class="vsheet" id="shMode" hidden><div class="vsheet-in card stack"><div class="row between"><b>学習モード</b><button class="btn sm" data-shclose>閉じる</button></div>
     <div class="vquick vquick-sheet">
       <button class="tgl" id="qMode"></button>
@@ -445,7 +444,8 @@ export async function videoPlay(el, params) {
   $('#openSet', el).onclick = () => sheet('#shSet', true);
   $('#openMake', el).onclick = () => sheet('#shMake', true);
   // 学習モード: one button → a sheet with the modes; the chosen ones are listed next to the button
-  const modeOn = () => { const on = $$('#shMode .tgl.on', el).filter((b) => b.id !== 'qMode').map((b) => b.textContent.trim()); const m = $('#modeOn', el); if (m) m.textContent = [$('#qMode', el)?.textContent || '', ...on].filter(Boolean).join('・'); };
+  // the header button shows a dot while a mode (dictation, shadowing …) is on
+  const modeOn = () => { const on = $$('#shMode .tgl.on', el).filter((b) => b.id !== 'qMode').map((b) => b.textContent.trim()); const m = $('#openMode', el); if (m) { m.classList.toggle('on', on.length > 0); m.title = on.join('・'); } };
   $('#openMode', el).onclick = () => sheet('#shMode', true);
   $('#shMode', el).addEventListener('click', (e) => { const b = e.target.closest('.tgl'); if (!b) return; setTimeout(() => { modeOn(); if (b.id !== 'qMode') sheet('#shMode', false); }, 0); });
   setTimeout(modeOn, 0); setTimeout(modeOn, 500);

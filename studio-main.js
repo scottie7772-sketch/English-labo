@@ -9,7 +9,7 @@ import { decodeTo16k, openTranscriber, speechPieces, captureTo16k } from './asr.
 import { extractPhrases, extractWords } from './studio-words.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 
-export const STUDIO_VERSION = '0.6.4';
+export const STUDIO_VERSION = '0.6.6';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -52,7 +52,7 @@ let cleanup = null;
 async function route() {
   cleanup?.(); cleanup = null;
   const { path, params } = parseHash();
-  const screens = { sets: setsScreen, import: importScreen, set: editorScreen, versions: versionsScreen, lab: labScreen, io: ioScreen, words: wordsScreen };
+  const screens = { sets: setsScreen, import: importScreen, set: editorScreen, versions: versionsScreen, lab: labScreen, io: ioScreen, words: wordsScreen, clean: cleanScreen };
   try { await (screens[path] || setsScreen)(ROOT, params); }
   catch (e) { console.error(e); ROOT.innerHTML = `<div class="card warn">エラー：${esc((e?.message || String(e)))}</div><a class="btn" href="#${BASE}sets">一覧に戻る</a>`; }
   scrollTo(0, 0);
@@ -96,7 +96,7 @@ async function setsScreen(el) {
   const est = await navigator.storage?.estimate?.().catch(() => null);
   let editing = false; const chosen = new Set();
   const draw = () => {
-    el.innerHTML = `${head('教材セット', null, `<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#${BASE}lab">技術検証</a>`)}
+    el.innerHTML = `${head('教材セット', null, `<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#${BASE}clean">容量</a><a class="btn sm" href="#${BASE}lab">技術検証</a>`)}
     <div class="row"><a class="btn primary grow" href="#${BASE}import">＋ 一括登録（動画・音声・字幕）</a><a class="btn" href="#${BASE}io">読み込み</a></div>
     ${est ? `<p class="small muted">端末の保存量：${fmtSize(est.usage || 0)}${est.quota ? ` / 目安の上限 ${fmtSize(est.quota)}` : ''}</p>` : ''}
     ${sets.length ? `<div class="row"><span class="grow small muted">${sets.length}セット</span><button class="btn sm" id="edit">${editing ? '完了' : '選んで削除'}</button></div>
@@ -302,7 +302,8 @@ function edgeCut(rms, zcr = []) {
 }
 // when nothing is found in a screen recording: cut a fixed length (the usual start/stop sound), set by the user
 const isScreenRec = (name) => /screen\s*recording|画面収録|RPReplay/i.test(name || '');
-const defaultCut = () => { try { return +(localStorage.getItem('st-defCut') ?? 1); } catch { return 1; } };
+// the iPhone screen-recording sound lasts about 0.9 s (measured by the user)
+const defaultCut = () => { try { return +(localStorage.getItem('st-defCut2') ?? 0.9); } catch { return 0.9; } };
 async function findEdges(src, blob, D) {
   const W = Math.min(6, D / 3);
   let a0, a1;
@@ -315,7 +316,8 @@ async function findEdges(src, blob, D) {
   } else { const { audio, duration } = await decodeTo16k(blob); D = duration; a0 = audio.subarray(0, W * 16000); a1 = audio.subarray(Math.max(0, audio.length - W * 16000)); }
   let st = edgeCut(frameRms(a0), frameZcr(a0)), en = edgeCut(frameRms(a1).reverse(), frameZcr(a1).reverse());
   const dc = defaultCut();
-  if (isScreenRec(src.name) && dc > 0) { if (!st.cut) st = { cut: dc, why: `画面収録の既定 ${dc}秒` }; if (!en.cut) en = { cut: dc, why: `画面収録の既定 ${dc}秒` }; }
+  // screen recordings: always cut at least the usual sound length (more if a longer sound/silence was found)
+  if (isScreenRec(src.name) && dc > 0) { if (st.cut < dc) st = { cut: dc, why: `画面収録の音 ${dc}秒` }; if (en.cut < dc) en = { cut: dc, why: `画面収録の音 ${dc}秒` }; }
   return { start: +st.cut.toFixed(2), end: +(D - en.cut).toFixed(2), whyStart: st.why, whyEnd: en.why, duration: D };
 }
 const dropCutSetting = () => { try { return localStorage.getItem('st-dropCut') === '1'; } catch { return false; } };
@@ -980,13 +982,13 @@ async function editorScreen(el, params) {
     const draw = () => {
       dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>前後をカット</h3><p class="small">教材の始まりと終わりを決めます。元のファイルは変えません（↶で戻せます）。</p>
         <button type="button" class="btn" id="tAuto">自動で見つける（画面収録の音・無音）</button>
-        <div class="row"><span class="small grow">画面収録で音が見つからない時に切る長さ</span><button type="button" class="btn xs" id="tDef">${defaultCut() ? `前後${defaultCut()}秒` : '切らない'}</button></div>
+        <div class="row"><span class="small grow">画面収録の前後で必ず切る長さ（録画開始・終了の音）</span><button type="button" class="btn xs" id="tDef">${defaultCut() ? `前後${defaultCut()}秒` : '切らない'}</button></div>
         <div class="st-segrow"><b>開始 ${fmt(st)}</b><div class="row"><button type="button" class="btn xs" data-d="s:-0.5">−0.5</button><button type="button" class="btn xs" data-d="s:-0.1">−0.1</button><button type="button" class="btn xs" data-d="s:0.1">＋0.1</button><button type="button" class="btn xs" data-d="s:0.5">＋0.5</button><button type="button" class="btn xs" id="sNow">今の位置</button></div><button type="button" class="btn sm" id="sPlay">▶︎ 開始から3秒聞く</button></div>
         <div class="st-segrow"><b>終了 ${fmt(en)}</b><div class="row"><button type="button" class="btn xs" data-d="e:-0.5">−0.5</button><button type="button" class="btn xs" data-d="e:-0.1">−0.1</button><button type="button" class="btn xs" data-d="e:0.1">＋0.1</button><button type="button" class="btn xs" data-d="e:0.5">＋0.5</button><button type="button" class="btn xs" id="eNow">今の位置</button></div><button type="button" class="btn sm" id="ePlay">▶︎ 終了の3秒前から聞く</button></div>
         <label class="chk"><input type="checkbox" id="tDrop" ${dropCutSetting() ? 'checked' : ''}> カットした部分は保存しない（元に戻せません）</label>
         <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">保存</button></div></form>`;
       $('#tDrop', dlg).onchange = (ev) => setDropCut(ev.target.checked);
-      $('#tDef', dlg).onclick = () => { const L = [0, 0.5, 1, 1.5, 2]; const nx = L[(L.indexOf(defaultCut()) + 1) % L.length]; try { localStorage.setItem('st-defCut', String(nx)); } catch {} draw(); };
+      $('#tDef', dlg).onclick = () => { const L = [0, 0.5, 0.9, 1.2, 1.5, 2]; const nx = L[(L.indexOf(defaultCut()) + 1) % L.length]; try { localStorage.setItem('st-defCut2', String(nx)); } catch {} draw(); };
       $$('[data-d]', dlg).forEach((b) => (b.onclick = () => { const [k, d] = b.dataset.d.split(':'); const maxEnd = srcs[e.last.segments.at(-1).sourceId]?.duration || Infinity; if (k === 's') st = Math.min(en - 0.3, Math.max(0, +(st + +d).toFixed(2))); else en = Math.min(maxEnd, Math.max(st + 0.3, +(en + +d).toFixed(2))); draw(); }));
       $('#sNow', dlg).onclick = () => { st = +vid.currentTime.toFixed(2); draw(); };
       $('#eNow', dlg).onclick = () => { en = +vid.currentTime.toFixed(2); draw(); };
@@ -1174,6 +1176,59 @@ async function wordsScreen(el, params) {
     };
   };
   draw();
+}
+
+// ================= storage cleanup =================
+async function cleanScreen(el) {
+  el.innerHTML = `${head('容量の整理', 'sets')}<div class="card center muted">調べています…</div>`;
+  const est = await navigator.storage?.estimate?.().catch(() => null);
+  const sets = await sdb.all('sets'), srcs = await sdb.all('sources');
+  const used = {}; for (const st of sets) for (const b of await sdb.byIndex('blocks', 'setId', st.id)) if (!b.deleted) for (const g of b.segments) (used[g.sourceId] ||= new Set()).add(st.title);
+  const orphans = srcs.filter((x) => !used[x.id]);
+  const oplogN = (await sdb.all('oplog')).length, revN = (await sdb.all('blockRevs')).length;
+  const names = (await caches.keys().catch(() => [])) || [];
+  const model = names.filter((n) => /transformers|onnx|huggingface/i.test(n));
+  let mSize = 0; for (const n of model) { try { const c = await caches.open(n); for (const r of await c.keys()) { const res = await c.match(r); mSize += +res.headers.get('content-length') || 0; } } catch {} }
+  const sz = (x) => x.blob?.size || 0;
+  el.innerHTML = `${head('容量の整理', 'sets')}
+    <div class="card stack"><b>このスタジオが使っている容量：${fmtSize(est?.usage || 0)}</b>
+      <span class="small">・動画・音声：${fmtSize(srcs.reduce((a, x) => a + sz(x), 0))}（${srcs.length}ファイル）<br>・音声認識モデル：${fmtSize(mSize)}<br>・編集の履歴：${oplogN}件の操作・${revN}件の過去の状態</span></div>
+    <div class="card stack">
+      <div class="row between"><span><b>どの教材にも使われていないファイル</b><br><small class="muted">${orphans.length}件・${fmtSize(orphans.reduce((a, x) => a + sz(x), 0))}</small></span><button class="btn sm" id="cOrph" ${orphans.length ? '' : 'disabled'}>削除</button></div>
+      <div class="row between"><span><b>編集の履歴を整理</b><br><small class="muted">↶で戻せる操作と、保存した版に必要な分だけ残します</small></span><button class="btn sm" id="cHist">整理</button></div>
+      <div class="row between"><span><b>音声認識モデル</b><br><small class="muted">次に文字起こしするとき再ダウンロード</small></span><button class="btn sm" id="cModel" ${model.length ? '' : 'disabled'}>${fmtSize(mSize)} 削除</button></div>
+    </div>
+    <h2 class="sec">ファイル（大きい順）</h2>
+    <div class="card list">${srcs.sort((a, b) => sz(b) - sz(a)).map((x) => `<div class="st-setrow"><span class="grow"><b>${esc(x.name)}</b><small class="muted">${x.stored ? fmtSize(sz(x)) : '保存なし'}・${x.derived === 'audio16k' ? '節約保存' : x.kind === 'audio' ? '音声' : '動画'}・${used[x.id] ? `使用：${esc([...used[x.id]].join('、'))}` : '未使用'}</small></span>
+      ${x.stored && x.kind !== 'audio' ? `<button class="btn sm" data-small="${x.id}">音声だけに</button>` : ''}</div>`).join('') || '<p class="empty">ファイルはありません</p>'}</div>
+    <p class="hint">動画を「音声だけに」すると、映像を捨てて小さな音声にします（字幕・編集はそのまま）。教材ごとの削除は一覧の「選んで削除」から。</p>`;
+  $('#cOrph', el).onclick = async () => { if (!(await confirmDialog({ title: '使われていないファイルを削除', body: `<p>${orphans.map((x) => esc(x.name)).join('<br>')}</p>`, okLabel: '削除' }))) return; for (const x of orphans) await sdb.del('sources', x.id); toast('削除しました'); cleanScreen(el); };
+  $('#cModel', el).onclick = async () => { for (const n of model) await caches.delete(n); toast('削除しました'); cleanScreen(el); };
+  $('#cHist', el).onclick = async () => {
+    const keepOps = new Set(), keepRevs = new Set();
+    for (const st of sets) {
+      (st.undo || []).concat(st.redo || []).forEach((id) => keepOps.add(id));
+      for (const b of await sdb.byIndex('blocks', 'setId', st.id)) keepRevs.add(`${b.id}@${b.rev}`);
+      for (const v of await sdb.byIndex('versions', 'setId', st.id)) Object.values(v.revs).forEach((r) => keepRevs.add(r));
+    }
+    const ops = await sdb.all('oplog'); let dOps = 0, dRevs = 0;
+    for (const o of ops) { if (keepOps.has(o.id)) o.blocks.forEach((e) => { if (e.before) keepRevs.add(e.before); if (e.after) keepRevs.add(e.after); }); }
+    for (const o of ops) if (!keepOps.has(o.id)) { await sdb.del('oplog', o.id); dOps++; }
+    for (const r of await sdb.all('blockRevs')) if (!keepRevs.has(r.id)) { await sdb.del('blockRevs', r.id); dRevs++; }
+    toast(`整理しました（操作 ${dOps}件・過去の状態 ${dRevs}件）`, 3000); cleanScreen(el);
+  };
+  $$('[data-small]', el).forEach((b) => (b.onclick = async () => {
+    const x = await sdb.get('sources', b.dataset.small);
+    if (!(await confirmDialog({ title: '音声だけにする', body: `<p>${esc(x.name)}（${fmtSize(sz(x))}）の映像を捨てて、小さな音声にします。元に戻せません。</p>`, okLabel: '変換', danger: true }))) return;
+    try {
+      toast('変換中…', 8000);
+      if (!x.audio && x.kind !== 'audio') x.audio = await decideTrack(x, x.blob, (t) => toast(t, 4000));
+      const a = await sourceAudio16k(x, x.blob, { say: (t) => toast(t, 4000) });
+      const small = await shrinkAudio(a, x.name, true); if (!small) throw new Error('この端末では変換できませんでした');
+      Object.assign(x, { blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: x.size, size: small.file.size }); delete x.audio; probeCache.delete(x.id);
+      await sdb.put('sources', x); toast('変換しました'); cleanScreen(el);
+    } catch (e) { toast('変換できませんでした：' + (e?.message || e), 4000); }
+  }));
 }
 
 // ================= versions =================

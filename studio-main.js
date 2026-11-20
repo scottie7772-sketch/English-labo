@@ -9,7 +9,7 @@ import { decodeTo16k, openTranscriber, speechPieces, captureTo16k } from './asr.
 import { extractPhrases, extractWords } from './studio-words.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 
-export const STUDIO_VERSION = '0.6.0';
+export const STUDIO_VERSION = '0.6.1';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -84,6 +84,15 @@ async function readDuration(file) {
 async function setsScreen(el) {
   const sets = (await sdb.all('sets')).sort((a, b) => b.updatedAt - a.updatedAt);
   const srcs = await sourcesMap();
+  // オリジナル / カット済み label: from the first and last items that have sound
+  const cutInfo = {};
+  for (const st of sets) {
+    const bl = (await liveBlocks(st)).filter((b) => b.segments.length); if (!bl.length) continue;
+    const f = bl[0].segments[0], l = bl[bl.length - 1].segments.at(-1), src = srcs[f.sourceId];
+    if (src?.trimmed) cutInfo[st.id] = `<span class="tagp">カット済み・元は削除</span>`;
+    else if (src && (f.start > 0.05 || (src.duration && l.end < src.duration - 0.05))) cutInfo[st.id] = `<span class="tagp">カット済み ${fmt(f.start)}–${fmt(l.end)}（元も保存）</span>`;
+    else cutInfo[st.id] = `<span class="tagp">オリジナル</span>`;
+  }
   const est = await navigator.storage?.estimate?.().catch(() => null);
   let editing = false; const chosen = new Set();
   const draw = () => {
@@ -94,7 +103,7 @@ async function setsScreen(el) {
     ${editing ? `<div class="row"><button class="btn sm" id="eAll">すべて選ぶ</button><button class="btn sm" id="eNone">解除</button><button class="btn sm danger grow" id="eDel" ${chosen.size ? '' : 'disabled'}>${chosen.size}セットを削除</button></div>` : ''}
     <div class="card list">${sets.map((s) => {
       const src = srcs[s.sourceId];
-      const info = `<span class="grow"><b>${esc(s.title)}</b><small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${src.stored ? (src.derived === 'audio16k' ? `節約保存（${src.codec === 'wav' ? '非圧縮' : '圧縮'}・${fmtSize(src.blob?.size || 0)}）` : '端末に保存') : '保存しない'}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
+      const info = `<span class="grow"><b>${esc(s.title)}</b> ${cutInfo[s.id] || ''}<small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${src.stored ? (src.derived === 'audio16k' ? `節約保存（${src.codec === 'wav' ? '非圧縮' : '圧縮'}・${fmtSize(src.blob?.size || 0)}）` : '端末に保存') : '保存しない'}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
       return editing ? `<label class="st-setrow"><input type="checkbox" class="st-cb" data-id="${s.id}" ${chosen.has(s.id) ? 'checked' : ''}>${info}</label>` : `<a class="st-setrow" href="#${BASE}set?id=${s.id}">${info}›</a>`;
     }).join('')}</div>` : '<p class="empty">まだ教材セットがありません。「一括登録」から動画・音声と字幕を選んでください。</p>'}
     <p class="hint">このスタジオは単体で動く試作版です（データはこのアプリの中だけに保存）。後で English Labo の中に組み込み、ここで作った教材は「書き出し」→ English Labo で読み込みで移せます。</p>`;
@@ -217,7 +226,8 @@ async function importScreen(el) {
         <label class="chk"><input type="radio" name="vq" value="audio" ${videoQ === 'audio' ? 'checked' : ''}> 節約（おすすめ）：音声だけ・低音質（動画は映像を捨てる）</label>
         <label class="chk"><input type="radio" name="vq" value="orig" ${videoQ === 'orig' ? 'checked' : ''}> 元のまま（映像も見る教材・高音質）</label>` : ''}
         ${needBytes ? `<small class="muted">必要な容量：約${fmtSize(storeMode === 'store' && videoQ === 'audio' ? inc.reduce((a, x) => a + Math.min(x.media.file.size, (x.media.duration || 0) * (typeof AudioEncoder !== 'undefined' ? 4000 : 32000)), 0) : needBytes)}</small>` : ''}</div>
-      <label class="chk"><input type="checkbox" id="atr" ${autoTrimOn ? 'checked' : ''}> 前後の画面収録音・無音を自動でカット（元のファイルは変えません）</label>
+      <label class="chk"><input type="checkbox" id="atr" ${autoTrimOn ? 'checked' : ''}> 前後の画面収録音・無音を自動でカット</label>
+      ${autoTrimOn ? `<label class="chk"><input type="checkbox" id="drc" ${dropCutSetting() ? 'checked' : ''}> カットした部分（元の前後）は保存しない（容量節約・元に戻せません）</label>` : ''}
       <button class="btn primary" id="go" ${over || !sets.some((s) => s.include) ? 'disabled' : ''}>登録する</button>
       <div id="prog"></div>`;
     $$('[data-inc]', el).forEach((c) => (c.onchange = () => { sets[+c.dataset.inc].include = c.checked; draw(); }));
@@ -232,7 +242,8 @@ async function importScreen(el) {
     }));
     $$('input[name=sm]', el).forEach((r) => (r.onchange = () => { storeMode = r.value; draw(); }));
     $$('input[name=vq]', el).forEach((r) => (r.onchange = () => { videoQ = r.value; draw(); }));
-    $('#atr', el).onchange = (e) => { autoTrimOn = e.target.checked; };
+    $('#atr', el).onchange = (e) => { autoTrimOn = e.target.checked; draw(); };
+    $('#drc', el)?.addEventListener('change', (e) => setDropCut(e.target.checked));
     $('#gm', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { groupMode = v; draw(); } };
     $('#incAll', el).onclick = () => { sets.forEach((s) => (s.include = true)); draw(); };
     $('#incNone', el).onclick = () => { sets.forEach((s) => (s.include = false)); draw(); };
@@ -287,6 +298,45 @@ async function findEdges(src, blob, D) {
   } else { const { audio, duration } = await decodeTo16k(blob); D = duration; a0 = audio.subarray(0, W * 16000); a1 = audio.subarray(Math.max(0, audio.length - W * 16000)); }
   const st = edgeCut(frameRms(a0)), en = edgeCut(frameRms(a1).reverse());
   return { start: +st.cut.toFixed(2), end: +(D - en.cut).toFixed(2), whyStart: st.why, whyEnd: en.why, duration: D };
+}
+const dropCutSetting = () => { try { return localStorage.getItem('st-dropCut') === '1'; } catch { return false; } };
+const setDropCut = (v) => { try { localStorage.setItem('st-dropCut', v ? '1' : '0'); } catch {} };
+// Remove the parts outside [a, b] from the saved file itself (cannot be undone). Sound only: a video is turned into its sound.
+// All items of every set that use this file are shifted so they still point at the same sound.
+async function hardTrim(srcId, a, b, say = () => {}) {
+  const src = await sdb.get('sources', srcId);
+  if (!src?.stored || !src.blob) throw new Error('端末に保存したファイルだけ削れます');
+  let blob = null, start = a;
+  const info = isContainer(src, src.blob) ? await probe(src.blob).catch(() => null) : null;
+  const at = info ? audioTracks(info) : [];
+  const t = at.find((x) => x.id === src.audio?.trackId) || at[src.audio?.index ?? 0];
+  if (t && canExtract(t) && (src.kind === 'audio' || src.derived === 'audio16k')) {   // sound file: cut without re-encoding
+    say('カット部分を削っています…'); const x = await extractTrack(src.blob, t, a, b); blob = new File([x.blob], src.name.replace(/\.[^.]+$/, '') + '.m4a', { type: 'audio/mp4' }); start = x.start;
+  } else {   // video or other format: keep only the sound of [a, b] (same as the data saver)
+    say('音声だけにして削っています…');
+    const full = await sourceAudio16k(src, src.blob, { say });
+    const part = full.audio.slice(Math.floor(a * 16000), Math.ceil(b * 16000));
+    const small = await shrinkAudio({ audio: part, duration: part.length / 16000 }, src.name, true, say);
+    if (!small) throw new Error('この端末では変換できませんでした');
+    blob = small.file; start = a; Object.assign(src, { kind: 'audio', derived: 'audio16k', codec: small.codec });
+  }
+  const m = await readDuration(blob);
+  Object.assign(src, { blob, mime: blob.type, origSize: src.origSize || src.size, size: blob.size, duration: m.duration || b - start, trimmed: { from: start, to: b, at: Date.now() } });
+  delete src.audio; probeCache.delete(src.id); URL.revokeObjectURL(urlCache.get(src.id) || ''); urlCache.delete(src.id);
+  await sdb.put('sources', src);
+  // shift every set's items that use this file
+  for (const set of await sdb.all('sets')) {
+    const live = await liveBlocks(set); const changed = [];
+    for (const blk of live) {
+      if (!blk.segments.some((g) => g.sourceId === srcId)) continue;
+      const segs = blk.segments.map((g) => g.sourceId !== srcId ? g : { ...g, start: +Math.max(0, g.start - start).toFixed(2), end: +Math.min(src.duration, g.end - start).toFixed(2) }).filter((g) => g.end - g.start > 0.05);
+      changed.push({ ...blk, segments: segs });
+    }
+    if (!changed.length) continue;
+    await commit(set, 'カット部分を削除', { blocks: changed });
+    set.undo = []; set.redo = []; await sdb.put('sets', set);   // the old sound is gone: earlier steps cannot be undone
+  }
+  return src;
 }
 const probeCache = new Map();
 const isContainer = (src, blob) => /mp4|quicktime|m4a|mov/.test(blob?.type || src.mime || '') || /\.(mp4|m4v|mov|m4a)$/i.test(src.name || '');
@@ -452,7 +502,7 @@ async function createSet(group, mode, trimEdges = false, onStep = () => {}) {
     const mkTrack = (sub, lang) => sub && { id: newId('tr_'), setId, lang, fileName: sub.name.split('/').pop(), format: sub.parsed.format, raw: sub.text, offset: 0, cues: sub.parsed.cues };
     const en = mkTrack(s.en, 'en'), ja = mkTrack(s.ja, 'ja');
     if (en) tracks.push(en); if (ja) tracks.push(ja);
-    const seg = (a, b) => (src && a != null ? [{ sourceId: src.id, start: Math.max(0, a), end: Math.min(dur || b, Math.max(b, a + 0.2)) }] : []);
+    const seg = (a, b) => (src && a != null ? [{ sourceId: src.id, start: Math.max(0, a), end: Math.min(src.duration || dur || b, Math.max(b, a + 0.2)) }] : []);
     const part = [];
     if (en) {
       let enCues = en.cues;
@@ -475,6 +525,11 @@ async function createSet(group, mode, trimEdges = false, onStep = () => {}) {
     } else if (src) {   // audio/video without a script: one item for the whole file (text can be added later)
       let a = 0, b = dur || 1, trimNote = '';
       if (trimEdges && dur > 4) { try { onStep(n, group.items.length, '前後の音を調べています…'); const r = await findEdges(src, src.stored ? src.blob : sessionFiles.get(src.id), dur); a = r.start; b = r.end; trimNote = [r.whyStart && `始め ${fmt(a)}`, r.whyEnd && `終わり ${fmt(b)}`].filter(Boolean).join('・'); } catch { /* keep the whole file */ } }
+      const shared = (await sdb.all('sets')).some((x) => x.sourceId === src.id);   // used by another set: do not cut its file
+      if (trimNote && dropCutSetting() && src.stored && !shared) {
+        try { onStep(n, group.items.length, 'カットした部分を削っています…'); const t2 = await hardTrim(src.id, a, b, (t) => onStep(n, group.items.length, t)); const off = t2.trimmed.from; a = Math.max(0, a - off); b = Math.min(t2.duration, b - off); Object.assign(src, t2); }
+        catch (e) { trimNote += `（削除はできませんでした：${e.message}）`; }
+      }
       part.push(newBlock(setId, { segments: seg(a, b), label: src.name.replace(/\.[^.]+$/, ''), sync: dur ? 'auto' : 'estimated', ...(trimNote ? { trimNote } : {}) }));
     }
     blocks.push(...part);
@@ -868,12 +923,27 @@ async function editorScreen(el, params) {
     if (start != null) { if (start >= s0.end - 0.2) return toast('開始が最初の項目の終わりより後になります'); s0.start = +start.toFixed(2); f.sync = 'manual'; f.align = []; }
     if (end != null) { if (end <= s1.start + 0.2) return toast('終了が最後の項目の始まりより前になります'); s1.end = +end.toFixed(2); l.sync = 'manual'; l.align = []; }
     await run(label, { blocks: f === l ? [f] : [f, l] });
+    await maybeDrop();
+  }
+  // after a cut: optionally remove the cut parts from the saved file
+  async function maybeDrop() {
+    const e = edgesOf(); if (!e) return;
+    const sid = e.first.segments[0].sourceId, src = srcs[sid];
+    if (!src?.stored || e.last.segments.at(-1).sourceId !== sid) return;
+    const a = e.first.segments[0].start, b = e.last.segments.at(-1).end;
+    if (a < 0.05 && (!src.duration || b > src.duration - 0.05)) return;
+    const others = (await sdb.all('sets')).filter((x) => x.id !== set.id && x.sourceId === sid).length;
+    if (!dropCutSetting()) return;
+    if (!(await confirmDialog({ title: 'カットした部分を削除しますか？', body: `<p>${fmt(a)} より前と ${fmt(b)} より後を、保存したファイルから削ります（容量が減ります）。</p><p class="hint">元に戻せません。${src.kind !== 'audio' ? '動画は音声だけになります。' : ''}${others ? `このファイルを使うほかの教材（${others}件）からも、その部分はなくなります。` : ''}</p>`, okLabel: '削除する', cancelLabel: '残す', danger: true }))) return;
+    try { await hardTrim(sid, a, b, (t) => toast(t, 3000)); toast('カットした部分を削除しました'); route(); }
+    catch (err) { toast('削除できませんでした：' + (err?.message || err), 4000); }
   }
   async function autoTrim() {
     const e = edgesOf(); if (!e) return toast('音声のある項目がありません');
     const sid = e.first.segments[0].sourceId, src = srcs[sid], blob = src.stored ? src.blob : sessionFiles.get(sid);
     if (!blob) return toast('動画・音声ファイルを選び直してください');
-    if (e.last.segments.at(-1).sourceId !== sid) return toast('複数のファイルにまたがる教材は「前後をカット」で調整してください');
+    if (e.last.segments.at(-1).sourceId !== sid) return toast('この教材は複数のファイルでできているため自動カットできません。「前後をカット（手動）」で調整してください', 4500);
+    if (src.trimmed) return toast('このファイルはすでにカット部分を削除済みです', 3500);
     toast('前後の音を調べています…', 2000);
     try {
       const r = await findEdges(src, blob, src.duration || e.last.segments.at(-1).end);
@@ -893,7 +963,9 @@ async function editorScreen(el, params) {
         <button type="button" class="btn" id="tAuto">自動で見つける（画面収録の音・無音）</button>
         <div class="st-segrow"><b>開始 ${fmt(st)}</b><div class="row"><button type="button" class="btn xs" data-d="s:-0.5">−0.5</button><button type="button" class="btn xs" data-d="s:-0.1">−0.1</button><button type="button" class="btn xs" data-d="s:0.1">＋0.1</button><button type="button" class="btn xs" data-d="s:0.5">＋0.5</button><button type="button" class="btn xs" id="sNow">今の位置</button></div><button type="button" class="btn sm" id="sPlay">▶︎ 開始から3秒聞く</button></div>
         <div class="st-segrow"><b>終了 ${fmt(en)}</b><div class="row"><button type="button" class="btn xs" data-d="e:-0.5">−0.5</button><button type="button" class="btn xs" data-d="e:-0.1">−0.1</button><button type="button" class="btn xs" data-d="e:0.1">＋0.1</button><button type="button" class="btn xs" data-d="e:0.5">＋0.5</button><button type="button" class="btn xs" id="eNow">今の位置</button></div><button type="button" class="btn sm" id="ePlay">▶︎ 終了の3秒前から聞く</button></div>
+        <label class="chk"><input type="checkbox" id="tDrop" ${dropCutSetting() ? 'checked' : ''}> カットした部分は保存しない（元に戻せません）</label>
         <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">保存</button></div></form>`;
+      $('#tDrop', dlg).onchange = (ev) => setDropCut(ev.target.checked);
       $$('[data-d]', dlg).forEach((b) => (b.onclick = () => { const [k, d] = b.dataset.d.split(':'); const maxEnd = srcs[e.last.segments.at(-1).sourceId]?.duration || Infinity; if (k === 's') st = Math.min(en - 0.3, Math.max(0, +(st + +d).toFixed(2))); else en = Math.min(maxEnd, Math.max(st + 0.3, +(en + +d).toFixed(2))); draw(); }));
       $('#sNow', dlg).onclick = () => { st = +vid.currentTime.toFixed(2); draw(); };
       $('#eNow', dlg).onclick = () => { en = +vid.currentTime.toFixed(2); draw(); };

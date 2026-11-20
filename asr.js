@@ -29,8 +29,15 @@ self.onmessage = async (e) => {
   if (!asr) { self.postMessage({ type: 'error', message: String(lastErr?.message || lastErr) }); return; }
   try {
     self.postMessage({ type: 'run' });
-    const out = await asr(audio, { chunk_length_s: 30, stride_length_s: 5, return_timestamps: ts, ...(language && !/\.en$/.test(model) ? { language, task: 'transcribe' } : {}) });
-    self.postMessage({ type: 'done', chunks: out.chunks || [], text: out.text || '' });
+    const opt = { chunk_length_s: 30, stride_length_s: 5, ...(language && !/\.en$/.test(model) ? { language, task: 'transcribe' } : {}) };
+    let out, noTs = false;
+    try { out = await asr(audio, { ...opt, return_timestamps: ts }); }
+    catch (err) {
+      // some models (e.g. distil-small.en) fail while reading time stamps ("token_ids must be a non-empty array"): text only
+      if (!ts || !/token_ids/.test(String(err?.message || err))) throw err;
+      out = await asr(audio, { ...opt, return_timestamps: false }); noTs = true;
+    }
+    self.postMessage({ type: 'done', chunks: noTs ? [] : out.chunks || [], text: out.text || '', noTs });
   } catch (err) { self.postMessage({ type: 'error', message: String(err?.message || err) }); }
 };`;
 
@@ -122,8 +129,10 @@ export function openTranscriber(lang = 'en', onProgress = () => {}, { fast, qual
     } else if (m.type === 'device') onProgress(`モデルの準備ができました（${m.device === 'webgpu' ? 'GPU' : 'CPU'}で処理）`);
     else if (m.type === 'done') {
       // some results come back as plain text without time stamps: keep the text (one line for the piece) instead of dropping it
-      const chunks = m.chunks?.length ? m.chunks : (m.text || '').trim() ? [{ text: m.text, timestamp: [0, null] }] : [];
-      pending?.resolve(Object.assign(chunksToCues(chunks, pending.duration), { raw: (m.text || chunks.map((c) => c.text).join(' ')).trim(), nChunks: (m.chunks || []).length }));
+      const noTime = !m.chunks?.length;
+      const chunks = !noTime ? m.chunks : (m.text || '').trim() ? [{ text: m.text, timestamp: [0, pending?.duration ?? null] }] : [];
+      const cues = chunksToCues(chunks, pending?.duration); if (noTime) cues.forEach((c) => (c.est = true));
+      pending?.resolve(Object.assign(cues, { raw: (m.text || chunks.map((c) => c.text).join(' ')).trim(), nChunks: (m.chunks || []).length, noTime, tsFailed: !!m.noTs }));
       pending = null;
     }
     else if (m.type === 'error') { pending?.reject(new Error(m.message)); pending = null; }
@@ -218,9 +227,16 @@ export function captureTo16k(blob, { rate = 2, onProgress = () => {}, trackIndex
 // Retry: (1) ~8 s sub-pieces cut at quiet points, (2) the whole piece without time stamps (time spread by length).
 export async function recognisePiece(tr, audio, ps, pe, { onRetry = () => {} } = {}) {
   const cut = (a, b) => audio.slice(Math.floor(a * 16000), Math.floor(b * 16000));
-  const abs = (cues, a, b) => cues.map((c) => ({ start: +(a + c.start).toFixed(2), end: +Math.min(b, a + c.end).toFixed(2), text: c.text })).filter((c) => c.end - c.start > 0.05);
+  const abs = (cues, a, b) => cues.map((c) => ({ start: +(a + c.start).toFixed(2), end: +Math.min(b, a + c.end).toFixed(2), text: c.text, ...(c.est ? { est: true } : {}) })).filter((c) => c.end - c.start > 0.05);
+  // this model gives no time stamps: recognise ~8 s parts so each line's time is close
+  if (tr.noTime && pe - ps > 10) {
+    const out = [], raw = [];
+    for (const [a, b] of pieceRanges(audio, ps, pe, 8)) { const c = await tr.run(cut(a, b), { timestamps: false }); raw.push(c.raw || ''); out.push(...abs(c, a, b)); }
+    return Object.assign(out, { raw: raw.join(' '), how: '時刻なし・短く区切って（時刻は推定）' });
+  }
   let cues = await tr.run(cut(ps, pe)); const raw = [cues.raw || ''];
-  if (cues.length) return Object.assign(abs(cues, ps, pe), { raw: raw.join(' '), how: '通常' });
+  if (cues.tsFailed && cues.length && pe - ps > 10) { tr.noTime = true; return recognisePiece(tr, audio, ps, pe, { onRetry }); }
+  if (cues.length) return Object.assign(abs(cues, ps, pe), { raw: raw.join(' '), how: cues.noTime ? '時刻なし（時刻は推定）' : '通常' });
   if (pe - ps > 10) {
     onRetry('短く区切ってやり直しています…');
     const out = [];

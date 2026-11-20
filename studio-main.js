@@ -7,10 +7,11 @@ import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
 import { decodeTo16k, openTranscriber, speechPieces, captureTo16k, QUALITY, recognisePiece } from './asr.js';
 import { extractPhrases, extractWords } from './studio-words.js';
+import { findCandidates, applySpans } from './studio-names.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.7.3';
+export const STUDIO_VERSION = '0.8.0';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -548,6 +549,7 @@ async function editorScreen(el, params) {
   el.innerHTML = `${head(set.title, 'sets', `<button class="icon-btn" id="undoB" aria-label="元に戻す">${icon('undo')}</button><button class="icon-btn" id="redoB" aria-label="やり直す">${icon('redo')}</button><button class="icon-btn" id="moreB" aria-label="メニュー">${icon('more')}</button>`)}
     <div id="relink"></div>${(() => { const x = srcs[set.sourceId]; return x?.audioError ? `<div class="notice warn small">取り込み時の音声処理で失敗したため、元のまま保存しています：${esc(x.audioError)}</div>` : ''; })()}
     <div class="st-player"><div class="st-vwrap"><video id="vid" playsinline webkit-playsinline preload="metadata"></video></div>
+      <div class="row st-seekrow"><input type="range" id="seek" class="st-seek" min="0" max="1" step="0.05" value="0" aria-label="再生位置"><span class="small muted" id="tdur"></span></div>
       <div class="st-sub" id="sub"></div>
       <div class="row st-ctl"><button class="btn sm" id="back3">⟲3</button><button class="btn sm primary" id="pp">${icon('play')}</button><button class="btn sm" id="fwd3">3⟳</button><span class="small muted" id="tnow">0:00.0</span><span class="grow"></span><button class="btn sm" id="selB">選択</button></div></div>
     <div id="info" class="small muted"></div>
@@ -560,7 +562,7 @@ async function editorScreen(el, params) {
 
   // ---------- media ----------
   // iOS only lets a tap start sound if play() is called right away (no waiting before it), so everything here is synchronous
-  let seekTo = null;
+  let seekTo = null, seeking = false;
   vid.addEventListener('loadedmetadata', () => { if (seekTo != null) { vid.currentTime = seekTo; seekTo = null; } });
   function attach(sourceId, at = null) {
     const s = srcs[sourceId]; const u = mediaURL(s);
@@ -619,6 +621,8 @@ async function editorScreen(el, params) {
       }
     }
     $('#tnow', el).textContent = fmt(vid.currentTime || 0);
+    const sk = $('#seek', el);
+    if (sk && !seeking) { const D = isFinite(vid.duration) ? vid.duration : 0; if (D && +sk.max !== D) { sk.max = D; $('#tdur', el).textContent = fmt(D); } sk.value = vid.currentTime || 0; }
     drawSub();
     raf = requestAnimationFrame(tick);
   };
@@ -684,6 +688,7 @@ async function editorScreen(el, params) {
         <button class="btn sm" data-a="dup" ${n < 1 ? 'disabled' : ''}>複製</button>
         <button class="btn sm" data-a="shift" ${n < 1 ? 'disabled' : ''}>時間±</button>
         <button class="btn sm" data-a="replace">置換</button>
+        <button class="btn sm" data-a="redo" ${n < 1 ? 'disabled' : ''}>起こし直す</button>
         <button class="btn sm danger" data-a="del" ${n < 1 ? 'disabled' : ''}>削除</button>
         <button class="btn sm" data-a="done">完了</button></div>`;
     $('#rAdd', bar).onclick = () => { rangeMode = rangeMode === 'add' ? null : 'add'; anchor = null; drawBar(); };
@@ -762,6 +767,7 @@ async function editorScreen(el, params) {
       const v = prompt('ずらす秒数（例：0.5 / -1.2）', '0.5'); const d = parseFloat(v); if (!d) return;
       return run(`時間を${d > 0 ? '+' : ''}${d}秒ずらす`, { blocks: list0.filter((b) => b.segments.length).map((b) => ops.shiftTime(b, d)) });
     }
+    if (a === 'redo') return redoAsr(list0);
     if (a === 'replace') {
       const from = prompt(`置き換える文字（${sel.size ? '選択中の項目' : 'すべての項目'}）`); if (!from) return;
       const to = prompt('置き換え後の文字', '') ?? ''; const target = sel.size ? list0 : blocks;
@@ -823,6 +829,119 @@ async function editorScreen(el, params) {
       await run('編集', { blocks: [work] });
     };
     dlg.showModal();
+  }
+
+  // ---------- proper nouns: list probable mis-hearings, the user confirms each one (with the sound), then one undoable replace ----------
+  async function fixNames() {
+    const dlg = $('#dialog'); await new Promise((r) => setTimeout(r, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
+    const names = set.names || [];
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>固有名詞をまとめて直す</h3>
+      <p class="small">正しい表記を入れると、聞き違いと思われる箇所を探します。<b>自動では置き換えません</b>。一覧で確かめてから反映します。</p>
+      ${names.length ? `<div class="row wrap">${names.map((n, i) => `<button type="button" class="btn xs" data-nm="${i}">${esc(n.name)}</button>`).join('')}</div>` : ''}
+      <label class="field"><span>正しい表記</span><input id="nmName" autocomplete="off" autocapitalize="words" placeholder="例：Tahl"></label>
+      <label class="field"><span>聞き違いの例（任意・カンマ区切り）</span><input id="nmVar" autocomplete="off" autocapitalize="off" placeholder="例：Tal, Tall Lee"></label>
+      <p class="hint">似た綴り・似た音の語も候補に出します。名前らしい語（大文字で始まる・普通の単語でない）は最初からチェックが入り、tall のような普通の単語は外れています。</p>
+      <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">探す</button></div></form>`;
+    $$('[data-nm]', dlg).forEach((x) => (x.onclick = () => { const n = names[+x.dataset.nm]; $('#nmName', dlg).value = n.name; $('#nmVar', dlg).value = (n.variants || []).join(', '); }));
+    dlg.returnValue = ''; dlg.showModal();
+    await new Promise((q) => (dlg.onclose = q));
+    if (dlg.returnValue !== 'ok') return;
+    const name = $('#nmName', dlg).value.trim(); const variants = $('#nmVar', dlg).value.split(/[,、，]/).map((x) => x.trim()).filter(Boolean);
+    if (!name) return toast('正しい表記を入れてください');
+    const cands = findCandidates(blocks.map((b) => ({ id: b.id, text: b.text })), name, variants);
+    const saveName = async (extra = []) => { const cur = (set.names || []).filter((n) => n.name !== name); const old = (set.names || []).find((n) => n.name === name); set.names = [{ name, variants: [...new Set([...(old?.variants || []), ...variants, ...extra])] }, ...cur].slice(0, 30); await sdb.put('sets', set); };
+    if (!cands.length) { await saveName(); return toast('候補は見つかりませんでした（聞き違いの例を足すと探せます）', 3500); }
+    await new Promise((r) => setTimeout(r, 60));
+    const hl = (c) => { const t = byId[c.id].text; const a = Math.max(0, c.s - 40), z = Math.min(t.length, c.e + 40); return `${a ? '…' : ''}${esc(t.slice(a, c.s))}<mark>${esc(t.slice(c.s, c.e))}</mark>${esc(t.slice(c.e, z))}${z < t.length ? '…' : ''}`; };
+    dlg.innerHTML = `<form method="dialog" class="dlg stack st-cmp"><h3>「${esc(name)}」に置き換える候補</h3>
+      <p class="small muted">${cands.length}箇所。▶︎で聞いて確かめ、置き換える箇所にチェックを入れてください。</p>
+      <div class="row"><button type="button" class="btn xs" id="nmAll">すべて選ぶ</button><button type="button" class="btn xs" id="nmNone">すべて外す</button></div>
+      ${cands.map((c, i) => `<div class="row st-nmrow"><input type="checkbox" data-ci="${i}" ${c.checked ? 'checked' : ''}><button type="button" class="btn xs" data-pl="${i}">▶︎</button><span class="small grow">${hl(c)}${c.kind === 'variant' ? ' <span class="tagp">登録した例</span>' : ''}</span></div>`).join('')}
+      <div class="row end"><button class="btn ghost" value="cancel">やめる</button><button class="btn primary" value="ok">チェックした箇所を置き換え</button></div></form>`;
+    $$('[data-pl]', dlg).forEach((x) => (x.onclick = () => playBlock(byId[cands[+x.dataset.pl].id])));
+    $('#nmAll', dlg).onclick = () => $$('[data-ci]', dlg).forEach((x) => (x.checked = true));
+    $('#nmNone', dlg).onclick = () => $$('[data-ci]', dlg).forEach((x) => (x.checked = false));
+    dlg.returnValue = ''; dlg.showModal();
+    await new Promise((q) => (dlg.onclose = q)); vid.pause(); playing = null;
+    if (dlg.returnValue !== 'ok') return;
+    const chosen = cands.filter((c, i) => $(`[data-ci="${i}"]`, dlg)?.checked);
+    if (!chosen.length) { await saveName(); return toast('置き換えませんでした'); }
+    const byB = new Map(); chosen.forEach((c) => { if (!byB.has(c.id)) byB.set(c.id, []); byB.get(c.id).push(c); });
+    const ch = [...byB].map(([id, cs]) => { const b = byId[id]; return ops.editText(b, applySpans(b.text, cs, name), b.ja || ''); });
+    await saveName(chosen.map((c) => c.word));   // remembered as wrong spellings for next time
+    await run(`${chosen.length}箇所を「${name}」に置換`, { blocks: ch });
+  }
+
+  // ---------- re-transcribe chosen lines (e.g. with a more accurate model), then compare old / new line by line ----------
+  async function redoAsr(list0) {
+    const targets = list0.filter((b) => b.segments.length);
+    if (!targets.length) return toast('音声のある行を選んでください');
+    const ids = [...new Set(targets.flatMap((b) => b.segments.map((g) => g.sourceId)))];
+    if (ids.some((id) => !(srcs[id]?.stored ? srcs[id].blob : sessionFiles.get(id)))) return toast('動画・音声ファイルを選び直してから実行してください', 4000);
+    const total = targets.reduce((a, b) => a + blockDur(b), 0);
+    const def = localStorage.getItem('st-asrq-redo') || 'high';
+    if (!(await confirmDialog({ title: `${targets.length}行を起こし直す`, body: `<p>選んだ行（合計 ${fmtMin(total)}）の音声だけを、もう一度文字にします。結果は今の文と並べて表示し、行ごとに選んでから反映します。</p>
+      ${total > 180 ? '<p class="warn-text small">行が多いと時間がかかります。気になる行だけを選ぶのがおすすめです。</p>' : ''}
+      <div class="stack">${Object.entries(QUALITY).map(([k, t]) => `<label class="chk"><input type="radio" name="rdq" value="${k}" ${def === k ? 'checked' : ''}> ${t}${k === 'best' ? '（試験的）' : ''}</label>`).join('')}</div>
+      <p class="hint">初めて使う精度は、最初にモデルをダウンロードします（無料・Wi-Fi推奨）。</p>`, okLabel: '始める' }))) return;
+    const quality = $('#dialog input[name=rdq]:checked')?.value || def;
+    try { localStorage.setItem('st-asrq-redo', quality); } catch {}
+    const dlg = $('#dialog'); await new Promise((r) => setTimeout(r, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
+    let cancelled = false, tr = null;
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>起こし直し中</h3><p class="small" id="rdMsg">準備しています…</p><div id="rdCap"></div><button class="btn ghost" value="cancel">中止</button></form>`;
+    dlg.returnValue = ''; dlg.onclose = () => { cancelled = true; tr?.close(); }; dlg.showModal();
+    const msg = (t) => { const m = $('#rdMsg', dlg); if (m) m.textContent = t; };
+    const lock = await navigator.wakeLock?.request?.('screen').catch(() => null);
+    running(`起こし直し（${set.title}）`); crumb(`起こし直し ${targets.length}行・精度：${quality}`);
+    const results = [];
+    try {
+      tr = openTranscriber('en', msg, { quality });
+      const audioOf = new Map();
+      for (let k = 0; k < targets.length && !cancelled; k++) {
+        const b = targets[k]; const parts = [];
+        for (const g of b.segments) {
+          if (cancelled) break;
+          let a16 = audioOf.get(g.sourceId);
+          if (!a16) {
+            const src = srcs[g.sourceId], blob = src.stored ? src.blob : sessionFiles.get(g.sourceId);
+            msg(`${src.name}：音声を取り出しています…`);
+            if (!src.audio && isContainer(src, blob) && src.derived !== 'audio16k') { src.audio = await decideTrack(src, blob, msg); await sdb.put('sources', src); }
+            a16 = highPass((await sourceAudio16k(src, blob, { box: $('#rdCap', dlg), say: msg })).audio); audioOf.set(g.sourceId, a16);
+          }
+          const D = a16.length / 16000, a = Math.max(0, g.start - 0.25), z = Math.min(D, g.end + 0.25);
+          const pieces = z - a > 28 ? speechPieces(a16, a, z, { len: 25 }) : [[a, z]];
+          for (const [ps, pe] of pieces) {
+            if (cancelled) break;
+            msg(`${k + 1} / ${targets.length} 行目を文字にしています…`);
+            const cues = await recognisePiece(tr, a16, ps, pe, { onRetry: (m) => { msg(`${k + 1} / ${targets.length} 行目：${m}`); crumb(m); } });
+            crumb(`起こし直し結果（${cues.how}）：${(cues.raw || '').slice(0, 80) || '（空）'}`);
+            parts.push(cues.map((c) => c.text).join(' '));
+          }
+        }
+        results.push({ b, neu: parts.join(' ').replace(/\s+/g, ' ').trim() });
+      }
+    } catch (e) { logErr('起こし直し：' + (e?.message || e)); }
+    finally { tr?.close(); lock?.release?.(); running(null); }
+    if (dlg.open) { dlg.onclose = null; dlg.close(); }
+    if (!results.length) return;
+    await new Promise((r) => setTimeout(r, 60));
+    // compare: choose old / new per line (new text is editable)
+    dlg.innerHTML = `<form method="dialog" class="dlg stack st-cmp"><h3>結果を比べる</h3><p class="small muted">${cancelled ? '途中で中止しました。終わった行だけ表示しています。' : ''}行ごとに使う方を選びます。新しい文は直せます。</p>
+      ${results.map((r, i) => { const same = r.neu === r.b.text, empty = !r.neu; return `<div class="card stack st-cmprow">
+        <div class="row"><button type="button" class="btn xs" data-pl="${i}">▶︎</button><small class="muted grow">${fmt(r.b.segments[0].start)}–${fmt(r.b.segments.at(-1).end)}${same ? '・同じ結果' : ''}</small></div>
+        <label class="chk"><input type="radio" name="c${i}" value="old" ${same || empty ? 'checked' : ''}> 今：${esc(r.b.text || '（なし）')}</label>
+        <label class="chk"><input type="radio" name="c${i}" value="new" ${same || empty ? '' : 'checked'} ${empty ? 'disabled' : ''}> 新：</label>
+        <textarea rows="2" data-nt="${i}" ${empty ? 'disabled placeholder="（文字にできませんでした）"' : ''}>${esc(r.neu)}</textarea></div>`; }).join('')}
+      <div class="row end"><button class="btn ghost" value="cancel">反映しない</button><button class="btn primary" value="ok">反映</button></div></form>`;
+    $$('[data-pl]', dlg).forEach((x) => (x.onclick = () => playBlock(results[+x.dataset.pl].b)));
+    $$('[data-nt]', dlg).forEach((x) => (x.oninput = () => { const r = $(`input[name=c${x.dataset.nt}][value=new]`, dlg); if (r) r.checked = true; }));
+    dlg.returnValue = ''; dlg.showModal();
+    await new Promise((q) => (dlg.onclose = q)); vid.pause(); playing = null;
+    if (dlg.returnValue !== 'ok') return;
+    const ch = results.map((r, i) => ({ r, use: $(`input[name=c${i}]:checked`, dlg)?.value, t: ($(`[data-nt="${i}"]`, dlg)?.value || '').trim() }))
+      .filter((x) => x.use === 'new' && x.t && x.t !== x.r.b.text).map((x) => ({ ...ops.editText(byId[x.r.b.id] || x.r.b, x.t, (byId[x.r.b.id] || x.r.b).ja || ''), asr: true }));
+    if (!ch.length) return toast('変更はありません');
+    await run(`${ch.length}行を起こし直し`, { blocks: ch });
   }
 
   // ---------- transcription (Whisper in the browser; audio never leaves the device) ----------
@@ -1044,10 +1163,17 @@ async function editorScreen(el, params) {
     if (!vid.dataset.src && set.sourceId) attach(set.sourceId); vid.play().catch(() => {});
   };
   vid.onplay = () => ($('#pp', el).textContent = icon('pause')); vid.onpause = () => ($('#pp', el).textContent = icon('play'));
-  const jump = (d) => {
-    const t = Math.max(0, vid.currentTime + d); vid.currentTime = t;
-    if (playing?.cont) { const sid = vid.dataset.src; const b = blocks.find((x) => x.segments.some((g) => g.sourceId === sid && t >= g.start && t < g.end)); if (b) { const i = b.segments.findIndex((g) => g.sourceId === sid && t >= g.start && t < g.end); playing = { b, i, loop: false, cont: true }; curBlock = b; } }
+  // after a seek: follow from the line at the new position (or play freely if there is none)
+  const syncAt = (t) => {
+    if (!playing) return;
+    const sid = vid.dataset.src; const b = blocks.find((x) => x.segments.some((g) => g.sourceId === sid && t >= g.start && t < g.end));
+    if (b) { const i = b.segments.findIndex((g) => g.sourceId === sid && t >= g.start && t < g.end); playing = { b, i, loop: false, cont: true }; curBlock = b; } else playing = null;
   };
+  const jump = (d) => { const t = Math.max(0, Math.min(vid.duration || Infinity, vid.currentTime + d)); vid.currentTime = t; syncAt(t); };
+  const sk = $('#seek', el);
+  sk.addEventListener('input', () => { seeking = true; vid.currentTime = +sk.value; $('#tnow', el).textContent = fmt(+sk.value); });
+  sk.addEventListener('change', () => { seeking = false; vid.currentTime = +sk.value; syncAt(+sk.value); });
+  sk.addEventListener('touchend', () => setTimeout(() => { if (seeking) { seeking = false; syncAt(+sk.value); } }, 50));
   $('#back3', el).onclick = () => jump(-3);
   $('#fwd3', el).onclick = () => jump(3);
   $('#moreB', el).onclick = async () => {
@@ -1058,6 +1184,7 @@ async function editorScreen(el, params) {
       <button class="btn" value="autotrim">前後の画面収録音を自動カット</button>
       <button class="btn" value="trim">前後をカット（手動で調整）</button>
       <button class="btn" value="asr">文字起こし（端末内・試験的）</button>
+      <button class="btn" value="names">固有名詞をまとめて直す</button>
       <button class="btn" value="words">単語リストを作る</button>
       <button class="btn" value="txt">テキストを書き出す</button>
       ${Object.values(srcs).some((x) => x.audio?.count > 1 && x.derived !== 'audio16k') ? '<button class="btn" value="track">使う音声トラックを選ぶ</button>' : ''}
@@ -1073,6 +1200,7 @@ async function editorScreen(el, params) {
       if (v === 'exp') exportSet(set);
       if (v === 'asr') runAsr();
       if (v === 'words') nav(`words?id=${set.id}`);
+      if (v === 'names') fixNames();
       if (v === 'txt') exportText();
       if (v === 'toaudio') toAudio();
       if (v === 'track') chooseTrackAgain();

@@ -87,3 +87,56 @@ export async function transcribeAudio(audio, { lang = 'en', quality = 'acc', fro
   if (!all.length && !isCancelled()) throw stage('文字起こし', `文字にできる英語がありませんでした（認識された内容：${raw.join(' ').trim().slice(0, 80) || 'なし'}）`);
   return all;
 }
+
+// ---- start / end trimming (screen-recording sounds, silence); shared by the studio and the video lab ----
+export const frameRms = (a) => { const F = 320, r = []; for (let i = 0; i + F <= a.length; i += F) { let x = 0; for (let k = 0; k < F; k++) x += a[i + k] * a[i + k]; r.push(Math.sqrt(x / F)); } return r; };
+export const frameZcr = (a) => { const F = 320, r = []; for (let i = 0; i + F <= a.length; i += F) { let z = 0; for (let k = i + 1; k < i + F; k++) if ((a[k] >= 0) !== (a[k - 1] >= 0)) z++; r.push(z / F); } return r; };
+// rms / zcr: 20 ms frames from the edge inward. Returns seconds to cut from that edge.
+export function edgeCut(rms, zcr = []) {
+  if (rms.length < 10) return { cut: 0, why: '' };
+  const s = rms.slice().sort((a, b) => a - b), floor = s[Math.floor(s.length * 0.1)];
+  const p90 = s[Math.floor(s.length * 0.9)];
+  const th = Math.max(Math.min(floor * 4, p90 * 0.3), p90 * 0.12, 0.004);   // (background music under speech must not count as silence)
+  // 1) an electronic tone (start/stop sound): steady, high-pitched for 80–900 ms within the first 3 s — even when speech follows at once
+  // (a fading tone counts: its loudness drops fast but its pitch stays the same; measured on a real iPhone recording: ~1.2 kHz, 0.45 s)
+  const lim = Math.min(rms.length, 150), thTone = Math.max(floor * 3, 0.0004);
+  for (let i = 3; i < lim; i++) {   // the first 60 ms often hold a click: skip
+    let j = i; while (j < rms.length && rms[j] >= thTone && zcr[j] >= 0.09 && zcr[j] <= 0.6 && (j === i || Math.abs(zcr[j] - zcr[j - 1]) < 0.025)) j++;
+    const len = (j - i) * 0.02;
+    if (len >= 0.08 && len <= 0.9) {   // cut just after the tone (+ margin); if silence follows, up to just before the speech
+      let k = j; while (k < rms.length && k < j + 75 && rms[k] < th) k++;
+      return { cut: Math.max(j * 0.02 + 0.12, k > j ? k * 0.02 - 0.15 : 0), why: `電子音（${len.toFixed(1)}秒）` };
+    }
+    if (j > i) i = j;
+  }
+  // 2) a short sound followed by silence
+  let i = 3; while (i < rms.length && rms[i] < th) i++;
+  const lead = i;
+  let j = i; while (j < rms.length && rms[j] >= th) j++;
+  let k = j; while (k < rms.length && rms[k] < th) k++;
+  const burst = (j - i) * 0.02, gap = (k - j) * 0.02;
+  if (i < rms.length && burst > 0.04 && burst <= 0.9 && gap >= 0.25 && k < rms.length) return { cut: Math.max(0, k * 0.02 - 0.15), why: `短い音（${burst.toFixed(1)}秒）とその後の無音` };
+  // 3) silence
+  if (lead * 0.02 >= 0.3) return { cut: Math.max(0, lead * 0.02 - 0.15), why: '無音' };
+  return { cut: 0, why: '' };
+}
+// when nothing is found in a screen recording: cut a fixed length (the usual start/stop sound), set by the user
+export const isScreenRec = (name) => /screen\s*recording|画面収録|RPReplay/i.test(name || '');
+// the iPhone screen-recording sound lasts about 0.9 s (measured by the user)
+export const defaultCut = () => { try { return +(localStorage.getItem('st-defCut2') ?? 0.9); } catch { return 0.9; } };
+
+// seconds [start, end] to keep, looking at the first / last few seconds of the chosen sound track
+export async function findEdgesBlob(blob, { name = '', trackIndex = null, duration = 0 } = {}) {
+  let a0, a1, D = duration;
+  const info = isContainer(blob, name) ? await probe(blob).catch(() => null) : null;
+  const at = info ? audioTracks(info) : [];
+  const t = at[trackIndex ?? 0];
+  if (t && canExtract(t)) {
+    D = D || t.duration; const W = Math.min(6, D / 3);
+    a0 = (await decodeTo16k((await extractTrack(blob, t, 0, W)).blob)).audio;
+    const x = await extractTrack(blob, t, Math.max(0, D - W), D); const d1 = await decodeTo16k(x.blob); a1 = d1.audio; D = x.start + d1.duration;
+  } else { const { audio, duration: d } = await decodeTo16k(blob); D = d; const W = Math.min(6, D / 3) * 16000; a0 = audio.subarray(0, W); a1 = audio.subarray(Math.max(0, audio.length - W)); }
+  let st = edgeCut(frameRms(a0), frameZcr(a0)); const en = edgeCut(frameRms(a1).reverse(), frameZcr(a1).reverse());
+  const dc = defaultCut(); if (isScreenRec(name) && dc > 0 && st.cut < dc) st = { cut: dc, why: `画面収録の音 ${dc}秒` };
+  return { start: +st.cut.toFixed(2), end: +(D - en.cut).toFixed(2), whyStart: st.why, whyEnd: en.why, duration: D };
+}

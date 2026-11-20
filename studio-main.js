@@ -12,7 +12,7 @@ import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.10.1';
+export const STUDIO_VERSION = '0.11.0';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -1612,20 +1612,39 @@ async function exportSet(set) {
   const blocks = await liveBlocks(set), srcs = await sourcesMap(), tracks = await sdb.byIndex('tracks', 'setId', set.id);
   const media = [...new Set(blocks.flatMap((b) => b.segments.map((s) => s.sourceId)))].map((id) => srcs[id]).filter(Boolean);
   const canInclude = media.every((m) => m.stored || sessionFiles.has(m.id));
-  const withMedia = canInclude && (await confirmDialog({ title: '書き出し', body: `<p>動画・音声も含めますか？（${fmtSize(media.reduce((a, m) => a + m.size, 0))}）</p><p class="hint">含めない場合は小さなファイルになり、読み込む側で同じ動画を選び直します。</p>`, okLabel: '含める', cancelLabel: '含めない' }));
+  // English Labo already has the sound that was sent before: a later export can carry only the new sound (+ all subtitles)
+  const sent = new Set((set.exported?.media || []).filter((x) => media.some((m) => m.id === x.id && m.size === x.size)).map((x) => x.id));
+  const newOnes = media.filter((m) => !sent.has(m.id));
+  const nLines = blocks.filter((b) => b.segments.length && (b.text || b.ja)).length, nWait = blocks.filter((b) => !b.segments.length && b.text).length;
+  const dlg = document.querySelector('#dialog');
+  dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>英語ラボへ書き出す</h3>
+    <p class="small">音声の付いた ${nLines}行が教材になります。${nWait ? `（音声のないスクリプト ${nWait}行は、音声を足して照合したあとの書き出しで入ります）` : ''}</p>
+    <div class="stack">
+      ${sent.size ? `<label class="chk"><input type="radio" name="em" value="new" checked> 字幕の更新（${newOnes.length ? `新しい音声 ${newOnes.length}件・${fmtSize(newOnes.reduce((a, m) => a + m.size, 0))}だけ含める` : '音声は含めない・とても小さい'}）</label>` : ''}
+      <label class="chk"><input type="radio" name="em" value="all" ${sent.size ? '' : 'checked'} ${canInclude ? '' : 'disabled'}> 音声もすべて含める（${fmtSize(media.reduce((a, m) => a + m.size, 0))}）</label>
+      <label class="chk"><input type="radio" name="em" value="none"> 音声を含めない（字幕だけ）</label></div>
+    <p class="hint">英語ラボで同じ教材を読み込むと、字幕だけ入れ替わります（学習記録は残ります）。前に送った音声は送り直さなくて大丈夫です。</p>
+    <div class="row end"><button class="btn ghost" value="cancel">やめる</button><button class="btn primary" value="ok">書き出す</button></div></form>`;
+  dlg.returnValue = ''; dlg.showModal(); await new Promise((q) => (dlg.onclose = q));
+  if (dlg.returnValue !== 'ok') return;
+  const em = dlg.querySelector('input[name=em]:checked')?.value || 'all';
+  const inc = new Set(em === 'all' ? media.map((m) => m.id) : em === 'new' ? newOnes.filter((m) => m.stored || sessionFiles.has(m.id)).map((m) => m.id) : []);
+  const withMedia = inc.size > 0;
   const manifest = { format: 'elpack', formatVersion: 2, packId: newId('pk_'), materialId: set.id, materialVersion: (await sdb.byIndex('versions', 'setId', set.id)).length, title: set.title, lang: 'en', source: { app: 'Englabo Studio', appVersion: STUDIO_VERSION }, scope: 'collection', createdAt: new Date().toISOString(),
     contents: { audio: withMedia, text: true, translation: true, timestamps: true, vocab: false } };
   const material = { set: { id: set.id, title: set.title, display: set.display }, units: [{ id: set.id, title: set.title, items: blocks.map((b) => b.id) }],
     items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, holes: b.holes, align: b.align, cueRefs: b.cueRefs, lineage: b.lineage, sync: b.sync, jaStatus: b.jaStatus, label: b.label, asr: b.asr })),
-    media: media.map((m) => ({ id: m.id, kind: m.kind, name: m.name, size: m.size, mime: m.mime, duration: m.duration, head: m.head, tail: m.tail, included: withMedia, path: withMedia ? `media/${m.id}${(m.name.match(/\.\w+$/) || [''])[0]}` : null })),
+    media: media.map((m) => ({ id: m.id, kind: m.kind, name: m.name, size: m.size, mime: m.mime, duration: m.duration, head: m.head, tail: m.tail, included: inc.has(m.id), path: inc.has(m.id) ? `media/${m.id}${(m.name.match(/\.\w+$/) || [''])[0]}` : null })),
     tracks: tracks.map((t) => ({ id: t.id, lang: t.lang, fileName: t.fileName, format: t.format, path: `subtitles/${t.id}-${t.fileName}` })) };
   const files = [{ name: 'manifest.json', data: JSON.stringify(manifest, null, 1) }, { name: 'material.json', data: JSON.stringify(material, null, 1) }, ...tracks.map((t) => ({ name: `subtitles/${t.id}-${t.fileName}`, data: t.raw }))];
-  if (withMedia) for (const m of media) files.push({ name: material.media.find((x) => x.id === m.id).path, data: m.stored ? m.blob : sessionFiles.get(m.id) });
+  for (const m of media) if (inc.has(m.id)) files.push({ name: material.media.find((x) => x.id === m.id).path, data: m.stored ? m.blob : sessionFiles.get(m.id) });
   toast('書き出しています…', 2000);
   const zip = await zipWrite(files);
   const name = `${set.title.replace(/[\\/:*?"<>|]/g, '_')}.elpack.zip`;
   const file = new File([zip], name, { type: 'application/zip' });
-  if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file], title: set.title }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  const remember = async () => { const cur = await sdb.get('sets', set.id); if (!cur) return; const keep = (cur.exported?.media || []).filter((x) => !inc.has(x.id)); cur.exported = { at: Date.now(), media: [...keep, ...media.filter((m) => inc.has(m.id)).map((m) => ({ id: m.id, size: m.size }))] }; await sdb.put('sets', cur); set.exported = cur.exported; };
+  if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file], title: set.title }); await remember(); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  await remember();
   const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
 }
 async function ioScreen(el) {

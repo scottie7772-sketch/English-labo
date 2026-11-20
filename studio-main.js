@@ -12,7 +12,7 @@ import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.15.1';
+export const STUDIO_VERSION = '0.15.2';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -667,7 +667,7 @@ async function editorScreen(el, params) {
   let srcs = await sourcesMap();
   let blocks = [], byId = {};
   const sel = new Set();
-  let arrange = false, drag = null;
+  let arrange = false, drag = null, arrangeBase = 0;
   let selectMode = false, rangeMode = null, anchor = null, onlySel = false, moveMode = false, playing = null, curBlock = null;
   const reload = async () => { set = await sdb.get('sets', set.id); blocks = await liveBlocks(set); byId = Object.fromEntries(blocks.map((b) => [b.id, b])); for (const id of [...sel]) if (!byId[id]) sel.delete(id); };
   await reload();
@@ -800,8 +800,19 @@ async function editorScreen(el, params) {
   function drawBar() {
     bar.hidden = !selectMode && !arrange;
     if (arrange) {
-      bar.innerHTML = `<div class="small">≡ をつかんで動かします。<b>行の上に重ねる</b>と結合、<b>行と行の間</b>に置くと移動。行をタップすると分けられます。</div><div class="row"><button class="btn sm primary grow" id="arrDone">完了</button></div>`;
+      const n0 = (set.undo || []).length - arrangeBase;
+      bar.innerHTML = `<div class="small">≡ をつかんで動かします。<b>行の上に重ねる</b>と結合、<b>行と行の間</b>に置くと移動。行をタップすると分けられます。</div>
+        <div class="row"><button class="btn sm" id="arrUndo" ${(set.undo || []).length ? '' : 'disabled'} aria-label="元に戻す">${icon('undo')}</button><button class="btn sm" id="arrRedo" ${(set.redo || []).length ? '' : 'disabled'} aria-label="やり直す">${icon('redo')}</button>
+        <button class="btn sm" id="arrCancel">キャンセル${n0 > 0 ? `（${n0}件）` : ''}</button><button class="btn sm primary grow" id="arrDone">完了</button></div>`;
       $('#arrDone', bar).onclick = () => { arrange = false; drawList(); };
+      $('#arrUndo', bar).onclick = () => $('#undoB', el).click();
+      $('#arrRedo', bar).onclick = () => $('#redoB', el).click();
+      $('#arrCancel', bar).onclick = async () => {   // undo everything done since 結合・移動 was opened
+        let n = (set.undo || []).length - arrangeBase;
+        if (n > 0 && !(await confirmDialog({ title: '取り消して終わる', body: `<p>このモードで行った ${n}件の操作を元に戻します。</p>`, okLabel: '取り消す' }))) return;
+        while (n-- > 0) { if (!(await undo(set))) break; await reload(); }
+        arrange = false; drawList();
+      };
       return;
     }
     if (!selectMode) return;
@@ -1425,7 +1436,7 @@ async function editorScreen(el, params) {
   $('#undoB', el).onclick = async () => { const op = await undo(set); if (op) { await reload(); drawList(); toast(`元に戻しました：${op.label}`, 1500); } };
   $('#redoB', el).onclick = async () => { const op = await redo(set); if (op) { await reload(); drawList(); toast(`やり直しました：${op.label}`, 1500); } };
   $('#selB', el).onclick = () => { selectMode = !selectMode; arrange = false; if (!selectMode) { sel.clear(); onlySel = false; } drawList(); };
-  $('#arrB', el).onclick = () => { arrange = !arrange; if (arrange) { selectMode = false; sel.clear(); onlySel = false; vid.pause(); playing = null; } drawList(); };
+  $('#arrB', el).onclick = () => { arrange = !arrange; if (arrange) { arrangeBase = (set.undo || []).length; selectMode = false; sel.clear(); onlySel = false; vid.pause(); playing = null; } drawList(); };
   $('#pp', el).onclick = () => {
     if (!vid.paused) return vid.pause();
     if (playing) { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} return vid.play().catch(() => {}); }   // resume where it stopped

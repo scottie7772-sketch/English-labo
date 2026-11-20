@@ -366,7 +366,9 @@ export async function videoPlay(el, params) {
     </div></div>
     <div class="subbox" id="sub"></div>
     <div id="grade"></div>
-    <div class="vquick">
+    <div class="row vmodebar"><button class="btn sm" id="openMode">🎛 学習モード</button><span class="small muted grow" id="modeOn"></span></div>
+    <div class="vsheet" id="shMode" hidden><div class="vsheet-in card stack"><div class="row between"><b>学習モード</b><button class="btn sm" data-shclose>閉じる</button></div>
+    <div class="vquick vquick-sheet">
       <button class="tgl" id="qMode"></button>
       <button class="tgl" id="qDict">ディクテーション</button>
       <button class="tgl" id="qShadow">シャドーイング</button>
@@ -374,7 +376,7 @@ export async function videoPlay(el, params) {
       <button class="tgl" id="qCloze">穴埋め</button>
       <button class="tgl" id="qLoop">ループ</button>
       <button class="tgl" id="qTest">字幕なしテスト</button>
-    </div>
+    </div></div></div>
     <div id="dict" class="card stack dict" hidden></div>
     <div id="shadow" class="card stack" hidden></div>
     <div class="vsheet" id="shSet" hidden><div class="vsheet-in card stack"><div class="row between"><b>表示・学習の設定</b><button class="btn sm" data-shclose>閉じる</button></div><div class="vset stack" id="set">
@@ -409,17 +411,44 @@ export async function videoPlay(el, params) {
     </div>`;
 
   const root = $('#vroot', el), sub = $('#sub', el), cl = $('#cl', el);
+  // subtitle list follows the sound, gently; when you scroll it yourself (to read a line that has passed) it stops following
+  // until you tap 「現在の行へ」 or a line, or leave it for 20 seconds
+  let followOff = 0;
+  const followBtn = document.createElement('button'); followBtn.className = 'btn sm vfollow'; followBtn.textContent = '↧ 現在の行へ'; followBtn.hidden = true;
+  cl?.before(followBtn);
+  const followCue = (row, force = false) => {
+    if (!cl || !row) return;
+    if (!force && followOff && Date.now() - followOff < 20000) { followBtn.hidden = false; return; }
+    followOff = 0; followBtn.hidden = true;
+    const top = row.offsetTop - cl.offsetTop, y = top - cl.scrollTop, h = cl.clientHeight;
+    if (force || y < h * 0.12 || y + row.offsetHeight > h * 0.75) cl.scrollTo({ top: Math.max(0, top - h * 0.25), behavior: 'smooth' });
+  };
+  if (cl) {
+    const off = () => { followOff = Date.now(); };
+    cl.addEventListener('touchmove', off, { passive: true }); cl.addEventListener('wheel', off, { passive: true });
+    cl.addEventListener('click', () => { followOff = 0; followBtn.hidden = true; });
+    followBtn.onclick = () => { followOff = 0; followCue(cl.querySelector('.cue.cur'), true); };
+  }
   const vid = parts && $('#vid', el) ? multiMedia($('#vid', el), parts) : $('#vid', el);
   if (missingPart) toast('この教材の音声の一部が見つかりません（元の音声の教材が削除された可能性）', 5000);
   // every play: ask iOS for the "playback" sound session inside the tap (it can drop back after the app is reopened → no sound)
   if (vid) { const _play = vid.play.bind(vid); vid.play = () => { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} return _play(); }; }
   // sound only: a slim bar instead of a black video area
-  const markAudio = () => { if (vid && (String(v.mime || '').startsWith('audio') || (vid.readyState >= 1 && !vid.videoWidth))) $('.vwrap', el)?.classList.add('audio'); };
+  const markAudio = () => {
+    if (!vid || !(parts || String(v.mime || '').startsWith('audio') || (vid.readyState >= 1 && !vid.videoWidth))) return;
+    $('.vwrap', el)?.classList.add('audio');
+    const t = $('.vtitle', el); if (t && !t.dataset.audio) { t.dataset.audio = '1'; t.textContent = '🎧 ' + t.textContent; }
+  };
   vid?.addEventListener('loadedmetadata', markAudio); markAudio();
   // settings / subtitles open as sheets (hidden by default)
   const sheet = (id, on) => { const x = $(id, el); if (x) x.hidden = !on; };
   $('#openSet', el).onclick = () => sheet('#shSet', true);
   $('#openMake', el).onclick = () => sheet('#shMake', true);
+  // 学習モード: one button → a sheet with the modes; the chosen ones are listed next to the button
+  const modeOn = () => { const on = $$('#shMode .tgl.on', el).filter((b) => b.id !== 'qMode').map((b) => b.textContent.trim()); const m = $('#modeOn', el); if (m) m.textContent = [$('#qMode', el)?.textContent || '', ...on].filter(Boolean).join('・'); };
+  $('#openMode', el).onclick = () => sheet('#shMode', true);
+  $('#shMode', el).addEventListener('click', (e) => { const b = e.target.closest('.tgl'); if (!b) return; setTimeout(() => { modeOn(); if (b.id !== 'qMode') sheet('#shMode', false); }, 0); });
+  setTimeout(modeOn, 0); setTimeout(modeOn, 500);
   $$('.vsheet', el).forEach((x) => x.addEventListener('click', (e) => { if (e.target === x || e.target.closest('[data-shclose]')) x.hidden = true; }));
   const pic = null;
   if (v.audioBlob) { (async () => { const cur = await db.get('videos', v.id); if (cur?.audioBlob) await saveVideoMeta(cur); })(); }   // free the old separate sound file
@@ -538,7 +567,7 @@ export async function videoPlay(el, params) {
       drawSub();
       $$('.cue.cur', cl).forEach((x) => x.classList.remove('cur'));
       const row = id && cl.querySelector(`[data-id="${id}"]`);
-      if (row) { row.classList.add('cur'); cl.scrollTop = row.offsetTop - cl.offsetTop - cl.clientHeight / 3; }
+      if (row) { row.classList.add('cur'); followCue(row); }
     }
     if (v.trim && !vid.seeking) {
       if (t < v.trim.start - 0.05) vid.currentTime = v.trim.start;

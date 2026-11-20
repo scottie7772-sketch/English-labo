@@ -911,8 +911,7 @@ input, select, textarea { font-size: max(16px, 1em); }
 .vquick { display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 6px; margin-top: 8px; padding-bottom: 2px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
 .vquick::-webkit-scrollbar { display: none; }
 .vquick .tgl { flex: 0 0 auto; min-height: 36px; padding: 0 10px; }
-.vwrap.audio { height: 40px; position: relative; display: flex; align-items: center; justify-content: center; background: var(--surface); border: 1px solid var(--line); }
-.vwrap.audio::after { content: '🎧 音声のみ'; font-size: 13px; color: var(--muted); }
+.vwrap.audio { height: 0; border: 0; overflow: hidden; position: relative; }   /* sound only: 🎧 next to the title instead of a bar */
 .vwrap.audio video { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .vsheet { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, .45); display: flex; align-items: flex-end; }
 .vsheet[hidden] { display: none; }
@@ -934,3 +933,9 @@ input, select, textarea { font-size: max(16px, 1em); }
 .deckpick { align-items: center; gap: 6px; }
 .deckpick input[type=number] { width: 64px; padding: 6px; }
 .vstick { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--bg); margin: 0 -4px; padding: 0 4px 6px; box-shadow: 0 6px 8px -8px rgba(0,0,0,.6); }   /* seek bar + buttons follow the scroll */
+.vmodebar { align-items: center; gap: 8px; margin-top: 8px; }
+#modeOn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vquick-sheet { flex-wrap: wrap; overflow: visible; }
+.vquick-sheet .tgl { flex: 1 1 40%; min-height: 44px; }
+.vfollow { position: sticky; top: 0; z-index: 3; display: block; margin: 0 auto 6px; }
+.vfollow[hidden] { display: none; }

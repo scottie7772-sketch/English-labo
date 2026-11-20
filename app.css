@@ -998,3 +998,6 @@ dialog { border-radius: 16px; }
 .kpi, .action, .mitem, .notice, .wrow, .vrow.card, .cue, .st-setrow { border-color: transparent; }
 .mitem svg, .action svg { opacity: .9; }
 .cbtn { border-color: transparent !important; background: var(--surface2) !important; }
+/* performance: rows outside the screen are not drawn (Safari's built-in feature, no extra code) */
+.cuelist .cue { content-visibility: auto; contain-intrinsic-size: auto 72px; }
+.vbottom { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--bg); }

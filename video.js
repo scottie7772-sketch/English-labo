@@ -340,7 +340,7 @@ export async function videoPlay(el, params) {
   let cues = await cuesOf(v.id);
   const view = await loadView();
   const saveView = () => setSetting('video.view', view);
-  let loop = null, ab = null, curId = null, rafId = 0, saveT = 0, loopN = 0, stepCue = null, revealedCue = null, editing = false;
+  let loop = null, ab = null, curId = null, rafId = 0, saveT = 0, seekT = 0, loopN = 0, stepCue = null, revealedCue = null, editing = false;
   const revealed = new Map();   // cueId -> Set(hole index)
   const url = parts ? parts[0]?.url || '' : fileBlob ? URL.createObjectURL(fileBlob) : '';
   const aurl = '';   // (1.3.1–1.3.2 used a separate sound file; now the chosen track of the video itself is played)
@@ -583,10 +583,16 @@ export async function videoPlay(el, params) {
       if (t < v.trim.start - 0.05) vid.currentTime = v.trim.start;
       else if (t >= v.trim.end && !vid.paused && !(ab?.b != null)) { vid.pause(); vid.currentTime = Math.max(v.trim.start, v.trim.end - 0.05); }
     }
+    if (Date.now() - seekT > 200 || vid.paused) { seekT = Date.now(); drawSeek?.(); }   // the bar: 5 times a second while playing (was a timer that never stopped)
     if (Date.now() - saveT > 3000) { saveT = Date.now(); savePos(); }
-    rafId = requestAnimationFrame(tick);
+    rafId = vid.paused ? 0 : requestAnimationFrame(tick);   // runs only while playing (no work while paused)
   }
-  async function savePos() { if (!vid) return; const cur = await db.get('videos', v.id); if (cur) { cur.lastTime = vid.currentTime; await saveVideoMeta(cur); } }
+  const kick = () => { if (!rafId) rafId = requestAnimationFrame(tick); };   // one update after a seek while paused, or the loop again on play
+  let savedT = -1;
+  async function savePos() {   // only when the position really changed
+    if (!vid) return; const t = vid.currentTime; if (Math.abs(t - savedT) < 0.5) return; savedT = t;
+    const cur = await db.get('videos', v.id); if (cur) { cur.lastTime = t; cur.playedAt = Date.now(); await saveVideoMeta(cur); }
+  }
   const playFrom = (c) => { if (!vid || !c) return; vid.currentTime = c.start + 0.01; stepCue = c; revealedCue = null; if (loop) { loop = { start: c.start, end: c.end }; loopN = 0; } vid.play(); };
 
   // ---- cloze grading ----
@@ -710,7 +716,6 @@ export async function videoPlay(el, params) {
     });
     seekEl.addEventListener('pointercancel', () => { d = null; drawSeek(); });
     $('#sClear', el).onclick = clearRange;
-    setInterval(() => { if (document.contains(seekEl)) drawSeek(); }, 200);
     vid?.addEventListener('loadedmetadata', drawSeek);
   }
   // ---- back / forward (seconds cycle 3 → 5 → 10), speed (1 → 0.7 → 0.5) ----
@@ -1101,7 +1106,8 @@ export async function videoPlay(el, params) {
   if (vid) {
     const t0 = params.get('t') != null ? Math.max(0, +params.get('t') - 0.3) : v.lastTime || 0;
     vid.addEventListener('loadedmetadata', () => { if (t0 && t0 < vid.duration) vid.currentTime = t0; }, { once: true });
-    vid.addEventListener('play', () => { $('#play', el).textContent = '⏸'; });
+    vid.addEventListener('play', () => { $('#play', el).textContent = '⏸'; kick(); });
+    vid.addEventListener('seeked', kick); vid.addEventListener('loadeddata', kick);
     vid.addEventListener('pause', () => { $('#play', el).textContent = '▶︎'; savePos(); });
     vid.addEventListener('click', () => (vid.paused ? vid.play() : vid.pause()));
     rafId = requestAnimationFrame(tick);

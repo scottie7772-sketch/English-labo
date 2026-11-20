@@ -11,7 +11,7 @@ import { findCandidates, applySpans } from './studio-names.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.8.0';
+export const STUDIO_VERSION = '0.8.1';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -273,9 +273,21 @@ async function importScreen(el) {
 
 function highPass(a, fc = 80) { const rc = 1 / (2 * Math.PI * fc), dt = 1 / 16000, al = rc / (rc + dt); let py = 0, px = a[0] || 0; for (let i = 0; i < a.length; i++) { const x = a[i]; py = al * (py + x - px); px = x; a[i] = py; } return a; }
 // ---- trimming the start / end (screen-recording sounds, silence) ----
-async function findEdges(src, blob, D) {
+async function findEdges(src, blob, D, a16 = null) {
   const W = Math.min(6, D / 3);
   let a0, a1;
+  const isMp3 = /mpeg|mp3|aac/.test(blob?.type || src.mime || '') || /\.(mp3|aac)$/i.test(src.name || '');
+  if (a16) { D = a16.length / 16000; a0 = a16.subarray(0, W * 16000); a1 = a16.subarray(Math.max(0, a16.length - W * 16000)); }   // already in memory: no second decode
+  else if (isMp3 && blob.size > 2e6 && D > 30 && src.derived !== 'audio16k') {   // mp3/aac frames can be cut anywhere: decode only the head and the tail
+    try {
+      const h = new Uint8Array(await blob.slice(0, 10).arrayBuffer());
+      const id3 = h[0] === 0x49 && h[1] === 0x44 && h[2] === 0x33 ? 10 + ((h[6] & 0x7f) << 21 | (h[7] & 0x7f) << 14 | (h[8] & 0x7f) << 7 | (h[9] & 0x7f)) : 0;   // skip the tag (cover art)
+      const bps = (blob.size - id3) / D, n = Math.ceil((W + 2) * bps);
+      a0 = (await decodeTo16k(blob.slice(id3, id3 + n, blob.type))).audio.subarray(0, W * 16000);
+      const t = (await decodeTo16k(blob.slice(blob.size - n, blob.size, blob.type))).audio; a1 = t.subarray(Math.max(0, t.length - W * 16000));
+    } catch { a0 = a1 = undefined; }
+  }
+  if (a0) { /* done */ } else {
   const info = isContainer(src, blob) && src.derived !== 'audio16k' ? await probeSource(src, blob).catch(() => null) : null;
   const at = info ? audioTracks(info) : [];
   const t = at.find((x) => x.id === src.audio?.trackId) || at[src.audio?.index ?? 0];
@@ -283,6 +295,7 @@ async function findEdges(src, blob, D) {
     a0 = (await decodeTo16k((await extractTrack(blob, t, 0, W)).blob)).audio;
     const x = await extractTrack(blob, t, Math.max(0, D - W), D); const d1 = await decodeTo16k(x.blob); a1 = d1.audio; D = x.start + d1.duration;
   } else { const { audio, duration } = await decodeTo16k(blob); D = duration; a0 = audio.subarray(0, W * 16000); a1 = audio.subarray(Math.max(0, audio.length - W * 16000)); }
+  }
   let st = edgeCut(frameRms(a0), frameZcr(a0)), en = edgeCut(frameRms(a1).reverse(), frameZcr(a1).reverse());
   const dc = defaultCut();
   // screen recordings: always cut at least the usual sound length (more if a longer sound/silence was found)
@@ -472,13 +485,14 @@ async function putSource(media, mode, say = () => {}) {
   const exist = await sdb.get('sources', media.fp.id);
   const src = exist || { id: media.fp.id, kind: media.kind, name: media.name.split('/').pop(), size: media.file.size, mime: media.file.type, duration: media.duration, playable: media.playable, head: media.fp.head, tail: media.fp.tail, addedAt: Date.now(), stored: false };
   if (!src.audio && media.kind !== 'audio' || (!src.audio && isContainer(src, media.file))) { try { src.audio = await decideTrack(src, media.file, say); } catch (e) { src.audioError = e.message; } }
-  const small = mode === 'store-audio' && !src.stored ? await sourceAudio16k(src, media.file, { say }).then((a) => { say('小さくしています…'); return shrinkAudio(a, src.name, media.kind !== 'audio', say); }).catch((e) => { src.audioError = e.message; return null; }) : null;
+  let a16 = null;
+  const small = mode === 'store-audio' && !src.stored ? await sourceAudio16k(src, media.file, { say }).then((a) => { a16 = a.audio; say('小さくしています…'); return shrinkAudio(a, src.name, media.kind !== 'audio', say); }).catch((e) => { src.audioError = e.message; return null; }) : null;
   if (small && small.file.size < media.file.size) {   // data saver: sound only, low quality
     Object.assign(src, { stored: true, blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: media.file.size, duration: small.duration || src.duration });
   } else if (mode.startsWith('store') && !src.stored) { src.stored = true; src.blob = media.file.size <= 300 * 1024 * 1024 ? await copyBlob(media.file, say) : media.file; }
   else if (!src.stored) sessionFiles.set(src.id, media.file);
   await sdb.put('sources', src);   // a big file is written from disk; may take a while
-  return src;
+  return { src, a16 };
 }
 // group = { title, items: [{ media, en, ja, title }] } → one set; items keep their order
 async function createSet(group, mode, trimEdges = false, onStep = () => {}) {
@@ -487,7 +501,8 @@ async function createSet(group, mode, trimEdges = false, onStep = () => {}) {
   let firstSrc = null, n = 0;
   for (const s of group.items) {
     onStep(++n, group.items.length);
-    const src = s.media ? await putSource(s.media, mode, (t) => onStep(n, group.items.length, t)) : null;
+    let { src = null, a16 = null } = s.media ? await putSource(s.media, mode, (t) => onStep(n, group.items.length, t)) : {};
+    crumb(`登録 ${n}/${group.items.length}：${s.media?.name || ''}`);
     firstSrc ||= src;
     const dur = src?.duration || 0;
     const mkTrack = (sub, lang) => sub && { id: newId('tr_'), setId, lang, fileName: sub.name.split('/').pop(), format: sub.parsed.format, raw: sub.text, offset: 0, cues: sub.parsed.cues };
@@ -515,7 +530,7 @@ async function createSet(group, mode, trimEdges = false, onStep = () => {}) {
       ja.cues.forEach((j) => part.push(newBlock(setId, { segments: s.ja.parsed.timed ? seg(j.start, j.end) : [], text: '', ja: j.text, cueRefs: { en: [], ja: [j.id] }, sync: s.ja.parsed.timed ? 'auto' : 'estimated' })));
     } else if (src) {   // audio/video without a script: one item for the whole file (text can be added later)
       let a = 0, b = dur || 1, trimNote = '';
-      if (trimEdges && dur > 4) { try { onStep(n, group.items.length, '前後の音を調べています…'); const r = await findEdges(src, src.stored ? src.blob : sessionFiles.get(src.id), dur); a = r.start; b = r.end; trimNote = [r.whyStart && `始め ${fmt(a)}`, r.whyEnd && `終わり ${fmt(b)}`].filter(Boolean).join('・'); } catch { /* keep the whole file */ } }
+      if (trimEdges && dur > 4) { try { onStep(n, group.items.length, '前後の音を調べています…'); const r = await findEdges(src, src.stored ? src.blob : sessionFiles.get(src.id), dur, a16); a = r.start; b = r.end; trimNote = [r.whyStart && `始め ${fmt(a)}`, r.whyEnd && `終わり ${fmt(b)}`].filter(Boolean).join('・'); } catch { /* keep the whole file */ } }
       const shared = (await sdb.all('sets')).some((x) => x.sourceId === src.id);   // used by another set: do not cut its file
       if (trimNote && dropCutSetting() && src.stored && !shared) {
         try { onStep(n, group.items.length, 'カットした部分を削っています…'); const t2 = await hardTrim(src.id, a, b, (t) => onStep(n, group.items.length, t)); const off = t2.trimmed.from; a = Math.max(0, a - off); b = Math.min(t2.duration, b - off); Object.assign(src, t2); }
@@ -524,6 +539,7 @@ async function createSet(group, mode, trimEdges = false, onStep = () => {}) {
       part.push(newBlock(setId, { segments: seg(a, b), label: src.name.replace(/\.[^.]+$/, ''), sync: dur ? 'auto' : 'estimated', ...(trimNote ? { trimNote } : {}) }));
     }
     blocks.push(...part);
+    a16 = null; await new Promise((r) => setTimeout(r, 250));   // let the phone free the decoded sound before the next file
   }
   const set = { id: setId, title: group.title || firstSrc?.name || '無題', sourceId: firstSrc?.id || null, order: [], undo: [], redo: [],
     display: { show: 'both', opEn: 1, opJa: 0.8, pos: 'below', order: 'en' }, createdAt: Date.now(), updatedAt: Date.now() };

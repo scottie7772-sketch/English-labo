@@ -8,10 +8,11 @@ import { fingerprint, zipWrite, zipRead } from './common-pack.js';
 import { decodeTo16k, openTranscriber, speechPieces, captureTo16k, QUALITY, recognisePiece } from './asr.js';
 import { extractPhrases, extractWords } from './studio-words.js';
 import { findCandidates, applySpans } from './studio-names.js';
+import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.9.0';
+export const STUDIO_VERSION = '0.10.0';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -133,10 +134,12 @@ async function checkUpdate() {
 }
 
 // ================= bulk import =================
-async function importScreen(el) {
+async function importScreen(el, params) {
   const files = { media: [], subs: [] };   // analysed entries
   let sets = null, storeMode = 'store', groupMode = 'file', videoQ = 'audio', autoTrimOn = true;
-  el.innerHTML = `${head('一括登録', 'sets')}
+  const toSet = params?.get('to') ? await sdb.get('sets', params.get('to')) : null;   // add to an existing set
+  el.innerHTML = `${head(toSet ? `「${toSet.title}」に追加` : '一括登録', toSet ? `set?id=${toSet.id}` : 'sets')}
+    ${toSet ? `<div class="notice stack small"><b>教材「${esc(toSet.title)}」に追加します。</b>同じ教材の続きの音声や、スクリプト（時刻なしのテキスト）を選んでください。追加したあと「文字起こし→照合」で、音声とスクリプトの位置を合わせます。</div>` : ''}
     <div class="card stack">
       <p class="small">動画・音声と、英語・日本語の字幕（SRT・VTT・TXT・CSV）をまとめて選びます。ファイル名・言語・長さから自動で組み合わせます。<b>1回の取り込みは合計で、動画15分・音声75分まで</b>。</p>
       <label class="btn" for="fz">📦 ZIPを選ぶ（フォルダを圧縮したもの）</label><input type="file" id="fz" hidden>
@@ -230,7 +233,7 @@ async function importScreen(el) {
         ${needBytes ? `<small class="muted">必要な容量：約${fmtSize(storeMode === 'store' && videoQ === 'audio' ? inc.reduce((a, x) => a + Math.min(x.media.file.size, (x.media.duration || 0) * (typeof AudioEncoder !== 'undefined' ? 4000 : 32000)), 0) : needBytes)}</small>` : ''}</div>
       <label class="chk"><input type="checkbox" id="atr" ${autoTrimOn ? 'checked' : ''}> 前後の画面収録音・無音を自動でカット</label>
       ${autoTrimOn ? `<label class="chk"><input type="checkbox" id="drc" ${dropCutSetting() ? 'checked' : ''}> カットした部分（元の前後）は保存しない（容量節約・元に戻せません）</label>` : ''}
-      <button class="btn primary" id="go" ${over || !sets.some((s) => s.include) ? 'disabled' : ''}>登録する</button>
+      <button class="btn primary" id="go" ${over || !sets.some((s) => s.include) ? 'disabled' : ''}>${toSet ? '追加する' : '登録する'}</button>
       <div id="prog"></div>`;
     $$('[data-inc]', el).forEach((c) => (c.onchange = () => { sets[+c.dataset.inc].include = c.checked; draw(); }));
     $$('[data-title]', el).forEach((c) => (c.onchange = () => { sets[+c.dataset.title].title = c.value; }));
@@ -249,7 +252,14 @@ async function importScreen(el) {
     $('#gm', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { groupMode = v; draw(); } };
     $('#incAll', el).onclick = () => { sets.forEach((s) => (s.include = true)); draw(); };
     $('#incNone', el).onclick = () => { sets.forEach((s) => (s.include = false)); draw(); };
-    $('#go', el).onclick = () => { const inc = sets.filter((s) => s.include); runImport(groupMode === 'folder' ? groupsOf(inc) : inc.map((s) => ({ title: s.title, items: [s] })), storeMode === 'store' && videoQ === 'audio' ? 'store-audio' : storeMode); };
+    $('#go', el).onclick = () => { const inc = sets.filter((s) => s.include); if (toSet) return runAppend(inc, storeMode === 'store' && videoQ === 'audio' ? 'store-audio' : storeMode); runImport(groupMode === 'folder' ? groupsOf(inc) : inc.map((s) => ({ title: s.title, items: [s] })), storeMode === 'store' && videoQ === 'audio' ? 'store-audio' : storeMode); };
+  }
+  async function runAppend(list, mode) {
+    const prog = $('#prog', el); $('#go', el).disabled = true; running('追加');
+    try {
+      await appendToSet(toSet.id, list.map((s) => ({ title: s.title, items: [s] })), mode, autoTrimOn, (k, n, t = '') => (prog.innerHTML = `<p class="small">追加中（${k} / ${n}）${t ? `<br>${esc(t)}` : ''}</p>`));
+      running(null); nav(`set?id=${toSet.id}`);
+    } catch (e) { running(null); prog.innerHTML = `<div class="card warn">追加できませんでした：${esc(e?.message || String(e))}</div>`; $('#go', el).disabled = false; }
   }
   async function runImport(list, mode) {
     const prog = $('#prog', el);
@@ -505,6 +515,26 @@ async function putSource(media, mode, say = () => {}) {
 // group = { title, items: [{ media, en, ja, title }] } → one set; items keep their order
 async function createSet(group, mode, trimEdges = false, onStep = () => {}) {
   const setId = newId('set_');
+  const { blocks, tracks, firstSrc } = await buildItems(setId, group, mode, trimEdges, onStep);
+  const set = { id: setId, title: group.title || firstSrc?.name || '無題', sourceId: firstSrc?.id || null, order: [], undo: [], redo: [],
+    display: { show: 'both', opEn: 1, opJa: 0.8, pos: 'below', order: 'en' }, createdAt: Date.now(), updatedAt: Date.now() };
+  await sdb.tx(['sets', 'tracks'], 'readwrite', (t) => { t.objectStore('sets').put(set); tracks.forEach((x) => t.objectStore('tracks').put(x)); });
+  await commit(set, '取り込み', { blocks, order: blocks.map((b) => b.id) });
+  set.undo = []; await sdb.put('sets', set);   // the import itself is not undoable (delete the set instead)
+  await saveVersion(set, '取り込み直後', true);
+  return setId;
+}
+// add files to an existing set (script / audio of the same material, added later): one undoable step
+async function appendToSet(setId, groups, mode, trimEdges = false, onStep = () => {}) {
+  const set = await sdb.get('sets', setId); if (!set) throw new Error('追加先の教材が見つかりません');
+  const items = groups.flatMap((g) => g.items);
+  const { blocks, tracks, firstSrc } = await buildItems(setId, { items }, mode, trimEdges, onStep);
+  if (tracks.length) await sdb.tx(['tracks'], 'readwrite', (t) => tracks.forEach((x) => t.objectStore('tracks').put(x)));
+  if (!set.sourceId && firstSrc) set.sourceId = firstSrc.id;
+  await commit(set, 'スクリプト・音声を追加', { blocks, order: [...set.order, ...blocks.map((b) => b.id)] });
+  return setId;
+}
+async function buildItems(setId, group, mode, trimEdges = false, onStep = () => {}) {
   const blocks = [], tracks = [];
   let firstSrc = null, n = 0;
   for (const s of group.items) {
@@ -520,9 +550,19 @@ async function createSet(group, mode, trimEdges = false, onStep = () => {}) {
     const part = [];
     if (en) {
       let enCues = en.cues;
-      if (!s.en.parsed.timed) {   // no times: spread evenly over the media (marked as estimated)
-        const step = dur && enCues.length ? dur / enCues.length : 2;
-        enCues = enCues.map((c, i) => ({ ...c, start: i * step, end: (i + 1) * step, est: true }));
+      if (!s.en.parsed.timed) {
+        // a script without times: lines without sound for now ("文字起こし→照合" gives them their times);
+        // the audio stays as one item to transcribe
+        const lines = scriptToLines(enCues.map((c) => c.text).join('\n'));
+        const jaLines = ja && !s.ja.parsed.timed && ja.cues.length === lines.length ? ja.cues.map((c) => c.text) : [];
+        lines.forEach((t, i) => part.push(newBlock(setId, { segments: [], text: t, ja: jaLines[i] || '', script: true, cueRefs: { en: [], ja: [] }, sync: 'auto' })));
+        if (src) {
+          let a = 0, b = dur || 1;
+          if (trimEdges && dur > 4) { try { onStep(n, group.items.length, '前後の音を調べています…'); const r = await findEdges(src, src.stored ? src.blob : sessionFiles.get(src.id), dur, a16); a = r.start; b = r.end; } catch { /* whole file */ } }
+          part.push(newBlock(setId, { segments: seg(a, b), label: src.name.replace(/\.[^.]+$/, ''), sync: 'auto' }));
+        }
+        blocks.push(...part); a16 = null; await new Promise((r) => setTimeout(r, 250));
+        continue;
       }
       const { map, extra } = ja && s.ja.parsed.timed && !enCues[0]?.est ? alignJa(enCues, ja.cues) : { map: new Map(), extra: [] };
       enCues.forEach((c, i) => {
@@ -549,13 +589,7 @@ async function createSet(group, mode, trimEdges = false, onStep = () => {}) {
     blocks.push(...part);
     a16 = null; await new Promise((r) => setTimeout(r, 250));   // let the phone free the decoded sound before the next file
   }
-  const set = { id: setId, title: group.title || firstSrc?.name || '無題', sourceId: firstSrc?.id || null, order: [], undo: [], redo: [],
-    display: { show: 'both', opEn: 1, opJa: 0.8, pos: 'below', order: 'en' }, createdAt: Date.now(), updatedAt: Date.now() };
-  await sdb.tx(['sets', 'tracks'], 'readwrite', (t) => { t.objectStore('sets').put(set); tracks.forEach((x) => t.objectStore('tracks').put(x)); });
-  await commit(set, '取り込み', { blocks, order: blocks.map((b) => b.id) });
-  set.undo = []; await sdb.put('sets', set);   // the import itself is not undoable (delete the set instead)
-  await saveVersion(set, '取り込み直後', true);
-  return setId;
+  return { blocks, tracks, firstSrc };
 }
 
 // ================= editor =================
@@ -577,7 +611,7 @@ async function editorScreen(el, params) {
       <div class="row st-seekrow"><input type="range" id="seek" class="st-seek" min="0" max="1" step="0.05" value="0" aria-label="再生位置"><span class="small muted" id="tdur"></span></div>
       <div class="st-sub" id="sub"></div>
       <div class="row st-ctl"><button class="btn sm" id="back3">⟲3</button><button class="btn sm primary" id="pp">${icon('play')}</button><button class="btn sm" id="fwd3">3⟳</button><span class="small muted" id="tnow">0:00.0</span><span class="grow"></span><button class="btn sm" id="arrB">結合・移動</button><button class="btn sm" id="selB">選択</button></div></div>
-    <div id="info" class="small muted"></div>
+    <div id="info" class="small muted"></div><div id="alignNote"></div>
     <div id="list" class="st-list"></div>
     <div id="bar" class="st-bar" hidden></div>`;
   const vid = $('#vid', el), list = $('#list', el), bar = $('#bar', el);
@@ -683,7 +717,7 @@ async function editorScreen(el, params) {
     list.classList.toggle('arranging', arrange);
     list.innerHTML = shown.map((b) => {
       const badges = [b.segments.length > 1 ? `<span class="tagp">${b.segments.length}区間</span>` : '', new Set(b.segments.map((s) => s.sourceId)).size > 1 ? '<span class="tagp">複数ファイル</span>' : '',
-        b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', b.asr ? '<span class="tagp">自動起こし</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声なし</span>' : ''].join('');
+        b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声なし</span>' : ''].join('');
       return `<div class="st-row ${sel.has(b.id) ? 'sel' : ''} ${arrange ? 'jig' : ''}" data-id="${b.id}">
         ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : ''}
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
@@ -692,6 +726,9 @@ async function editorScreen(el, params) {
         ${selectMode || arrange ? '' : `<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
     }).join('') || '<p class="empty">項目がありません</p>';
     $('#undoB', el).disabled = !(set.undo || []).length; $('#redoB', el).disabled = !(set.redo || []).length;
+    const nScript = scriptLines().length, nAudio = blocks.filter((b) => b.segments.length && !b.aligned).length;
+    $('#alignNote', el).innerHTML = nScript && nAudio && !selectMode && !arrange ? `<div class="notice row small"><span class="grow">音声の付いていないスクリプトが${nScript}行あります。</span><button class="btn sm primary" id="alignGo">文字起こし→照合</button></div>` : '';
+    $('#alignGo', el)?.addEventListener('click', () => runAlign());
     drawBar();
   }
   function drawBar() {
@@ -1119,11 +1156,78 @@ async function editorScreen(el, params) {
     }
     running(null); lock?.release?.(); tr?.close(); const wasCancelled = cancelled; if (dlg.open) { dlg.onclose = null; dlg.close(); }
     if (!lines) return wasCancelled ? toast('中止しました') : confirmDialog({ title: '文字にできませんでした', body: noSpeech.length ? `<p class="small">${noSpeech.map(esc).join('<br>')}</p><p>音声が見つかりませんでした（無音のまま取り出された可能性）。編集した動画は音声を取り出せないことがあります。写真アプリで「ビデオを複製」または「ファイルに保存」で書き出したものを取り込み直してください。</p>` : `<p>音声認識は動きましたが、文字にできる英語がありませんでした。</p><p class="small">認識された内容：${esc(rawAll.join(' ').trim().slice(0, 200) || '（何も認識されませんでした）')}</p><p class="hint">［Music］のような表示だけなら、音楽や効果音と判定されています。何も認識されない場合は、音声が英語として聞き取れていません。</p>`, okLabel: '閉じる', cancelLabel: null });
+    if (!wasCancelled && scriptLines().length) return runAlign({ afterAsr: lines });
     const ok = await confirmDialog({ title: wasCancelled ? `${lines}行で中止しました` : `文字起こしが終わりました（${lines}行）`,
       body: `<p>結果は、この画面の一覧（動画の下）に「自動起こし」の印つきで並んでいます。行をタップすると、その部分を再生します。✎で直せます。</p>${wasCancelled ? '<p class="hint">もう一度実行すると続きから始まります。</p>' : ''}${emptyPieces ? `<p class="warn-text small">${emptyPieces}か所は文字にできませんでした（一覧に「文字にできなかった部分」として残しています）。「標準」「最高」の精度で、もう一度「文字起こし」を実行すると、その部分だけやり直します。</p>` : ''}<p class="hint">テキストだけ使いたいときは「⋯」→「テキストを書き出す」。単語帳に入れるときは「⋯」→「単語リストを作る」。</p>`,
       okLabel: '英文をコピー', cancelLabel: '閉じる' });
     if (ok) { try { await navigator.clipboard.writeText(blocks.map((b) => b.text).filter(Boolean).join('\n')); toast('コピーしました'); } catch { toast('コピーできませんでした'); } }
   }
+  // ---------- script ↔ audio: the transcription (with mistakes) gives the times, the script gives the text ----------
+  function scriptLines() { return set.order.map((id) => byId[id]).filter((b) => b && !b.segments.length && b.text.trim()); }
+  async function runAlign({ afterAsr = 0 } = {}) {
+    const sl = scriptLines();
+    if (!sl.length) return toast('音声の付いていないスクリプトの行がありません（「⋯」→「スクリプト・音声を追加」でテキストを入れます）', 4500);
+    const heard = blocks.filter((b) => b.segments.length === 1 && b.text.trim() && !b.aligned);
+    if (!heard.length) {
+      if (blocks.some((b) => b.segments.length && !b.text.trim())) {
+        if (await confirmDialog({ title: '先に文字起こしをします', body: '<p>照合には、音声のおおまかな文字起こしが必要です（間違いがあっても大丈夫です）。終わったら続けて照合します。</p>', okLabel: '文字起こしへ' })) { await new Promise((r) => setTimeout(r, 60)); return runAsr(); }
+        return;
+      }
+      return toast('照合できる音声の行がありません');
+    }
+    crumb(`照合：スクリプト${sl.length}行・音声の行${heard.length}`);
+    const bySrc = new Map(); for (const b of heard) { const k = b.segments[0].sourceId; if (!bySrc.has(k)) bySrc.set(k, []); bySrc.get(k).push(b); }
+    let remaining = sl.slice(); const changed = new Map(), del = new Set(); let matched = 0, total = 0;
+    for (const [sid, list0] of bySrc) {
+      const cues = list0.slice().sort((a, b) => a.segments[0].start - b.segments[0].start).map((b) => ({ id: b.id, start: b.segments[0].start, end: b.segments[0].end, text: b.text }));
+      const r = alignScript(remaining.map((b) => ({ id: b.id, text: b.text })), cues);
+      matched += r.matched; total += r.total;
+      for (const [id, t] of r.times) {
+        const b = byId[id], n = tokensOf(b.text).length;
+        changed.set(id, { ...b, segments: [{ sourceId: sid, start: t.start, end: t.end }], aligned: true, sync: 'auto', align: n ? [{ s: 0, e: n - 1, v0: 0, v1: +(t.end - t.start).toFixed(2) }] : [], lineage: { op: 'align', from: [`${b.id}@${b.rev}`], at: Date.now() } });
+      }
+      r.covered.forEach((id) => del.add(id));
+      remaining = remaining.filter((b) => !r.times.has(b.id));
+    }
+    if (!changed.size) {
+      return confirmDialog({ title: '照合できませんでした', body: `<p>音声の文字起こしと一致する部分が、スクリプトの中に見つかりませんでした。</p><p class="hint">別の教材の音声か、スクリプトの範囲外の音声かもしれません。文字起こしの精度が低すぎる場合も一致しません。</p>`, okLabel: '閉じる', cancelLabel: null });
+    }
+    // order: script order stays; recognised lines that were not in the script are placed by time among the aligned lines
+    const cur = (id) => changed.get(id) || byId[id];
+    const startOf = (id) => cur(id)?.segments[0]?.start;
+    const leftover = heard.filter((b) => !del.has(b.id)).sort((a, b) => a.segments[0].start - b.segments[0].start);
+    let order = set.order.filter((id) => byId[id] && !del.has(id) && !leftover.some((b) => b.id === id));
+    for (const L of leftover) {
+      const sid = L.segments[0].sourceId;
+      const same = order.filter((id) => cur(id)?.aligned && cur(id).segments[0]?.sourceId === sid);
+      if (!same.length) { order.push(L.id); continue; }
+      const nextId = same.find((id) => startOf(id) > L.segments[0].start);
+      if (nextId) order.splice(order.indexOf(nextId), 0, L.id); else order.splice(order.indexOf(same.at(-1)) + 1, 0, L.id);
+    }
+    await run('スクリプトと照合', { blocks: [...changed.values(), ...[...del].map((id) => ({ ...byId[id], deleted: true }))], order });
+    const left = scriptLines().length;
+    await confirmDialog({ title: '照合しました', body: `<p>スクリプト ${sl.length}行のうち <b>${changed.size}行</b>に時刻を付けました（文字起こしの単語の ${total ? Math.round((matched / total) * 100) : 0}% が一致）。</p>
+      ${leftover.length ? `<p class="small">スクリプトに無かった音声 ${leftover.length}行は、文字起こしのまま残しています。</p>` : ''}
+      ${left ? `<p class="small">音声がまだ無いスクリプト ${left}行は「音声なし」のままです。音声を追加すると、続きを照合できます。</p>` : ''}
+      <p class="hint">「スクリプト照合」の行をタップすると再生します。ずれていたら「結合・移動」や✎で直せます。${afterAsr ? '' : ''}</p>`, okLabel: '閉じる', cancelLabel: null });
+  }
+  // copy the items of another set into this one (the other set is kept)
+  async function mergeSets() {
+    const others = (await sdb.all('sets')).filter((x) => x.id !== set.id && !x.deleted).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    if (!others.length) return toast('ほかの教材がありません');
+    const dlg = $('#dialog'); await new Promise((r) => setTimeout(r, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>この教材にまとめる</h3><p class="small">選んだ教材の行を、この教材の最後に足します（選んだ教材はそのまま残ります）。</p>
+      <div class="stack">${others.slice(0, 40).map((x, i) => `<label class="chk"><input type="radio" name="ms" value="${i}" ${i ? '' : 'checked'}> ${esc(x.title)}</label>`).join('')}</div>
+      <div class="row end"><button class="btn ghost" value="cancel">やめる</button><button class="btn primary" value="ok">まとめる</button></div></form>`;
+    dlg.returnValue = ''; dlg.showModal(); await new Promise((q) => (dlg.onclose = q));
+    if (dlg.returnValue !== 'ok') return;
+    const other = others[+($('input[name=ms]:checked', dlg)?.value || 0)];
+    const live = await liveBlocks(other);
+    const copies = live.map((b) => { const { id, rev, setId, deleted, ...f } = b; return newBlock(set.id, { ...structuredClone(f), lineage: { op: 'copy', from: [`${b.id}@${b.rev}`], at: Date.now() } }); });
+    await run(`「${other.title}」をまとめる`, { blocks: copies, order: [...set.order, ...copies.map((c) => c.id)] });
+    if (scriptLines().length && blocks.some((b) => b.segments.length && !b.aligned)) toast('「文字起こし→照合」で位置を合わせられます', 3500);
+  }
+
   // the whole set: start of the first item and end of the last item that has sound
   const edgesOf = () => { const withSeg = set.order.map((id) => byId[id]).filter((b) => b?.segments.length); return withSeg.length ? { first: withSeg[0], last: withSeg[withSeg.length - 1] } : null; };
   async function applyTrim(start, end, label) {
@@ -1285,6 +1389,9 @@ async function editorScreen(el, params) {
       <button class="btn" value="autotrim">前後の画面収録音を自動カット</button>
       <button class="btn" value="trim">前後をカット（手動で調整）</button>
       <button class="btn" value="asr">文字起こし（端末内・試験的）</button>
+      <button class="btn" value="add">スクリプト・音声を追加</button>
+      <button class="btn" value="align">スクリプトと照合</button>
+      <button class="btn" value="mergeset">別の教材をこの教材にまとめる</button>
       <button class="btn" value="names">固有名詞をまとめて直す</button>
       <button class="btn" value="words">単語リストを作る</button>
       <button class="btn" value="txt">テキストを書き出す</button>
@@ -1302,6 +1409,9 @@ async function editorScreen(el, params) {
       if (v === 'asr') runAsr();
       if (v === 'words') nav(`words?id=${set.id}`);
       if (v === 'names') fixNames();
+      if (v === 'add') nav(`import?to=${set.id}`);
+      if (v === 'align') runAlign();
+      if (v === 'mergeset') mergeSets();
       if (v === 'txt') exportText();
       if (v === 'toaudio') toAudio();
       if (v === 'track') chooseTrackAgain();

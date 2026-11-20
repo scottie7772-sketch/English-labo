@@ -14,10 +14,11 @@ import { listeningScreen, listeningRun } from './listening.js';
 import { lessonScreen, lessonRun } from './lesson.js';
 import { gamesScreen, gameRun } from './games.js';
 import { dataCheckScreen, scanWords } from './datacheck.js';
+import { storageScreen } from './storage.js';
 import { courseScreen, courseUnit, coursePuzzle } from './course.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.3.2';
+export const APP_VERSION = '1.3.4';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -53,10 +54,10 @@ screens.review = reviewScreen;
 screens.log = reviewScreen;
 screens.grammar = grammarScreen;
 screens.toeic = grammarScreen;
-Object.assign(screens, { listening: listeningScreen, 'listening-run': listeningRun, speaking: speakingScreen, 'speaking-run': speakingRun, lesson: lessonScreen, 'lesson-run': lessonRun, games: gamesScreen, game: gameRun, datacheck: dataCheckScreen, course: courseScreen, 'course-unit': courseUnit, 'course-puzzle': coursePuzzle });
+Object.assign(screens, { listening: listeningScreen, 'listening-run': listeningRun, speaking: speakingScreen, 'speaking-run': speakingRun, lesson: lessonScreen, 'lesson-run': lessonRun, games: gamesScreen, game: gameRun, datacheck: dataCheckScreen, storage: storageScreen, course: courseScreen, 'course-unit': courseUnit, 'course-puzzle': coursePuzzle });
 screens.import = comingSoon('Import', 'import', '画像やスクリーンショットから英語を取り込む機能は、まだ実装していません。今は単語帳の「まとめて追加」「CSV」「英文から選ぶ」が使えます。');
 Object.assign(screens, { quick: quickSetup, 'quick-run': quickRun, 'quick-result': quickResult, video: videoList, 'video-play': videoPlay, study: studySetup, session: sessionScreen, result: resultScreen, vocab: vocabList, word: wordDetail, 'vocab-bulk': vocabBulk, 'vocab-csv': vocabCSV, 'vocab-paste': vocabPaste, decks: decksScreen });
-const TAB_OF = { course: 'home', 'course-unit': 'home', 'course-puzzle': 'home', datacheck: 'settings', 'listening-run': 'home', 'speaking-run': 'home', lesson: 'home', 'lesson-run': 'home', games: 'home', game: 'home', log: 'review', grammar: 'home', toeic: 'home', listening: 'home', speaking: 'home', import: 'home', quick: 'study', 'quick-run': 'study', 'quick-result': 'study', video: 'home', 'video-play': 'home', session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
+const TAB_OF = { storage: 'settings', course: 'home', 'course-unit': 'home', 'course-puzzle': 'home', datacheck: 'settings', 'listening-run': 'home', 'speaking-run': 'home', lesson: 'home', 'lesson-run': 'home', games: 'home', game: 'home', log: 'review', grammar: 'home', toeic: 'home', listening: 'home', speaking: 'home', import: 'home', quick: 'study', 'quick-run': 'study', 'quick-result': 'study', video: 'home', 'video-play': 'home', session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
 
 screens.settings = async (el) => {
   const theme = await getSetting('theme', 'dark');
@@ -107,6 +108,7 @@ screens.settings = async (el) => {
       <div class="kv"><span>ホーム画面から起動</span><b>${standalone ? '✅' : 'いいえ（Safariで表示中）'}</b></div>
       ${st.persisted ? '' : '<button class="btn" id="persist">データ保護をリクエスト</button>'}
       <a class="btn" href="#datacheck">データ点検（列のずれ・重複の確認）</a>
+      <a class="btn" href="#storage">容量の整理（キャッシュ・動画の削除）</a>
       <button class="btn" id="sample">テスト用サンプル単語を追加</button>
       <button class="btn danger" id="wipe">すべてのデータを削除</button>
     </div>

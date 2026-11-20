@@ -12,6 +12,15 @@ export async function copyBlob(file, onProgress = () => {}, { name = file.name |
   for (let o = 0; o < file.size; o += N) { parts.push(await file.slice(o, Math.min(file.size, o + N)).arrayBuffer()); onProgress(Math.min(1, (o + N) / file.size)); }
   return new File(parts, name, { type });
 }
+// several sound tracks: which one has speech (index among sound tracks). null when there is only one.
+export async function speechTrackIndex(blob, name = '', onStep = () => {}) {
+  if (!isContainer(blob, name)) return null;
+  let info; try { info = await probe(blob); } catch { return null; }
+  const at = audioTracks(info); if (at.length < 2) return null;
+  onStep(`音声が${at.length}本あります。話し声のある方を選んでいます…`);
+  const r = await chooseTrack(blob, info, decodeTo16k);
+  return { index: Math.max(0, at.indexOf(r.chosen || at[0])), count: at.length, reason: r.reason, auto: r.auto };
+}
 // several sound tracks (screen recordings: app sound + microphone): take the one with speech out as its own .m4a (no re-encoding).
 // Returns null when there is only one track (or the file is not mp4/mov).
 export async function separateSpeechTrack(blob, name = '', onStep = () => {}) {
@@ -57,13 +66,13 @@ export async function audio16kFromBlob(blob, { name = '', trackIndex = null, onS
 function highPass(a, fc = 80) { const rc = 1 / (2 * Math.PI * fc), dt = 1 / 16000, al = rc / (rc + dt); let py = 0, px = a[0] || 0; for (let i = 0; i < a.length; i++) { const x = a[i]; py = al * (py + x - px); px = x; a[i] = py; } return a; }
 
 // speech parts of the audio are recognised one by one (silences skipped). onPiece(cues) lets callers save as they go.
-export async function transcribeAudio(audio, { lang = 'en', fast = true, from = 0, to = null, onProgress = () => {}, onPiece = () => {}, isCancelled = () => false } = {}) {
+export async function transcribeAudio(audio, { lang = 'en', quality = 'acc', from = 0, to = null, onProgress = () => {}, onPiece = () => {}, isCancelled = () => false } = {}) {
   highPass(audio);
   const end = to ?? audio.length / 16000;
   const pieces = speechPieces(audio, from, end, { len: 45 });
   if (!pieces.length) throw stage('話し声の検出', '話し声が見つかりませんでした（無音か、音量がとても小さい）');
   const total = pieces.reduce((a, [x, y]) => a + y - x, 0);
-  const tr = openTranscriber(lang, (m) => onProgress(m, null), { fast });
+  const tr = openTranscriber(lang, (m) => onProgress(m, null), { quality });
   const all = [], raw = []; let done = 0;
   try {
     for (const [ps, pe] of pieces) {

@@ -131,8 +131,8 @@ export async function videoList(el) {
       const { copyBlob } = await import('./media-audio.js');
       const blob = f.size <= 600 * 1048576 ? await copyBlob(f, (r) => toast(`保存中… ${Math.round(r * 100)}%`, 10000), { type: f.type || 'video/mp4' }) : f;
       const v = { id: uid('v_'), lang: curLang(), name: f.name.replace(/\.[^.]+$/, '') || '動画', blob, mime: f.type || 'video/mp4', size: f.size, duration, lastTime: 0, createdAt: Date.now(), audioChecked: true };
-      // screen recordings have app sound and microphone as separate tracks: keep the speech track as its own sound file
-      try { const { separateSpeechTrack } = await import('./media-audio.js'); const sp = await separateSpeechTrack(blob, f.name, (m) => toast(m, 8000)); if (sp) { v.audioBlob = sp.file; v.audioTrack = sp.index; v.audioInfo = { count: sp.count, reason: sp.reason, auto: sp.auto }; } } catch {}
+      // screen recordings have app sound and microphone as separate tracks: decide now (before playing) which one has speech
+      try { const { speechTrackIndex } = await import('./media-audio.js'); const sp = await speechTrackIndex(blob, f.name, (m) => toast(m, 8000)); if (sp) { v.audioTrack = sp.index; v.audioInfo = { count: sp.count, reason: sp.reason, auto: sp.auto }; } } catch {}
       await db.put('videos', v);
       toast('動画を追加しました');
       go(`#video-play?id=${v.id}`);
@@ -174,7 +174,7 @@ export async function videoPlay(el, params) {
   let loop = null, ab = null, curId = null, rafId = 0, saveT = 0, loopN = 0, stepCue = null, revealedCue = null, editing = false;
   const revealed = new Map();   // cueId -> Set(hole index)
   const url = v.blob ? URL.createObjectURL(v.blob) : '';
-  const aurl = v.audioBlob ? URL.createObjectURL(v.audioBlob) : '';
+  const aurl = '';   // (1.3.1–1.3.2 used a separate sound file; now the chosen track of the video itself is played)
   const MLABEL = (m) => MODES.find((x) => x[0] === m)[1].replace('英', L(vlang).ch);
 
   el.innerHTML = `
@@ -229,7 +229,9 @@ export async function videoPlay(el, params) {
     <details class="card details" id="make"><summary>字幕を作る・読み込む</summary>
       <div class="stack" style="margin-top:8px">
         <button class="btn" id="asr">${icon('mic', 18)} 音声から${esc(TL)}字幕を作る（iPhone内・試験的）</button>
-        <p class="hint">無料。動画は外部に送りません。初回だけ音声認識モデル（約40〜80MB）をダウンロードします。iPhoneでは数分かかることがあり、うまく動かない場合もあります。</p>
+        <div class="fgrp"><span>文字起こしの精度</span><div class="seg" id="asrQ"><button data-v="fast">速さ</button><button data-v="acc">標準</button><button data-v="best">最高</button></div></div>
+        <p class="hint" id="asrQtxt"></p>
+        <p class="hint">無料。動画は外部に送りません。初回だけ音声認識モデルをダウンロードします（Wi-Fi推奨）。字幕ファイルや台本があれば、その読み込みが一番正確です。</p>
         <button class="btn" id="askClaude" ${cues.some((c) => c.en) ? '' : 'disabled'}>日本語訳をClaudeに頼む（依頼文ごとコピー）</button>
         <button class="btn" data-paste="ja">返ってきた日本語訳を貼り付け</button>
         <label class="btn" for="fEn">${esc(TL)}字幕ファイル（SRT/VTT）を読み込む</label>
@@ -243,52 +245,38 @@ export async function videoPlay(el, params) {
     </div>`;
 
   const root = $('#vroot', el), vid = $('#vid', el), sub = $('#sub', el), cl = $('#cl', el);
-  const pic = $('#vpic', el);
-  if (vid && pic) {   // picture follows the sound
-    vid.addEventListener('error', async () => {
-      const { readable } = await import('./media-audio.js');
-      if (await readable(v.audioBlob)) return;
-      const cur = await db.get('videos', v.id); if (!cur) return;
-      delete cur.audioBlob; cur.audioChecked = false; await db.put('videos', cur);
-      if (await readable(cur.blob)) { toast('音声を作り直しています…', 3000); videoPlay(el, params); }
-      else if (await confirmDialog({ title: '動画データが読めません', body: '<p>保存していた動画データが読めなくなっています。字幕・穴埋め・学習記録はそのまま残っています。</p>', okLabel: '動画を選び直す', cancelLabel: '閉じる' })) relinkVideo();
-    });
-    vid.addEventListener('play', () => pic.play().catch(() => {}));
-    vid.addEventListener('pause', () => pic.pause());
-    vid.addEventListener('ratechange', () => (pic.playbackRate = vid.playbackRate));
-    vid.addEventListener('seeked', () => { pic.currentTime = vid.currentTime; });
-    const sync = setInterval(() => { if (!document.contains(pic)) return clearInterval(sync); if (Math.abs(pic.currentTime - vid.currentTime) > 0.25) pic.currentTime = vid.currentTime; }, 500);
-    pic.addEventListener('click', () => (vid.paused ? vid.play() : vid.pause()));
-  }
-  // videos saved before: check once for several sound tracks and keep the speech track separately
-  if (vid && !pic && v.blob && !v.audioChecked) {
-    (async () => {
+  const pic = null;
+  if (v.audioBlob) { (async () => { const cur = await db.get('videos', v.id); if (cur?.audioBlob) { delete cur.audioBlob; await db.put('videos', cur); } })(); }   // free the old separate sound file
+  // videos saved before: decide the speech track once — only while paused (Web Audio during playback can stop the sound on iPhone)
+  if (vid && v.blob && v.audioTrack == null && !v.audioChecked) {
+    const check = async () => {
+      if (!vid.paused) return setTimeout(check, 3000);
       try {
-        const { separateSpeechTrack, readable } = await import('./media-audio.js');
+        const { speechTrackIndex, readable } = await import('./media-audio.js');
         if (!(await readable(v.blob))) return;
-        const sp = await separateSpeechTrack(v.blob, v.name + ((v.mime || '').includes('quicktime') ? '.mov' : '.mp4'));
+        const sp = await speechTrackIndex(v.blob, v.name + ((v.mime || '').includes('quicktime') ? '.mov' : '.mp4'));
         const cur = await db.get('videos', v.id); if (!cur) return;
-        cur.audioChecked = true;
-        if (sp) { Object.assign(cur, { audioBlob: sp.file, audioTrack: sp.index, audioInfo: { count: sp.count, reason: sp.reason, auto: sp.auto } }); }
+        cur.audioChecked = true; if (sp) { cur.audioTrack = sp.index; cur.audioInfo = { count: sp.count, reason: sp.reason, auto: sp.auto }; v.audioTrack = sp.index; }
         await db.put('videos', cur);
-        if (sp && location.hash.includes(v.id)) { toast(`音声が${sp.count}本あったので、話し声の方（音声${sp.index + 1}）で再生します`, 3500); videoPlay(el, params); }
+        if (sp) { enableTrack(); toast(`音声が${sp.count}本あったので、話し声の方（音声${sp.index + 1}）で再生します`, 3500); }
       } catch {}
-    })();
+    };
+    setTimeout(check, 500);
   }
   if (vid && !pic) {
     // several sound tracks (screen recordings: app sound + microphone): play only the one with speech, never mix
-    const pickTrack = async () => {
-      const at = vid.audioTracks; if (!at || at.length < 2) return;
-      if (v.audioTrack == null) {
-        try { const { probe, chooseTrack } = await import('./media-probe.js'); const { decodeTo16k } = await import('./asr.js'); const info = await probe(v.blob); const r = await chooseTrack(v.blob, info, decodeTo16k); const k = info.tracks.filter((t) => t.kind === 'audio').indexOf(r.chosen); if (k >= 0) { v.audioTrack = k; const cur = await db.get('videos', v.id); if (cur) { cur.audioTrack = k; await db.put('videos', cur); } } } catch {}
-      }
-      const k = v.audioTrack ?? 0; for (let i = 0; i < at.length; i++) at[i].enabled = i === k;
-    };
-    vid.addEventListener('loadedmetadata', pickTrack);
+    vid.addEventListener('loadedmetadata', enableTrack);
     vid.addEventListener('error', async () => {
       const { readable } = await import('./media-audio.js');
       if (!(await readable(v.blob)) && (await confirmDialog({ title: '動画データが読めません', body: '<p>保存していた動画データが読めなくなっています（iPhoneが一時ファイルを消した可能性）。字幕・穴埋め・学習記録はそのまま残っています。</p>', okLabel: '動画を選び直す', cancelLabel: '閉じる' }))) relinkVideo();
     });
+  }
+  function enableTrack() { const at = vid?.audioTracks; if (!at || at.length < 2 || v.audioTrack == null) return; for (let i = 0; i < at.length; i++) at[i].enabled = i === v.audioTrack; }
+  {   // speech recognition quality (tap to choose)
+    const QT = { fast: '速さ：約40MB・速いが聞き間違いが多い', acc: '標準：約80MB・おすすめ', best: '最高：約250MB・2〜3倍遅い・試験的（iPhoneのメモリによっては止まる）' };
+    const drawQ = (q) => { $$('#asrQ button', el).forEach((b) => b.classList.toggle('on', b.dataset.v === q)); $('#asrQtxt', el).textContent = QT[q]; };
+    getSetting('video.asrQ', 'acc').then(drawQ);
+    $('#asrQ', el).onclick = async (e) => { const q = e.target.closest('button')?.dataset.v; if (!q) return; await setSetting('video.asrQ', q); drawQ(q); };
   }
   const showEn = () => view.mode === 'both' || view.mode === 'en';
   const showJa = () => view.mode === 'both' || view.mode === 'ja' || (view.cloze && view.jaHint);
@@ -696,11 +684,10 @@ export async function videoPlay(el, params) {
     const say = (msg, p) => { if (cancelled) return; const m = $('#asrMsg', dlg); if (m) m.textContent = msg; const b = $('#asrBar', dlg); if (b && p != null) b.style.width = Math.max(2, p * 100) + '%'; };
     try {
       const { audio16kFromBlob, transcribeAudio } = await import('./media-audio.js');
-      const a = v.audioBlob ? await audio16kFromBlob(v.audioBlob, { name: 'speech.m4a', onStep: (m) => say(m, 0.05) })
-        : await audio16kFromBlob(v.blob, { name: v.name + '.' + ((v.mime || '').includes('quicktime') ? 'mov' : 'mp4'), trackIndex: v.audioTrack ?? null, onStep: (m) => say(m, 0.05) });
+      const a = await audio16kFromBlob(v.blob, { name: v.name + '.' + ((v.mime || '').includes('quicktime') ? 'mov' : 'mp4'), trackIndex: v.audioTrack ?? null, onStep: (m) => say(m, 0.05) });
       if (a.track && a.track.count > 1 && v.audioTrack == null) { v.audioTrack = a.track.index; await db.put('videos', v); }   // remember the chosen sound track (also used for playback)
-      const fast = (await getSetting('video.asrFast', true)) !== false;
-      const out = await transcribeAudio(a.audio, { lang: vlang, fast, onProgress: (m, p) => say(m, p == null ? null : 0.1 + p * 0.9), isCancelled: () => cancelled });
+      const quality = await getSetting('video.asrQ', 'acc');
+      const out = await transcribeAudio(a.audio, { lang: vlang, quality, onProgress: (m, p) => say(m, p == null ? null : 0.1 + p * 0.9), isCancelled: () => cancelled });
       if (cancelled) return;
       dlg.close();
       const jaOld = cues.filter((c) => c.ja).map((c) => ({ start: c.start, end: c.end, text: c.ja }));
@@ -723,8 +710,8 @@ export async function videoPlay(el, params) {
       const { copyBlob } = await import('./media-audio.js');
       toast('保存中…', 10000);
       try {
-        v.blob = await copyBlob(f, (r) => toast(`保存中… ${Math.round(r * 100)}%`, 10000), { type: f.type || v.mime || 'video/mp4' }); v.size = f.size; delete v.audioTrack; delete v.audioBlob;
-        try { const { separateSpeechTrack } = await import('./media-audio.js'); const sp = await separateSpeechTrack(v.blob, f.name, (m) => toast(m, 8000)); if (sp) { v.audioBlob = sp.file; v.audioTrack = sp.index; v.audioInfo = { count: sp.count, reason: sp.reason, auto: sp.auto }; } } catch {}
+        v.blob = await copyBlob(f, (r) => toast(`保存中… ${Math.round(r * 100)}%`, 10000), { type: f.type || v.mime || 'video/mp4' }); v.size = f.size; delete v.audioTrack; delete v.audioBlob; v.audioChecked = false;
+        try { const { speechTrackIndex } = await import('./media-audio.js'); const sp = await speechTrackIndex(v.blob, f.name, (m) => toast(m, 8000)); if (sp) { v.audioTrack = sp.index; v.audioInfo = { count: sp.count, reason: sp.reason, auto: sp.auto }; } } catch {}
         await db.put('videos', v); toast('動画を選び直しました'); videoPlay(el, params);
       }
       catch (e) { toast('保存できませんでした: ' + (e?.message || e)); }

@@ -2,7 +2,10 @@
 // Whisper runs in the browser through Transformers.js (loaded from a public CDN; the model is downloaded once and cached).
 // Audio never leaves the device. No API key, no server.
 const TF_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1';
-const MODELS = { en: 'onnx-community/whisper-base.en', multi: 'onnx-community/whisper-base', enFast: 'onnx-community/whisper-tiny.en', multiFast: 'onnx-community/whisper-tiny' };
+const MODELS = { en: 'onnx-community/whisper-base.en', multi: 'onnx-community/whisper-base', enFast: 'onnx-community/whisper-tiny.en', multiFast: 'onnx-community/whisper-tiny', enBest: 'Xenova/whisper-small.en', multiBest: 'Xenova/whisper-small' };
+// quality: 'fast' (tiny ~40 MB) / 'acc' (base ~80 MB, default) / 'best' (small ~250 MB, slow, experimental)
+export const QUALITY = { fast: '速さ優先（約40MB・精度は低め）', acc: '標準（約80MB）', best: '最高精度（約250MB・2〜3倍遅い・試験的）' };
+const modelFor = (lang, q) => { const k = q === 'fast' ? 'Fast' : q === 'best' ? 'Best' : ''; return lang === 'en' ? MODELS['en' + k] : MODELS['multi' + k]; };
 const LANG_NAME = { es: 'spanish', 'zh-TW': 'chinese', 'zh-CN': 'chinese' };
 
 const WORKER_SRC = `
@@ -103,8 +106,8 @@ export async function transcribe(blob, { lang = 'en', onProgress = () => {}, isC
 }
 
 // Keeps one worker (model loaded once) for several pieces of audio. run(audio16k) -> cues with times relative to the piece.
-export function openTranscriber(lang = 'en', onProgress = () => {}, { fast = true } = {}) {
-  const model = lang === 'en' ? (fast ? MODELS.enFast : MODELS.en) : (fast ? MODELS.multiFast : MODELS.multi);
+export function openTranscriber(lang = 'en', onProgress = () => {}, { fast, quality } = {}) {
+  const model = modelFor(lang, quality || (fast === true ? 'fast' : 'acc'));
   const devices = useGPU() ? ['webgpu', 'wasm'] : ['wasm'];
   const worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })), { type: 'module' });
   const files = {};

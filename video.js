@@ -75,11 +75,15 @@ export async function videoList(el) {
   for (const c of await db.all('cues')) cueCount[c.videoId] = (cueCount[c.videoId] || 0) + 1;
   el.innerHTML = `
     <header class="top"><a href="#home" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>🎬 Video Lab</h1></header>
-    <label class="btn primary" for="vpack">📦 教材スタジオの教材を追加（.elpack.zip）</label>
-    <input type="file" id="vpack" hidden>
-    <p class="hint" style="margin-top:6px">取り込み・カット・文字起こし・字幕づくりは<b>教材スタジオ</b>で行い、ここでは再生と学習（速度・区間リピート・ディクテーション・シャドーイング・穴埋め）を行います。スタジオで「⋯」→「教材パックとして書き出す」→「含める」で作ったファイルを選んでください。</p>
-    <label class="btn sm" for="vfile" style="margin-top:4px">動画をそのまま追加（字幕ファイルがある場合など）</label>
+    <label class="btn primary" for="vfile">＋ 動画を追加（写真・ファイル）</label>
     <input type="file" id="vfile" accept="video/*" hidden>
+    <div class="card stack" style="margin-top:8px">
+      <label class="chk"><input type="checkbox" id="optCut" ${(await getSetting('video.autoCut', true)) ? 'checked' : ''}> 取り込み時に、録画開始の音・前後の無音を自動でカット</label>
+      <label class="chk"><input type="checkbox" id="optSub" ${(await getSetting('video.autoSub', true)) ? 'checked' : ''}> 取り込み後、すぐ字幕を自動で作る（数分かかります）</label>
+      <span class="small muted">重いときはオフにして、あとで再生画面の「字幕を作る・読み込む」から実行できます。</span>
+    </div>
+    <label class="btn" for="vpack" style="margin-top:8px">📦 教材スタジオのパック（.elpack.zip）から追加</label>
+    <input type="file" id="vpack" hidden>
     <p class="hint" style="margin-top:6px">30秒〜5分程度の動画向け。動画はこのiPhoneの中だけに保存され、外部には送信されません。JSONバックアップに動画本体は含まれません（字幕は含まれます）。</p>
     <div id="vl">${vids.map((v) => `
       <a class="card vrow" href="#video-play?id=${v.id}">
@@ -95,6 +99,8 @@ export async function videoList(el) {
         <p><b>別途費用が必要</b>：翻訳をボタン一つで全自動にする場合（API料金）。このアプリでは使っていません。</p>
         <p>字幕付きの教材なら、その字幕ファイル（.srt / .vtt）を使うのが一番確実です。</p>
       </div></details>`;
+  $('#optCut', el).onchange = (e) => setSetting('video.autoCut', e.target.checked);
+  $('#optSub', el).onchange = (e) => setSetting('video.autoSub', e.target.checked);
   // material pack from the studio: its sound/video + subtitles (EN/JA) + hidden words become a video lab entry
   $('#vpack', el).onchange = async (e) => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
@@ -108,15 +114,8 @@ export async function videoList(el) {
       let first = null;
       for (const m of media) {
         toast('取り込み中…', 10000);
-        const raw = await z.file(m.path);
-        const { saveVideoCopy } = await import('./media-audio.js');
-        const sv = m.kind === 'video' ? await saveVideoCopy(new File([raw], m.name, { type: m.mime || 'video/mp4' }), { onStep: (x) => toast(x, 10000) }) : { blob: await copyBlob(raw, (r) => toast(`取り込み中… ${Math.round(r * 100)}%`, 10000), { name: m.name, type: m.mime || 'audio/mp4' }) };
-        const blob = sv.blob;
+        const raw = await z.file(m.path); const blob = await copyBlob(raw, (r) => toast(`取り込み中… ${Math.round(r * 100)}%`, 10000), { name: m.name, type: m.mime || 'video/mp4' });
         const v = { id: uid('v_'), lang: manifest.lang || curLang(), name: media.length > 1 ? `${manifest.title}（${m.name}）` : manifest.title, blob, mime: m.mime || 'video/mp4', size: blob.size, duration: m.duration || 0, lastTime: 0, createdAt: Date.now(), from: { pack: manifest.packId, material: manifest.materialId } };
-        Object.assign(v, { audioChecked: true, audioFixed: true }); if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
-        // the studio's cut (start/end) = the range covered by the items: playback stays inside it
-        const segs = mat.items.flatMap((it) => (it.segments || []).filter((g) => g.media === m.id));
-        if (segs.length) { const a0 = Math.min(...segs.map((g) => g.start)), a1 = Math.max(...segs.map((g) => g.end)); if (a0 > 0.05 || (m.duration && a1 < m.duration - 0.05)) v.trim = { start: a0, end: a1, why: 'スタジオのカット' }; }
         await db.put('videos', v);
         const cues = mat.items.filter((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja))
           .map((it) => ({ id: uid('c_'), videoId: v.id, start: it.segments[0].start, end: it.segments.at(-1).media === m.id ? it.segments.at(-1).end : it.segments[0].end, en: it.text || '', ja: it.ja || '', ...(it.holes?.length ? { holes: it.holes } : {}) }))
@@ -136,15 +135,17 @@ export async function videoList(el) {
     try {
       const duration = await probeDuration(f);
       // a real copy (Safari may otherwise keep only a reference to a temporary file that iOS deletes later)
-      // a real copy; for screen recordings (app sound + microphone) only the speech track is kept in the saved video
-      const { saveVideoCopy } = await import('./media-audio.js');
-      const sv = f.size <= 600 * 1048576 ? await saveVideoCopy(f, { onStep: (m) => toast(m, 10000) }) : { blob: f, info: null };
-      const blob = sv.blob;
-      const v = { id: uid('v_'), lang: curLang(), name: f.name.replace(/\.[^.]+$/, '') || '動画', blob, mime: f.type || 'video/mp4', size: blob.size, duration, lastTime: 0, createdAt: Date.now(), audioChecked: true, audioFixed: true };
-      if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
+      const { copyBlob } = await import('./media-audio.js');
+      const blob = f.size <= 600 * 1048576 ? await copyBlob(f, (r) => toast(`保存中… ${Math.round(r * 100)}%`, 10000), { type: f.type || 'video/mp4' }) : f;
+      const v = { id: uid('v_'), lang: curLang(), name: f.name.replace(/\.[^.]+$/, '') || '動画', blob, mime: f.type || 'video/mp4', size: f.size, duration, lastTime: 0, createdAt: Date.now(), audioChecked: true };
+      // screen recordings have app sound and microphone as separate tracks: decide now (before playing) which one has speech
+      try { const { speechTrackIndex } = await import('./media-audio.js'); const sp = await speechTrackIndex(blob, f.name, (m) => toast(m, 8000)); if (sp) { v.audioTrack = sp.index; v.audioInfo = { count: sp.count, reason: sp.reason, auto: sp.auto }; } } catch {}
+      if (await getSetting('video.autoCut', true)) {
+        try { toast('前後の音を調べています…', 6000); const { findEdgesBlob } = await import('./media-audio.js'); const r = await findEdgesBlob(blob, { name: f.name, trackIndex: v.audioTrack ?? null, duration }); if (r.start > 0.05 || r.end < (r.duration || duration) - 0.05) v.trim = { start: r.start, end: r.end, why: [r.whyStart, r.whyEnd].filter(Boolean).join('・') }; } catch {}
+      }
       await db.put('videos', v);
-      toast('動画を追加しました。字幕はファイルで読み込むか、教材スタジオで作ってください', 3500);
-      go(`#video-play?id=${v.id}`);
+      toast(v.trim ? `動画を追加しました（${fmtT(v.trim.start)}〜${fmtT(v.trim.end)} を使います）` : '動画を追加しました', 3000);
+      go(`#video-play?id=${v.id}${(await getSetting('video.autoSub', true)) ? '&auto=asr' : ''}`);
     } catch (err) { toast('保存できませんでした: ' + (err?.message || err)); }
   };
 }
@@ -235,9 +236,16 @@ export async function videoPlay(el, params) {
       <div class="row"><button class="btn sm grow" id="edit">穴を選ぶ（語をタップ）</button><button class="btn sm grow" id="autoGo">自動の候補で穴を作る</button></div>
       <div id="czStats" class="small"></div>
     </details>
-    <details class="card details" id="make"><summary>字幕を読み込む・日本語訳</summary>
+    <details class="card details" id="make"><summary>字幕を作る・読み込む</summary>
       <div class="stack" style="margin-top:8px">
-        <p class="hint">字幕の自動作成・前後のカット・スクリプト合わせは<b>教材スタジオ</b>で行います（ここは再生と学習用）。字幕ファイル（SRT/VTT）の読み込みと日本語訳の依頼はここでもできます。</p>
+        <button class="btn" id="asr">${icon('mic', 18)} 音声から${esc(TL)}字幕を作る（iPhone内・試験的）</button>
+        <div class="st-segrow"><b>前後のカット</b><span class="small" id="trimTxt"></span>
+          <div class="row"><button class="btn sm" id="trAuto">自動でカット</button><button class="btn sm" id="trS">開始＝今の位置</button><button class="btn sm" id="trE">終了＝今の位置</button><button class="btn sm" id="trX">解除</button></div>
+          <div class="row"><span class="small">開始</span><button class="btn xs" data-tr="s:-0.1">−0.1</button><button class="btn xs" data-tr="s:0.1">＋0.1</button><span class="small">終了</span><button class="btn xs" data-tr="e:-0.1">−0.1</button><button class="btn xs" data-tr="e:0.1">＋0.1</button></div>
+          <span class="hint">元の動画は変えません。再生・字幕作成はこの範囲だけで行います。</span></div>
+        <div class="fgrp"><span>文字起こしの精度</span><div class="seg" id="asrQ"><button data-v="fast">速さ</button><button data-v="acc">標準</button><button data-v="best">最高</button></div></div>
+        <p class="hint" id="asrQtxt"></p>
+        <p class="hint">無料。動画は外部に送りません。初回だけ音声認識モデルをダウンロードします（Wi-Fi推奨）。字幕ファイルや台本があれば、その読み込みが一番正確です。</p>
         <button class="btn" id="askClaude" ${cues.some((c) => c.en) ? '' : 'disabled'}>日本語訳をClaudeに頼む（依頼文ごとコピー）</button>
         <button class="btn" data-paste="ja">返ってきた日本語訳を貼り付け</button>
         <label class="btn" for="fEn">${esc(TL)}字幕ファイル（SRT/VTT）を読み込む</label>
@@ -254,25 +262,17 @@ export async function videoPlay(el, params) {
   const pic = null;
   if (v.audioBlob) { (async () => { const cur = await db.get('videos', v.id); if (cur?.audioBlob) { delete cur.audioBlob; await db.put('videos', cur); } })(); }   // free the old separate sound file
   // videos saved before: decide the speech track once — only while paused (Web Audio during playback can stop the sound on iPhone)
-  if (vid && v.blob && !v.audioFixed) {
+  if (vid && v.blob && v.audioTrack == null && !v.audioChecked) {
     const check = async () => {
       if (!vid.paused) return setTimeout(check, 3000);
       try {
         const { speechTrackIndex, readable } = await import('./media-audio.js');
         if (!(await readable(v.blob))) return;
-        const fname = v.name + ((v.mime || '').includes('quicktime') ? '.mov' : '.mp4');
-        const sp = await speechTrackIndex(v.blob, fname);
+        const sp = await speechTrackIndex(v.blob, v.name + ((v.mime || '').includes('quicktime') ? '.mov' : '.mp4'));
         const cur = await db.get('videos', v.id); if (!cur) return;
-        cur.audioChecked = true; cur.audioFixed = true;
-        if (sp) {
-          const { keepOneAudioTrack } = await import('./media-probe.js');
-          toast('音声を直しています（話し声の方だけ残します）…', 8000);
-          const f2 = await keepOneAudioTrack(cur.blob, sp.id, { name: fname, type: v.mime || 'video/mp4' }).catch(() => null);
-          if (f2) { cur.blob = f2; cur.size = f2.size; delete cur.audioTrack; cur.audioInfo = { count: sp.count, kept: sp.index, reason: sp.reason, auto: sp.auto }; }
-          else { cur.audioTrack = sp.index; }
-        }
+        cur.audioChecked = true; if (sp) { cur.audioTrack = sp.index; cur.audioInfo = { count: sp.count, reason: sp.reason, auto: sp.auto }; v.audioTrack = sp.index; }
         await db.put('videos', cur);
-        if (sp && location.hash.includes(v.id)) { toast(`音声が${sp.count}本あったので、話し声の方（音声${sp.index + 1}）だけにしました`, 3500); videoPlay(el, params); }
+        if (sp) { enableTrack(); toast(`音声が${sp.count}本あったので、話し声の方（音声${sp.index + 1}）で再生します`, 3500); }
       } catch {}
     };
     setTimeout(check, 500);
@@ -292,8 +292,8 @@ export async function videoPlay(el, params) {
   {   // speech recognition quality (tap to choose)
     const QT = { fast: '速さ：約40MB・速いが聞き間違いが多い', acc: '標準：約80MB・おすすめ', best: '最高：約250MB・2〜3倍遅い・試験的（iPhoneのメモリによっては止まる）' };
     const drawQ = (q) => { $$('#asrQ button', el).forEach((b) => b.classList.toggle('on', b.dataset.v === q)); $('#asrQtxt', el).textContent = QT[q]; };
-    if ($('#asrQ', el)) getSetting('video.asrQ', 'acc').then(drawQ);
-    if ($('#asrQ', el)) $('#asrQ', el).onclick = async (e) => { const q = e.target.closest('button')?.dataset.v; if (!q) return; await setSetting('video.asrQ', q); drawQ(q); };
+    getSetting('video.asrQ', 'acc').then(drawQ);
+    $('#asrQ', el).onclick = async (e) => { const q = e.target.closest('button')?.dataset.v; if (!q) return; await setSetting('video.asrQ', q); drawQ(q); };
   }
   const showEn = () => view.mode === 'both' || view.mode === 'en';
   const showJa = () => view.mode === 'both' || view.mode === 'ja' || (view.cloze && view.jaHint);
@@ -619,16 +619,16 @@ export async function videoPlay(el, params) {
   $('#qShadow', el).onclick = () => { shadowOn = !shadowOn; clearTimeout(shadowT); shadow.waiting = false; if (shadowOn) { dictOn = false; view.test = false; ab = null; loop = null; } applyView(); drawDict(); drawShadow(); drawSeek(); };
 
   drawTrim();
-  if ($('#trAuto', el)) $('#trAuto', el).onclick = async () => {
+  $('#trAuto', el).onclick = async () => {
     if (!vid?.paused) vid?.pause();   // analysis uses Web Audio: not while playing
     toast('前後の音を調べています…', 6000);
     try { const { findEdgesBlob } = await import('./media-audio.js'); const r = await findEdgesBlob(v.blob, { name: v.name + ((v.mime || '').includes('quicktime') ? '.mov' : '.mp4'), trackIndex: v.audioTrack ?? null, duration: vid?.duration || v.duration });
       if (r.start > 0.05 || r.end < r.duration - 0.05) { v.trim = { start: r.start, end: r.end, why: [r.whyStart, r.whyEnd].filter(Boolean).join('・') }; await saveTrim(); toast(`${fmtT(r.start)}〜${fmtT(r.end)} にしました`); } else toast('カットする音は見つかりませんでした');
     } catch (e) { toast('調べられませんでした：' + (e?.message || e)); }
   };
-  if ($('#trS', el)) $('#trS', el).onclick = () => { if (!vid) return; v.trim = { start: +vid.currentTime.toFixed(2), end: v.trim?.end ?? vid.duration, why: '手動' }; saveTrim(); };
-  if ($('#trE', el)) $('#trE', el).onclick = () => { if (!vid) return; v.trim = { start: v.trim?.start ?? 0, end: +vid.currentTime.toFixed(2), why: '手動' }; saveTrim(); };
-  if ($('#trX', el)) $('#trX', el).onclick = () => { delete v.trim; saveTrim(); };
+  $('#trS', el).onclick = () => { if (!vid) return; v.trim = { start: +vid.currentTime.toFixed(2), end: v.trim?.end ?? vid.duration, why: '手動' }; saveTrim(); };
+  $('#trE', el).onclick = () => { if (!vid) return; v.trim = { start: v.trim?.start ?? 0, end: +vid.currentTime.toFixed(2), why: '手動' }; saveTrim(); };
+  $('#trX', el).onclick = () => { delete v.trim; saveTrim(); };
   $$('[data-tr]', el).forEach((b) => (b.onclick = () => { if (!vid) return; const [k, d] = b.dataset.tr.split(':'); v.trim = v.trim || { start: 0, end: vid.duration }; if (k === 's') v.trim.start = Math.max(0, Math.min(v.trim.end - 0.3, +(v.trim.start + +d).toFixed(2))); else v.trim.end = Math.min(vid.duration || 1e9, Math.max(v.trim.start + 0.3, +(v.trim.end + +d).toFixed(2))); v.trim.why = '手動'; saveTrim(); }));
   if (params.get('auto') === 'asr' && !cues.some((c) => c.en)) { history.replaceState(null, '', location.hash.replace('&auto=asr', '')); setTimeout(() => runASR(), 400); }
 
@@ -700,7 +700,7 @@ export async function videoPlay(el, params) {
     try { await navigator.clipboard.writeText(text); toast('依頼文をコピーしました。Claudeのチャットに貼り付けて送り、返ってきた字幕を「返ってきた日本語訳を貼り付け」で取り込んでください', 6000); }
     catch { confirmDialog({ title: '依頼文', body: `<p class="hint">全選択してコピーしてください</p><textarea rows="10" readonly style="width:100%">${esc(text)}</textarea>`, okLabel: '閉じる', cancelLabel: null }); }
   };
-  $('#asr', el)?.addEventListener('click', () => runASR());
+  $('#asr', el).onclick = () => runASR();
   $('#make', el).addEventListener('click', (e) => { const p = e.target.closest('[data-paste]'); if (p) pasteDialog(p.dataset.paste); });
   $('#fEn', el).onchange = (e) => importFile(e, 'en');
   $('#fJa', el).onchange = (e) => importFile(e, 'ja');
@@ -733,7 +733,7 @@ export async function videoPlay(el, params) {
     } catch (err) {
       if (dlg.open) dlg.close();
       const lost = err?.stage === '保存データの読み込み';
-      const ok = await confirmDialog({ title: '字幕を作れませんでした', body: `<p class="small">${esc(err?.message || String(err))}</p><p class="hint">${lost ? '字幕・穴埋め・学習記録はそのまま残ります。同じ動画を選び直すと、続けて使えます。' : /文字起こし：.*(fetch|network|load|ダウンロード|Failed)/i.test(err?.message || '') ? '音声認識モデルのダウンロードに失敗した可能性があります（初回・精度を変えた時はネット接続が必要）。' : '段階：' + esc(err?.stage || '不明') + '。字幕ファイル（SRT）があれば、その読み込みが確実です。'}</p>`, okLabel: lost ? '動画を選び直す' : '閉じる', cancelLabel: lost ? '閉じる' : null });
+      const ok = await confirmDialog({ title: '字幕を作れませんでした', body: `<p class="small">${esc(err?.message || String(err))}</p><p class="hint">${lost ? '字幕・穴埋め・学習記録はそのまま残ります。同じ動画を選び直すと、続けて使えます。' : '初回はネット接続が必要です（モデルのダウンロード）。字幕ファイル（SRT）があれば、その読み込みが確実です。'}</p>`, okLabel: lost ? '動画を選び直す' : '閉じる', cancelLabel: lost ? '閉じる' : null });
       if (ok && lost) relinkVideo();
     }
   }
@@ -745,8 +745,8 @@ export async function videoPlay(el, params) {
       const { copyBlob } = await import('./media-audio.js');
       toast('保存中…', 10000);
       try {
-        const { saveVideoCopy } = await import('./media-audio.js'); const sv = await saveVideoCopy(f, { onStep: (m) => toast(m, 10000) });
-        v.blob = sv.blob; v.size = sv.blob.size; delete v.audioTrack; delete v.audioBlob; v.audioChecked = true; v.audioFixed = true; if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
+        v.blob = await copyBlob(f, (r) => toast(`保存中… ${Math.round(r * 100)}%`, 10000), { type: f.type || v.mime || 'video/mp4' }); v.size = f.size; delete v.audioTrack; delete v.audioBlob; v.audioChecked = false;
+        try { const { speechTrackIndex } = await import('./media-audio.js'); const sp = await speechTrackIndex(v.blob, f.name, (m) => toast(m, 8000)); if (sp) { v.audioTrack = sp.index; v.audioInfo = { count: sp.count, reason: sp.reason, auto: sp.auto }; } } catch {}
         await db.put('videos', v); toast('動画を選び直しました'); videoPlay(el, params);
       }
       catch (e) { toast('保存できませんでした: ' + (e?.message || e)); }

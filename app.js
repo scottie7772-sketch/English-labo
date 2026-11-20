@@ -18,7 +18,7 @@ import { storageScreen } from './storage.js';
 import { courseScreen, courseUnit, coursePuzzle } from './course.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.4.0';
+export const APP_VERSION = '1.3.5';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },

@@ -211,38 +211,3 @@ export async function chooseTrack(blob, info, decode) {
   if (a.level >= b.level * 4 && a.speech >= b.speech) return { chosen: a.t, auto: true, reason: '音量がほかの4倍以上', stats };
   return { chosen: a.t, auto: false, reason: '複数のトラックに音声があります', stats };
 }
-
-// A copy of an mp4/mov that keeps only ONE sound track (the speech track), without re-encoding anything:
-// the old table of contents (moov) is renamed to 'free' (so every data offset stays valid) and a new moov
-// without the other sound tracks is added at the end. Read into memory in pieces → saved as plain bytes.
-export async function keepOneAudioTrack(blob, keepTrackId, { name = 'video.mp4', type = blob.type || 'video/mp4', onProgress = () => {} } = {}) {
-  const tops = await topBoxes(blob);
-  const mb = tops.find((b) => b.type === 'moov');
-  if (!mb || mb.hdr !== 8) throw new Error('この動画の目次を書き換えられません');
-  const moov = new Uint8Array(await blob.slice(mb.off, mb.off + mb.size).arrayBuffer());
-  const d = new DataView(moov.buffer);
-  const kids = children(d, 8, mb.size);
-  const drop = new Set();
-  for (const k of kids) {
-    if (k.type !== 'trak') continue;
-    const hd = find(d, k, 'mdia', 'hdlr'), th = find(d, k, 'tkhd'); if (!hd || !th) continue;
-    const v = d.getUint8(th.body), id = d.getUint32(th.body + (v === 1 ? 20 : 12));
-    if (typeAt(d, hd.body + 8) === 'soun' && id !== keepTrackId) drop.add(k);
-  }
-  if (!drop.size) return null;
-  const keep = kids.filter((k) => !drop.has(k));
-  const len = 8 + keep.reduce((a, k) => a + k.size, 0);
-  const nm = new Uint8Array(len); const nd = new DataView(nm.buffer);
-  nd.setUint32(0, len); nm.set([109, 111, 111, 118], 4);   // 'moov'
-  let o = 8; for (const k of keep) { nm.set(moov.subarray(k.o, k.o + k.size), o); o += k.size; }
-  // copy the file in 8 MB pieces, renaming the old moov header to 'free'
-  const parts = [], N = 8 * 1024 * 1024;
-  for (let p = 0; p < blob.size; p += N) {
-    const buf = new Uint8Array(await blob.slice(p, Math.min(blob.size, p + N)).arrayBuffer());
-    const at = mb.off + 4 - p;   // position of the 4 type bytes inside this piece
-    for (let i = 0; i < 4; i++) if (at + i >= 0 && at + i < buf.length) buf[at + i] = [102, 114, 101, 101][i];   // 'free'
-    parts.push(buf.buffer); onProgress(Math.min(1, (p + N) / blob.size));
-  }
-  parts.push(nm.buffer);
-  return new File(parts, name, { type });
-}

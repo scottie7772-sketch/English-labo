@@ -12,7 +12,7 @@ import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.13.0';
+export const STUDIO_VERSION = '0.14.0';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -1538,7 +1538,12 @@ async function wordsScreen(el, params) {
       <div class="st-bar"><div class="row">
         <button class="btn sm grow" id="csv">CSVで書き出す</button>
         <button class="btn sm grow" id="cl">Claude用にコピー</button></div>
-        <small class="muted">CSVは English Labo の単語帳「CSVから登録」で読み込めます（意味は空欄）。意味もつけたいときは「Claude用にコピー」→ Claudeのチャットに貼る → 返ってきた表を「一括登録」に貼り付け。</small></div>`;
+        <small class="muted">意味をつけるには「Claude用にコピー」→ Claudeのチャットに貼る → 返ってきたCSVを${HOST ? '下に貼り付けて単語帳へ。' : '英語ラボの単語帳「CSVから追加」で読み込み。'}</small></div>
+      ${HOST ? `<div class="card stack"><b>訳をつけたCSVを単語帳へ</b>
+        <textarea id="wPaste" rows="5" placeholder="Claudeから返ってきたCSV（英語,日本語,品詞,例文,例文訳…）をここに貼り付け" autocapitalize="off" autocorrect="off"></textarea>
+        <label class="field"><span>単語集の名前（元データごとにまとめます）</span><input id="wDeck" value="${esc(set.folder || set.title)}"></label>
+        <button class="btn primary" id="wSend">英語ラボの単語帳へ（確認画面へ）</button>
+        <small class="muted">同じ単語がすでにあれば、新しく作らずにこの単語集にも入れます。</small></div>` : ''}`;
     const upd = () => { $('#cnt', el).textContent = `${set.title}：${list.length}${mode === 'phrase' ? '個の熟語' : '語'}（選択 ${chosen.size}）`; $('#csv', el).disabled = $('#cl', el).disabled = !chosen.size; };
     upd();
     $('#md', el).onclick = (e) => { const v = e.target.dataset.v; if (v && v !== mode) { mode = v; chosen.clear(); try { localStorage.setItem('st-wmode', v); } catch {} draw(); } };
@@ -1554,12 +1559,18 @@ async function wordsScreen(el, params) {
       const tag = set.title.replace(/[,\s/]+/g, '_').replace(/_+/g, '_');
       const csv = '﻿' + ['英語,日本語,例文,例文訳,タグ', ...picked().map((x) => [x.head, '', x.ex, x.exJa, tag].map(q).join(','))].join('\n');
       const file = new File([csv], `${set.title.replace(/[\\/:*?"<>|]/g, '_')}-${mode === 'phrase' ? 'phrases' : 'words'}.csv`, { type: 'text/csv' });
-      if (navigator.canShare?.({ files: [file] })) navigator.share({ files: [file] }).catch(() => {});
-      else { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click(); }
+      const copyIt = () => navigator.clipboard.writeText(csv.slice(1)).then(() => toast('書き出せなかったので、CSVの中身をコピーしました（メモ等に貼り付けて保存できます）', 4500), () => toast('書き出せませんでした'));
+      if (navigator.canShare?.({ files: [file] })) navigator.share({ files: [file] }).catch((e) => { if (e?.name !== 'AbortError') copyIt(); });
+      else { try { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click(); } catch { copyIt(); } }
     };
+    $('#wSend', el)?.addEventListener('click', () => {
+      const text = $('#wPaste', el).value.replace(/^```\w*\n?|```\s*$/gm, '').trim();
+      if (!text) return toast('CSVを貼り付けてください');
+      HOST.addWordsCsv?.(text, $('#wDeck', el).value.trim() || set.title, set.title);
+    });
     $('#cl', el).onclick = async () => {
       const text = (mode === 'phrase'
-        ? `次の英語の熟語・表現を、英語学習の単語帳用にCSVにしてください。列は「英語,日本語,品詞,例文,例文訳」。英語は下の見出しをそのまま使い（X・do などの記号もそのまま）、日本語は例文の文脈での意味を中心に（複数あれば「;」区切り）、品詞は「熟語」「句動詞」など、例文は下のものをそのまま使い、例文訳をつけてください。音声の文字起こしなので、例文の明らかな聞き間違いは直して構いません（直した場合は例文訳の後ろに「※修正」）。CSVだけをコードブロックで返してください。\n\n`
+        ? `次の英語の熟語・表現を、英語学習の単語帳用にCSVにしてください。列は「英語,日本語,品詞,例文,例文訳,メモ」。\n・英語は下の見出しを使います（X・do・one's などの記号はそのまま）。\n・日本語は例文の文脈での意味を中心に（複数あれば「;」区切り）。品詞は「熟語」「句動詞」など。\n・例文は下のものを使い、例文訳をつけます。\n・音声の文字起こしなので聞き間違いがあります。見出し・例文とも、明らかな聞き間違いは正しい英語に直し（例：but away→put away、relion→rely on）、直した内容は「メモ」列に書いてください（例文訳には書かない）。\n・1行に2つの項目が混ざっている場合は2行に分け、例文が見出しと合わない場合は見出しに合う短い例文にしてメモに書いてください。\nCSVだけをコードブロックで返してください。\n\n`
         : `次の英単語を、英語学習の単語帳用にCSVにしてください。列は「英語,日本語,品詞,例文,例文訳」。日本語は例文の文脈での意味を中心に（複数あれば「;」区切り）、例文は下のものをそのまま使い、例文訳をつけてください。熟語として覚えるべきものは、熟語の形に直して構いません。CSVだけをコードブロックで返してください。\n\n`) + picked().map((x) => `${x.head}\t${x.ex}`).join('\n');
       try { await navigator.clipboard.writeText(text); toast('コピーしました。Claudeのチャットに貼り付けてください', 3000); } catch { toast('コピーできませんでした'); }
     };

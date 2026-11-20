@@ -24,7 +24,7 @@ export function basisSkills(direction, format) {
 }
 export const FACTORY_TEST_DEFAULTS = Object.freeze({
   direction: 'ja2en', format: 'typing', levels: [1, 2], count: 'all', customCount: 15, order: 'random',
-  caseSensitive: false, bookmarkedOnly: false, phraseOnly: false, recentWrong: false, lowAcc: false, tag: '', deck: '',
+  caseSensitive: false, bookmarkedOnly: false, phraseOnly: false, recentWrong: false, lowAcc: false, tag: '', deck: '', decks: [],
 });
 const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', preposition: '前置詞', conjunction: '接続詞', pronoun: '代名詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語' };
 
@@ -47,13 +47,21 @@ export async function selectWords(cfg) {
   const weekAgo = Date.now() - 7 * 86400000;
   const wrongRecent = new Set(attempts.filter((a) => !a.correct && a.at >= weekAgo).map((a) => a.wordId));
   const noMeaning = words.filter((w) => needMeaning && !allMeanings(w).length).length;
+  // 単語集 (several can be chosen; each may have a range 「何番〜何番」 in the order the words were added)
+  const picks = cfg.decks?.length ? cfg.decks : cfg.deck ? [{ id: cfg.deck }] : [];
+  const inPicked = new Set();
+  for (const p of picks) {
+    const inDeck = words.filter((w) => (w.deckIds || []).includes(p.id)).sort((a, b) => a.createdAt - b.createdAt);
+    const from = Math.max(1, +p.from || 1), to = Math.min(inDeck.length, +p.to || inDeck.length);
+    inDeck.slice(from - 1, to).forEach((w) => inPicked.add(w.id));
+  }
   let list = words.filter((w) => {
     if (needMeaning && !allMeanings(w).length) return false;
     if (cfg.levels.length && !cfg.levels.includes(basisLevel(mastery[w.id], skills))) return false;
     if (cfg.bookmarkedOnly && !w.bookmarked) return false;
     if (cfg.phraseOnly && !w.isPhrase) return false;
     if (cfg.tag && !(w.tags || []).includes(cfg.tag)) return false;
-    if (cfg.deck && !(w.deckIds || []).includes(cfg.deck)) return false;
+    if (picks.length && !inPicked.has(w.id)) return false;
     if (cfg.recentWrong && !wrongRecent.has(w.id)) return false;
     if (cfg.lowAcc) {
       const st = skills.map((s) => mastery[w.id]?.[s]?.stats).filter((x) => x?.attempts);
@@ -66,7 +74,8 @@ export async function selectWords(cfg) {
   if (cfg.order === 'random') shuffle(list);
   else if (cfg.order === 'registered') list.sort((a, b) => a.createdAt - b.createdAt);
   else if (cfg.order === 'weak') list.sort((a, b) => basisLevel(mastery[a.id], skills) - basisLevel(mastery[b.id], skills) || Math.random() - 0.5);
-  return { list, mastery, skills, total: words.length, noMeaning, tags: [...new Set(words.flatMap((w) => w.tags || []))].sort(), decks };
+  const deckCount = {}; for (const w of words) for (const d of w.deckIds || []) deckCount[d] = (deckCount[d] || 0) + 1;
+  return { list, mastery, skills, total: words.length, noMeaning, tags: [...new Set(words.flatMap((w) => w.tags || []))].sort(), decks, deckCount };
 }
 
 async function activeSession() {
@@ -84,7 +93,7 @@ const RANGES = [
   ['recent', '最近の誤答', { levels: [], bookmarkedOnly: false, recentWrong: true }],
 ];
 function rangeOf(cfg) {
-  if (cfg.phraseOnly || cfg.lowAcc || cfg.tag || cfg.deck) return 'custom';
+  if (cfg.phraseOnly || cfg.lowAcc || cfg.tag || cfg.deck || cfg.decks?.length) return 'custom';
   const r = RANGES.find(([, , v]) => JSON.stringify(v.levels) === JSON.stringify(cfg.levels) && !!v.bookmarkedOnly === !!cfg.bookmarkedOnly && !!v.recentWrong === !!cfg.recentWrong);
   return r ? r[0] : 'custom';
 }
@@ -131,8 +140,12 @@ export async function studySetup(el) {
           <label class="chk"><input type="checkbox" data-c="phraseOnly" ${cfg.phraseOnly ? 'checked' : ''}> 熟語のみ</label>
           <label class="chk"><input type="checkbox" data-c="recentWrong" ${cfg.recentWrong ? 'checked' : ''}> 最近7日間に間違えた単語のみ</label>
           <label class="chk"><input type="checkbox" data-c="lowAcc" ${cfg.lowAcc ? 'checked' : ''}> この方向・形式の正答率が60%未満のみ</label>
-          <div class="row"><select id="tag" class="grow"><option value="">タグ：すべて</option>${sel.tags.map((t) => `<option ${cfg.tag === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
-            <select id="deck" class="grow"><option value="">単語集：すべて</option>${sel.decks.map((d) => `<option value="${d.id}" ${cfg.deck === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></div></div>
+          <div class="row"><select id="tag" class="grow"><option value="">タグ：すべて</option>${sel.tags.map((t) => `<option ${cfg.tag === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div></div>
+        ${sel.decks.length ? `<div class="fgrp"><span>単語集（複数可・範囲は追加した順の番号）</span>
+          <div class="stack" id="decks">${sel.decks.map((d) => { const p = (cfg.decks || []).find((x) => x.id === d.id) || (cfg.deck === d.id ? { id: d.id } : null); const n = sel.deckCount[d.id] || 0; return `<div class="row deckpick">
+            <label class="chk grow"><input type="checkbox" data-deck="${d.id}" ${p ? 'checked' : ''}> ${esc(d.name)} <small class="muted">${n}語</small></label>
+            ${p ? `<input type="number" inputmode="numeric" min="1" max="${n}" data-from="${d.id}" value="${p.from || ''}" placeholder="1" aria-label="から">〜<input type="number" inputmode="numeric" min="1" max="${n}" data-to="${d.id}" value="${p.to || ''}" placeholder="${n}" aria-label="まで">` : ''}</div>`; }).join('')}</div>
+          <p class="hint">未選択＝すべての単語。複数選ぶと、それぞれの範囲を合わせて出題します。</p></div>` : ''}
         <div class="fgrp"><span>出題順</span>
           <div class="seg wrap" data-k="order">${ORDERS.map(([v, l]) => `<button data-v="${v}" class="${cfg.order === v ? 'on' : ''}" ${v === 'due' ? 'disabled' : ''}>${l}${v === 'due' ? '（準備中）' : ''}</button>`).join('')}</div></div>
         ${cfg.format === 'typing' ? `<div class="fgrp"><label class="chk"><input type="checkbox" id="case" ${cfg.caseSensitive ? 'checked' : ''}> 大文字・小文字を区別する</label></div>` : ''}
@@ -169,7 +182,9 @@ export async function studySetup(el) {
     $('#case', el)?.addEventListener('change', (e) => { cfg.caseSensitive = e.target.checked; });
     el.querySelectorAll('[data-c]').forEach((c) => c.addEventListener('change', () => { cfg[c.dataset.c] = c.checked; refresh(); }));
     $('#tag', el).onchange = (e) => { cfg.tag = e.target.value; refresh(); };
-    $('#deck', el).onchange = (e) => { cfg.deck = e.target.value; refresh(); };
+    const deckSync = () => { cfg.deck = ''; cfg.decks = $$('[data-deck]', el).filter((c) => c.checked).map((c) => { const id = c.dataset.deck; const f = $(`[data-from="${id}"]`, el)?.value, t = $(`[data-to="${id}"]`, el)?.value; return { id, ...(f ? { from: +f } : {}), ...(t ? { to: +t } : {}) }; }); };
+    $$('[data-deck]', el).forEach((c) => c.addEventListener('change', () => { deckSync(); detailsOpen = true; refresh(); }));
+    $$('[data-from],[data-to]', el).forEach((c) => c.addEventListener('change', () => { deckSync(); detailsOpen = true; refresh(); }));
     $('#resetDef', el).onclick = async () => {
       await db.delete('settings', 'testDefaults');
       Object.assign(cfg, FACTORY_TEST_DEFAULTS, { levels: [...FACTORY_TEST_DEFAULTS.levels] });

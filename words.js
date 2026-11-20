@@ -216,17 +216,25 @@ export function findDuplicate(byHead, headword, meanings, exceptId = null) {
 export async function registerEntries(entries, source, extra = {}) {
   const heads = {};
   const byHeadOf = async (lang) => (heads[lang] ||= await wordsByHead(lang));
-  const words = []; let skipped = 0;
+  const words = [], linked = []; let skipped = 0; const base = Date.now();
   for (const e of entries) {
     const k = headKey(e.headword);
     const byHead = await byHeadOf(e.lang || extra.lang || curLang());
-    if (!k || findDuplicate(byHead, e.headword, e.meanings || [])) { skipped++; continue; }
+    const dup = k ? findDuplicate(byHead, e.headword, e.meanings || []) : null;
+    if (!k || dup) {
+      skipped++;
+      // already registered: put it into the deck(s) of this import as well (the same word in several source lists)
+      if (dup && extra.deckIds?.length && dup.id !== '_' && !words.includes(dup)) { const add = extra.deckIds.filter((d) => !(dup.deckIds || []).includes(d)); if (add.length) { dup.deckIds = [...(dup.deckIds || []), ...add]; linked.push(dup); } }
+      continue;
+    }
     const w = entryToWord(e, source, extra);
+    w.createdAt = base + words.length;   // keeps the order of the list (used for 「何番〜何番」 in a deck)
     if (!byHead.has(k)) byHead.set(k, []);
     byHead.get(k).push(w); words.push(w);
   }
   if (words.length) await db.putMany('words', words);
-  return { added: words.length, skipped, ids: words.map((w) => w.id) };
+  for (const w of linked) { const cur = await db.get('words', w.id); if (cur) { cur.deckIds = w.deckIds; await db.put('words', cur); } }
+  return { added: words.length, skipped, linked: linked.length, ids: words.map((w) => w.id) };
 }
 
 // ---- Seed: initial words from the user's previous app (all marked 苦手 there) ----

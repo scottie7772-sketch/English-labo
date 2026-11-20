@@ -423,7 +423,10 @@ async function previewAndRegister(el, entries, src, extra = {}, csv = null) {
     bindMap();
     $('#reg', out).onclick = async () => {
       const r = await registerEntries(rows.filter((x) => x.on).map((x) => x.e), src, extra);
-      toast(`${r.added}件を登録しました${r.skipped ? `（${r.skipped}件スキップ）` : ''}`);
+      // duplicates (not registered again): put the existing word into this deck too
+      let linked = r.linked || 0;
+      if (extra.deckIds?.length) for (const x of rows.filter((y) => !y.on && y.dup && y.dup.id !== '_')) { const cur = await db.get('words', x.dup.id); if (!cur) continue; const add = extra.deckIds.filter((d) => !(cur.deckIds || []).includes(d)); if (add.length) { cur.deckIds = [...(cur.deckIds || []), ...add]; await db.put('words', cur); linked++; } }
+      toast(`${r.added}件を登録しました${r.skipped ? `（${r.skipped}件スキップ）` : ''}${linked ? `・登録済みの${linked}件を単語集に追加` : ''}`, 3500);
       go('#vocab');
     };
   };
@@ -457,15 +460,31 @@ export async function vocabCSV(el) {
       <label class="btn" for="file">📂 CSVファイルを選ぶ</label>
       <input type="file" id="file" accept=".csv,text/csv,text/plain" hidden>
       <label class="field"><span>タグ（任意・全件に付与）</span><input id="tags" autocapitalize="off"></label>
+      <label class="field"><span>単語集（任意・元データごとにまとめるとき）</span><input id="deckName" list="deckList" autocapitalize="off" placeholder="例：金の熟語 E"></label>
+      <datalist id="deckList">${(await db.all('decks')).map((d) => `<option value="${esc(d.name)}">`).join('')}</datalist>
     </div>
     <div id="out"></div>`;
+  // the deck by name (made if new); same-headword words already registered are added to it too
+  const deckIdOf = async (name) => {
+    name = (name || '').trim(); if (!name) return [];
+    const ds = await db.all('decks'); let d = ds.find((x) => x.name === name);
+    if (!d) { d = { id: uid('d_'), name, createdAt: Date.now() }; await db.put('decks', d); }
+    return [d.id];
+  };
+  // from the studio inside this app: the pasted CSV comes in directly
+  let pending = null; try { pending = JSON.parse(sessionStorage.getItem('ell-pending-csv') || 'null'); sessionStorage.removeItem('ell-pending-csv'); } catch {}
+  if (pending?.text) {
+    $('#deckName', el).value = pending.deck || '';
+    const a = analyzeCSV(pending.text);
+    previewAndRegister(el, a.entries, { type: 'studio', note: pending.note || pending.deck || '' }, { tags: [], deckIds: await deckIdOf(pending.deck) }, { text: pending.text, analysis: a });
+  }
   $('#file', el).onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
     e.target.value = '';
     if (/\.(xlsx|xls|numbers)$/i.test(f.name)) { $('#out', el).innerHTML = '<div class="card warn">Excel・Numbersのファイルは直接読めません。Numbersなら「共有 → 書き出す → CSV」で書き出したファイルを選んでください。</div>'; return; }
     const text = await f.text();
     const a = analyzeCSV(text);
-    previewAndRegister(el, a.entries, { type: 'csv', note: f.name }, { tags: splitList($('#tags', el).value) }, { text, analysis: a });
+    previewAndRegister(el, a.entries, { type: 'csv', note: f.name }, { tags: splitList($('#tags', el).value), deckIds: await deckIdOf($('#deckName', el).value) }, { text, analysis: a });
   };
 }
 

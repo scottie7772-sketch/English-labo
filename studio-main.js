@@ -9,7 +9,7 @@ import { decodeTo16k, openTranscriber, speechPieces, captureTo16k } from './asr.
 import { extractPhrases, extractWords } from './studio-words.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 
-export const STUDIO_VERSION = '0.6.1';
+export const STUDIO_VERSION = '0.6.2';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -1026,14 +1026,17 @@ async function editorScreen(el, params) {
   async function exportText() {
     const pad = (n, l = 2) => String(n).padStart(l, '0');
     const ts = (t) => `${pad(Math.floor(t / 3600))}:${pad(Math.floor(t / 60) % 60)}:${pad(Math.floor(t % 60))},${pad(Math.round((t % 1) * 1000), 3)}`;
+    // times on the ORIGINAL file's clock (if the cut parts were deleted, the removed start is added back),
+    // so the SRT matches the original video in English Labo's video lab
     let acc = 0;
-    const srt = blocks.filter((b) => b.text || b.ja).map((b, i) => { const s0 = set.sourceId && b.segments.length === 1 && b.segments[0].sourceId === set.sourceId ? b.segments[0].start : acc; const d = blockDur(b) || 2; acc = s0 + d; return `${i + 1}\n${ts(s0)} --> ${ts(s0 + d)}\n${b.text}${b.ja ? '\n' + b.ja : ''}\n`; }).join('\n');
-    const txt = blocks.filter((b) => b.text || b.ja).map((b) => [b.label ? `【${b.label}】` : '', b.text, b.ja].filter(Boolean).join('\n')).join('\n\n');
-    const which = await confirmDialog({ title: 'テキストを書き出す', body: '<p>どちらの形式にしますか？</p><p class="hint">TXT：英文（と和訳）を並べた文書。SRT：時間つき字幕（動画アプリやEnglaboの動画ラボで使える）。</p>', okLabel: 'TXT', cancelLabel: 'SRT' });
+    const timed = blocks.filter((b) => b.text || b.ja).map((b) => { const g = b.segments[0]; const off = g ? srcs[g.sourceId]?.trimmed?.from || 0 : 0; const s0 = set.sourceId && b.segments.length === 1 && g.sourceId === set.sourceId ? g.start + off : acc; const d = blockDur(b) || 2; acc = s0 + d; return { s0, s1: s0 + d, en: b.text, ja: b.ja }; });
+    const toSrt = (k) => timed.filter((c) => c[k]).map((c, i) => `${i + 1}\n${ts(c.s0)} --> ${ts(c.s1)}\n${c[k]}\n`).join('\n');
+    const srt = toSrt('en'), srtJa = toSrt('ja');
+    const which = await confirmDialog({ title: 'テキストを書き出す', body: '<p>どちらの形式にしますか？</p><p class="hint">TXT：英文（と和訳）を並べた文書。SRT：時間つき字幕。英語と日本語は別々のファイルになります（Englaboの動画ラボで「英語字幕」「日本語字幕」としてそれぞれ読み込めます）。</p>', okLabel: 'TXT', cancelLabel: 'SRT' });
     const name = set.title.replace(/[\\/:*?"<>|]/g, '_');
-    const file = which ? new File([txt], `${name}.txt`, { type: 'text/plain' }) : new File([srt], `${name}.en.srt`, { type: 'text/plain' });
-    if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === 'AbortError') return; } }
-    const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click();
+    const files = which ? [new File([txt], `${name}.txt`, { type: 'text/plain' })] : [new File([srt], `${name}.en.srt`, { type: 'text/plain' }), ...(srtJa ? [new File([srtJa], `${name}.ja.srt`, { type: 'text/plain' })] : [])];
+    if (navigator.canShare?.({ files })) { try { await navigator.share({ files }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+    for (const file of files) { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click(); await new Promise((q) => setTimeout(q, 300)); }
   }
 
   // ---------- header buttons ----------

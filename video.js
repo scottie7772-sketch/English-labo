@@ -77,6 +77,8 @@ export async function videoList(el) {
     <header class="top"><a href="#home" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>🎬 Video Lab</h1></header>
     <label class="btn primary" for="vfile">＋ 動画を追加（写真・ファイル）</label>
     <input type="file" id="vfile" accept="video/*" hidden>
+    <label class="btn" for="vpack" style="margin-top:8px">📦 教材スタジオのパック（.elpack.zip）から追加</label>
+    <input type="file" id="vpack" hidden>
     <p class="hint" style="margin-top:6px">30秒〜5分程度の動画向け。動画はこのiPhoneの中だけに保存され、外部には送信されません。JSONバックアップに動画本体は含まれません（字幕は含まれます）。</p>
     <div id="vl">${vids.map((v) => `
       <a class="card vrow" href="#video-play?id=${v.id}">
@@ -88,9 +90,36 @@ export async function videoList(el) {
       <div class="small stack" style="margin-top:8px">
         <p><b>追加料金なし</b>：SRT/VTT字幕の読み込み、字幕の手入力・編集、再生・リピート・速度変更、単語登録。<br>
         日本語訳は <b>Claudeのチャット（Proの範囲）</b> で作れます：再生画面の「⋯」→「英語字幕をコピー」→ Claudeに「このSRTを日本語に訳して、同じ形式・同じ時間で返して」と貼る → 返ってきたSRTを「字幕を貼り付け（日本語）」で取り込み。</p>
-        <p><b>別途費用が必要</b>：動画の音声から英語字幕を自動で作る機能（文字起こしAPIの従量課金と、APIキーを隠すためのサーバーが必要）。Claudeのチャットは動画の音声を直接文字起こしできないため、Proの範囲では自動化できません。翻訳をボタン一つで自動化する場合も、API料金がかかります。</p>
+        <p><b>追加料金なし（iPhone内・試験的）</b>：動画の音声から英語字幕を作る（再生画面の「字幕を作る」）。教材スタジオで作った字幕つき教材も、パックから取り込めます。</p>
+        <p><b>別途費用が必要</b>：翻訳をボタン一つで全自動にする場合（API料金）。このアプリでは使っていません。</p>
         <p>字幕付きの教材なら、その字幕ファイル（.srt / .vtt）を使うのが一番確実です。</p>
       </div></details>`;
+  // material pack from the studio: its sound/video + subtitles (EN/JA) + hidden words become a video lab entry
+  $('#vpack', el).onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    try {
+      const { zipRead } = await import('./common-pack.js'); const { copyBlob } = await import('./media-audio.js');
+      const z = await zipRead(f);
+      const manifest = JSON.parse(await z.text('manifest.json')), mat = JSON.parse(await z.text('material.json'));
+      if (manifest.format !== 'elpack') throw new Error('教材スタジオのパックではありません');
+      const media = mat.media.filter((m) => m.included);
+      if (!media.length) throw new Error('このパックには動画・音声が入っていません。スタジオで「動画・音声も含める」を選んで書き出し直してください');
+      let first = null;
+      for (const m of media) {
+        toast('取り込み中…', 10000);
+        const raw = await z.file(m.path); const blob = await copyBlob(raw, (r) => toast(`取り込み中… ${Math.round(r * 100)}%`, 10000));
+        const v = { id: uid('v_'), lang: manifest.lang || curLang(), name: media.length > 1 ? `${manifest.title}（${m.name}）` : manifest.title, blob: new Blob([blob], { type: m.mime || 'video/mp4' }), mime: m.mime || 'video/mp4', size: blob.size, duration: m.duration || 0, lastTime: 0, createdAt: Date.now(), from: { pack: manifest.packId, material: manifest.materialId } };
+        await db.put('videos', v);
+        const cues = mat.items.filter((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja))
+          .map((it) => ({ id: uid('c_'), videoId: v.id, start: it.segments[0].start, end: it.segments.at(-1).media === m.id ? it.segments.at(-1).end : it.segments[0].end, en: it.text || '', ja: it.ja || '', ...(it.holes?.length ? { holes: it.holes } : {}) }))
+          .sort((a, b) => a.start - b.start);
+        await replaceCues(v.id, cues);
+        first ||= v;
+      }
+      toast(`取り込みました（字幕 ${mat.items.filter((it) => it.text || it.ja).length}行）`);
+      go(`#video-play?id=${first.id}`);
+    } catch (err) { toast('取り込めませんでした：' + (err?.message || err), 5000); }
+  };
   $('#vfile', el).onchange = async (e) => {
     const f = e.target.files[0]; e.target.value = '';
     if (!f) return;
@@ -98,7 +127,10 @@ export async function videoList(el) {
     toast('保存中…', 10000);
     try {
       const duration = await probeDuration(f);
-      const v = { id: uid('v_'), lang: curLang(), name: f.name.replace(/\.[^.]+$/, '') || '動画', blob: new Blob([f], { type: f.type || 'video/mp4' }), mime: f.type || 'video/mp4', size: f.size, duration, lastTime: 0, createdAt: Date.now() };
+      // a real copy (Safari may otherwise keep only a reference to a temporary file that iOS deletes later)
+      const { copyBlob } = await import('./media-audio.js');
+      const blob = f.size <= 600 * 1048576 ? await copyBlob(f, (r) => toast(`保存中… ${Math.round(r * 100)}%`, 10000)) : new Blob([f], { type: f.type || 'video/mp4' });
+      const v = { id: uid('v_'), lang: curLang(), name: f.name.replace(/\.[^.]+$/, '') || '動画', blob: blob.type ? blob : new Blob([blob], { type: f.type || 'video/mp4' }), mime: f.type || 'video/mp4', size: f.size, duration, lastTime: 0, createdAt: Date.now() };
       await db.put('videos', v);
       toast('動画を追加しました');
       go(`#video-play?id=${v.id}`);
@@ -194,6 +226,21 @@ export async function videoPlay(el, params) {
     </div>`;
 
   const root = $('#vroot', el), vid = $('#vid', el), sub = $('#sub', el), cl = $('#cl', el);
+  if (vid) {
+    // several sound tracks (screen recordings: app sound + microphone): play only the one with speech, never mix
+    const pickTrack = async () => {
+      const at = vid.audioTracks; if (!at || at.length < 2) return;
+      if (v.audioTrack == null) {
+        try { const { probe, chooseTrack } = await import('./media-probe.js'); const { decodeTo16k } = await import('./asr.js'); const info = await probe(v.blob); const r = await chooseTrack(v.blob, info, decodeTo16k); const k = info.tracks.filter((t) => t.kind === 'audio').indexOf(r.chosen); if (k >= 0) { v.audioTrack = k; const cur = await db.get('videos', v.id); if (cur) { cur.audioTrack = k; await db.put('videos', cur); } } } catch {}
+      }
+      const k = v.audioTrack ?? 0; for (let i = 0; i < at.length; i++) at[i].enabled = i === k;
+    };
+    vid.addEventListener('loadedmetadata', pickTrack);
+    vid.addEventListener('error', async () => {
+      const { readable } = await import('./media-audio.js');
+      if (!(await readable(v.blob)) && (await confirmDialog({ title: '動画データが読めません', body: '<p>保存していた動画データが読めなくなっています（iPhoneが一時ファイルを消した可能性）。字幕・穴埋め・学習記録はそのまま残っています。</p>', okLabel: '動画を選び直す', cancelLabel: '閉じる' }))) relinkVideo();
+    });
+  }
   const showEn = () => view.mode === 'both' || view.mode === 'en';
   const showJa = () => view.mode === 'both' || view.mode === 'ja' || (view.cloze && view.jaHint);
 
@@ -425,12 +472,15 @@ export async function videoPlay(el, params) {
     let cancelled = false;
     dlg.onclose = () => { cancelled = true; };
     dlg.showModal();
+    const say = (msg, p) => { if (cancelled) return; const m = $('#asrMsg', dlg); if (m) m.textContent = msg; const b = $('#asrBar', dlg); if (b && p != null) b.style.width = Math.max(2, p * 100) + '%'; };
     try {
-      const { transcribe } = await import('./asr.js');
-      const out = await transcribe(v.blob, { lang: vlang, onProgress: (msg, p) => { if (cancelled) return; const m = $('#asrMsg', dlg); if (m) m.textContent = msg; const b = $('#asrBar', dlg); if (b && p != null) b.style.width = Math.max(2, p * 100) + '%'; }, isCancelled: () => cancelled });
+      const { audio16kFromBlob, transcribeAudio } = await import('./media-audio.js');
+      const a = await audio16kFromBlob(v.blob, { name: v.name + '.' + ((v.mime || '').includes('quicktime') ? 'mov' : 'mp4'), trackIndex: v.audioTrack ?? null, onStep: (m) => say(m, 0.05) });
+      if (a.track && a.track.count > 1 && v.audioTrack == null) { v.audioTrack = a.track.index; await db.put('videos', v); }   // remember the chosen sound track (also used for playback)
+      const fast = (await getSetting('video.asrFast', true)) !== false;
+      const out = await transcribeAudio(a.audio, { lang: vlang, fast, onProgress: (m, p) => say(m, p == null ? null : 0.1 + p * 0.9), isCancelled: () => cancelled });
       if (cancelled) return;
       dlg.close();
-      if (!out.length) return toast('音声から文字を取り出せませんでした');
       const jaOld = cues.filter((c) => c.ja).map((c) => ({ start: c.start, end: c.end, text: c.ja }));
       cues = mergeJa(out.map((x) => ({ id: uid('c_'), videoId: v.id, start: x.start, end: x.end, en: x.text, ja: '', auto: true })), jaOld, v.id);
       await replaceCues(v.id, cues);
@@ -438,8 +488,22 @@ export async function videoPlay(el, params) {
       videoPlay(el, params);
     } catch (err) {
       if (dlg.open) dlg.close();
-      confirmDialog({ title: '字幕を作れませんでした', body: `<p class="small">${esc(err?.message || String(err))}</p><p class="hint">初回はネット接続が必要です（モデルのダウンロード）。メモリ不足の場合は、短い動画で試すか、SRT字幕の読み込みを使ってください。</p>`, okLabel: '閉じる', cancelLabel: null });
+      const lost = err?.stage === '保存データの読み込み';
+      const ok = await confirmDialog({ title: '字幕を作れませんでした', body: `<p class="small">${esc(err?.message || String(err))}</p><p class="hint">${lost ? '字幕・穴埋め・学習記録はそのまま残ります。同じ動画を選び直すと、続けて使えます。' : '初回はネット接続が必要です（モデルのダウンロード）。字幕ファイル（SRT）があれば、その読み込みが確実です。'}</p>`, okLabel: lost ? '動画を選び直す' : '閉じる', cancelLabel: lost ? '閉じる' : null });
+      if (ok && lost) relinkVideo();
     }
+  }
+  // put the video file back (same subtitles and records) when the saved data became unreadable
+  function relinkVideo() {
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'video/*';
+    inp.onchange = async () => {
+      const f = inp.files[0]; if (!f) return;
+      const { copyBlob } = await import('./media-audio.js');
+      toast('保存中…', 10000);
+      try { const b = await copyBlob(f, (r) => toast(`保存中… ${Math.round(r * 100)}%`, 10000)); v.blob = new Blob([b], { type: f.type || v.mime || 'video/mp4' }); v.size = f.size; delete v.audioTrack; await db.put('videos', v); toast('動画を選び直しました'); videoPlay(el, params); }
+      catch (e) { toast('保存できませんでした: ' + (e?.message || e)); }
+    };
+    inp.click();
   }
   async function importText(text, lang) {
     const list = parseSubs(text);

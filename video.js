@@ -144,6 +144,11 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true 
   if (!missing.length) toast(`${nUpd ? `更新しました` : '取り込みました'}（字幕 ${mat.items.filter((it) => it.segments?.length && (it.text || it.ja)).length}行）`);
   return first;
 }
+// names for display: inner file paths / ids made by the pack are hidden (the saved name is not changed)
+export function displayName(n) {
+  const t = String(n || '').replace(/^(subtitles|media)\//, '').replace(/^tr_[a-z0-9]+-/i, '').replace(/^fp_[0-9a-f]+(_\d+)?/i, '').replace(/\.(srt|vtt|txt|csv|mp4|m4a|mov|mp3|wav)$/i, '').replace(/^[\s_-]+/, '').trim();
+  return t || String(n || '無題');
+}
 // ---- media files live in their own store ('vblobs') and are written once ----
 // (iPhone: putting a file that was read from the database back into it — e.g. with the play position — made it unreadable after reopening)
 export async function videoBlob(v) { if (!v) return null; return (await db.get('vblobs', v.id))?.blob || v.blob || null; }
@@ -181,38 +186,66 @@ export async function videoList(el) {
   const vids = await videoMetas();
   const cueCount = {};
   for (const c of await db.all('cues')) cueCount[c.videoId] = (cueCount[c.videoId] || 0) + 1;
-  el.innerHTML = `
-    <header class="top"><a href="#home" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>🎬 Video Lab</h1></header>
-    <a class="btn primary" href="#studio/sets">🛠 教材スタジオを開く（教材を作って送る）</a>
-    <label class="btn" for="vpack">📦 教材パック（.elpack.zip）を読み込む</label>
-    <input type="file" id="vpack" hidden>
-    <p class="hint" style="margin-top:6px">取り込み・カット・文字起こし・字幕づくりは<b>教材スタジオ</b>で行い、ここでは再生と学習（速度・区間リピート・ディクテーション・シャドーイング・穴埋め）を行います。スタジオで「⋯」→「教材パックとして書き出す」→「含める」で作ったファイルを選んでください。</p>
-    <label class="btn sm" for="vfile" style="margin-top:4px">動画をそのまま追加（字幕ファイルがある場合など）</label>
-    <input type="file" id="vfile" accept="video/*" hidden>
-    <p class="hint" style="margin-top:6px">30秒〜5分程度の動画向け。動画はこのiPhoneの中だけに保存され、外部には送信されません。JSONバックアップに動画本体は含まれません（字幕は含まれます）。</p>
-    <div id="vlbar"></div>
-    <div id="vl">${vids.map((v) => `
-      <a class="card vrow" href="#video-play?id=${v.id}" data-id="${v.id}">
+  // children of a "parent" (several sound files joined): shown folded under it
+  const kidIds = new Set(vids.filter((v) => v.kind === 'multi').flatMap((v) => (v.parts || []).map((p) => p.videoId)));
+  const recent = (v) => v.playedAt || v.createdAt || 0;
+  const tops = vids.filter((v) => !kidIds.has(v.id)).sort((a, b) => recent(b) - recent(a));
+  const resume = vids.filter((v) => v.playedAt && v.lastTime > 1).sort((a, b) => b.playedAt - a.playedAt)[0];
+  const T = (x) => (x ? fmtT(x).replace(/\.\d$/, '') : '');
+  const rowHTML = (v, kid = false) => `
+      <a class="card vrow ${kid ? 'vkid' : ''}" href="#video-play?id=${v.id}" data-id="${v.id}">
         <span class="vsel" hidden><input type="checkbox" data-pick="${v.id}"></span>
-        <span class="vic">${icon('video', 26)}</span>
-        <span class="grow"><b>${esc(v.name)}</b><span class="tagp">${esc(L(v.lang || 'en').short)}</span><span class="small muted block">${v.kind === 'multi' ? `📚 音声${(v.parts || []).length}本をつないだ教材・` : ''}${v.duration ? fmtT(v.duration).replace(/\.\d$/, '') : ''}${v.kind === 'multi' ? '' : `・${fmtSize(v.size || 0)}`}・字幕 ${cueCount[v.id] || 0}行${v.hasBlob ? '' : '・<span class="danger-text">動画ファイルなし</span>'}</span></span>
+        <span class="vic2">${v.kind === 'multi' ? '📚' : String(v.mime || '').startsWith('audio') ? '🎧' : '🎬'}</span>
+        <span class="grow vtxt"><b>${esc(displayName(v.name))}</b><span class="vmeta">${[v.kind === 'multi' ? `音声${(v.parts || []).length}本` : '', T(v.duration), `字幕${cueCount[v.id] || 0}行`, esc(L(v.lang || 'en').short)].filter(Boolean).join(' · ')}${v.hasBlob ? '' : ' · <span class="danger-text">ファイルなし</span>'}</span></span>
         <span class="muted">›</span>
-      </a>`).join('') || '<div class="card center muted">まだ動画がありません</div>'}</div>
-    <details class="card" style="margin-top:14px"><summary><b>字幕・翻訳について（無料でできる範囲）</b></summary>
-      <div class="small stack" style="margin-top:8px">
-        <p><b>追加料金なし</b>：SRT/VTT字幕の読み込み、字幕の手入力・編集、再生・リピート・速度変更、単語登録。<br>
-        日本語訳は <b>Claudeのチャット（Proの範囲）</b> で作れます：再生画面の「⋯」→「英語字幕をコピー」→ Claudeに「このSRTを日本語に訳して、同じ形式・同じ時間で返して」と貼る → 返ってきたSRTを「字幕を貼り付け（日本語）」で取り込み。</p>
-        <p><b>追加料金なし（iPhone内・試験的）</b>：動画の音声から英語字幕を作る（再生画面の「字幕を作る」）。教材スタジオで作った字幕つき教材も、パックから取り込めます。</p>
-        <p><b>別途費用が必要</b>：翻訳をボタン一つで全自動にする場合（API料金）。このアプリでは使っていません。</p>
-        <p>字幕付きの教材なら、その字幕ファイル（.srt / .vtt）を使うのが一番確実です。</p>
-      </div></details>`;
+      </a>`;
+  el.innerHTML = `
+    <header class="top"><a href="#home" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>Video Lab</h1><span class="grow"></span><button class="icon-btn" id="vlMenu" aria-label="メニュー">⋯</button></header>
+    ${resume ? `<a class="card vresume" href="#video-play?id=${resume.id}"><span class="grow"><span class="vmeta">続きから</span><b>${esc(displayName(resume.name))}</b><span class="vmeta">${T(resume.lastTime)} / ${T(resume.duration)}</span></span><span class="vresume-play">▶︎</span></a>` : ''}
+    <div class="row vacts"><a class="btn sm primary grow" href="#studio/sets">🛠 教材を作る</a><label class="btn sm grow" for="vpack">📦 パックを読み込む</label></div>
+    <input type="file" id="vpack" hidden><input type="file" id="vfile" accept="video/*" hidden>
+    <div id="vlbar"></div>
+    <div id="vl">${tops.map((v) => {
+      const kids = v.kind === 'multi' ? (v.parts || []).map((p) => vids.find((x) => x.id === p.videoId)).filter(Boolean) : [];
+      return rowHTML(v) + (kids.length ? `<details class="vkids"><summary>音声ごと（${kids.length}）</summary>${kids.map((k) => rowHTML(k, true)).join('')}</details>` : '');
+    }).join('') || '<div class="card center muted">まだ教材がありません。「教材を作る」から作れます。</div>'}</div>`;
+  // ⋯: less used things and the explanations
+  $('#vlMenu', el).onclick = async () => {
+    const dlg = $('#dialog');
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>Video Lab</h3>
+      <label class="btn" for="vfile" data-close>動画をそのまま追加（字幕ファイルがある場合など）</label>
+      <a class="btn" href="#storage" data-close>容量の整理</a>
+      <details class="card"><summary><b>使い方</b></summary><p class="small">取り込み・カット・文字起こし・字幕づくりは<b>教材スタジオ</b>で行い、ここでは再生と学習（速度・区間リピート・ディクテーション・シャドーイング・穴埋め）を行います。スタジオで教材を開き「⋯」→「英語ラボに送る」で入ります。<br>一覧の行は、タップで開く・長押しで名前の変更や削除・左スワイプで削除。</p></details>
+      <details class="card"><summary><b>字幕・翻訳について（無料の範囲）</b></summary><p class="small">SRT/VTT字幕の読み込み・編集・再生・単語登録は追加料金なしです。日本語訳は再生画面の「⋯」→「日本語訳をClaudeに頼む」で依頼文をコピーし、Claudeのチャットで作れます。翻訳の全自動化（API）は使っていません。動画はこのiPhoneの中だけに保存され、外部には送りません。JSONバックアップに動画本体は含まれません（字幕は含まれます）。</p></details>
+      <button class="btn ghost" value="cancel">閉じる</button></form>`;
+    dlg.querySelectorAll('[data-close]').forEach((x) => x.addEventListener('click', () => setTimeout(() => dlg.close(), 0)));
+    dlg.returnValue = ''; dlg.showModal();
+  };
+  // long press on a row: rename / delete
+  let lpT = null, lpUsed = false;
+  $('#vl', el).addEventListener('pointerdown', (e) => {
+    const a = e.target.closest('.vrow'); if (!a) return; lpUsed = false; clearTimeout(lpT);
+    lpT = setTimeout(async () => {
+      lpUsed = true; try { navigator.vibrate?.(10); } catch {}
+      const v = vids.find((x) => x.id === a.dataset.id); if (!v) return;
+      const dlg = $('#dialog');
+      dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(displayName(v.name))}</h3><button class="btn" value="rename">名前を変更</button><button class="btn danger" value="del">削除</button><button class="btn ghost" value="cancel">閉じる</button></form>`;
+      dlg.returnValue = ''; dlg.showModal(); await new Promise((q) => (dlg.onclose = q));
+      if (dlg.returnValue === 'rename') { await new Promise((r) => setTimeout(r, 60)); const name = prompt('教材の名前', displayName(v.name)); if (name?.trim()) { const cur = await db.get('videos', v.id); cur.name = name.trim(); await saveVideoMeta(cur); videoList(el); } }
+      if (dlg.returnValue === 'del') { await new Promise((r) => setTimeout(r, 60)); if (await removeVideos([v.id])) videoList(el); }
+    }, 550);
+  });
+  const lpEnd = () => clearTimeout(lpT);
+  $('#vl', el).addEventListener('pointerup', lpEnd); $('#vl', el).addEventListener('pointercancel', lpEnd); $('#vl', el).addEventListener('pointermove', (e) => { if (Math.abs(e.movementX) + Math.abs(e.movementY) > 6) lpEnd(); });
+  $('#vl', el).addEventListener('click', (e) => { if (lpUsed && e.target.closest('.vrow')) { e.preventDefault(); e.stopPropagation(); lpUsed = false; } }, true);
+  $('#vl', el).addEventListener('contextmenu', (e) => { if (e.target.closest('.vrow')) e.preventDefault(); });
   // delete: swipe a row to the left, or 選ぶ → すべて選ぶ / 削除
   let picking = false; const picked = new Set();
   const drawBar = () => {
     const bar = $('#vlbar', el); if (!vids.length) { bar.innerHTML = ''; return; }
     bar.innerHTML = picking
       ? `<div class="row" style="margin:10px 0 6px"><button class="btn sm" id="vAll">${picked.size === vids.length ? 'すべて外す' : 'すべて選ぶ'}</button><button class="btn sm danger" id="vDel" ${picked.size ? '' : 'disabled'}>削除（${picked.size}）</button><span class="grow"></span><button class="btn sm" id="vDone">完了</button></div>`
-      : `<div class="row" style="margin:10px 0 6px"><span class="grow small muted">${vids.length}本・左にスワイプで削除</span><button class="btn sm" id="vPick">選ぶ</button></div>`;
+      : `<div class="row" style="margin:14px 0 4px"><span class="grow vsec">教材 <span class="muted">${vids.length}</span></span><button class="btn sm ghost" id="vPick">選ぶ</button></div>`;
     $('#vPick', bar)?.addEventListener('click', () => { picking = true; drawRows(); });
     $('#vDone', bar)?.addEventListener('click', () => { picking = false; picked.clear(); drawRows(); });
     $('#vAll', bar)?.addEventListener('click', () => { if (picked.size === vids.length) picked.clear(); else vids.forEach((v) => picked.add(v.id)); drawRows(); });
@@ -742,8 +775,15 @@ export async function videoPlay(el, params) {
       const o = document.elementFromPoint(e.clientX, e.clientY)?.closest('.vsteps span');
       $$('span', pop).forEach((x) => x.classList.toggle('hover', x === o)); pick = o ? +o.dataset.n : null;
     });
-    const up = async () => { clearTimeout(timer); if (pop) { const n = pick; close(); if (n) { stepSec = n; drawSteps(); toast(`戻す・送る：${n}秒`, 1200); await setSetting('video.stepSec', n); } } };
-    btn.addEventListener('pointerup', up); btn.addEventListener('pointercancel', () => { clearTimeout(timer); close(); });
+    const choose = async (n) => { close(); stepSec = n; drawSteps(); toast(`戻す・送る：${n}秒`, 1200); await setSetting('video.stepSec', n); };
+    // let go on a choice → chosen. Let go elsewhere (or iPhone cancelled the touch) → the choices stay open and can be tapped
+    const keepOpen = () => {
+      if (!pop || pop.dataset.tap) return; pop.dataset.tap = '1';
+      pop.addEventListener('click', (e) => { const o = e.target.closest('span[data-n]'); if (o) choose(+o.dataset.n); });
+      setTimeout(() => document.addEventListener('pointerdown', function off(e) { if (!pop?.contains(e.target)) { close(); document.removeEventListener('pointerdown', off, true); } }, true), 0);
+    };
+    const up = () => { clearTimeout(timer); if (!pop) return; if (pick) choose(pick); else keepOpen(); };
+    btn.addEventListener('pointerup', up); btn.addEventListener('pointercancel', () => { clearTimeout(timer); keepOpen(); });
     btn.addEventListener('contextmenu', (e) => e.preventDefault());
     btn.addEventListener('click', (e) => { if (used) { e.stopImmediatePropagation(); e.preventDefault(); used = false; } }, true);
   };

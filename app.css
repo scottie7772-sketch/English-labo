@@ -967,7 +967,7 @@ body.vtyping .vbottom { display: none; }
 .vctl2b { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .vb { border: 0; background: transparent; color: var(--text); padding: 0; display: grid; place-items: center; border-radius: 50%; -webkit-tap-highlight-color: transparent; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
 .vb:active { background: color-mix(in srgb, var(--text) 10%, transparent); }
-.vb-play { width: 64px; height: 64px; font-size: 26px; background: var(--accent); color: #fff; }
+.vb-play { width: 64px; height: 64px; font-size: 26px; background: var(--accent); color: var(--accent-text); }
 .vb-step { width: 54px; height: 54px; font-size: 18px; font-weight: 700; }
 .vb-skip { width: 42px; height: 42px; font-size: 16px; opacity: .8; }
 .vb-speed { width: 40px; height: 32px; font-size: 13px; border-radius: 8px; color: var(--muted); }
@@ -976,11 +976,11 @@ body.focus .vp-root { padding-bottom: 150px; }
 .vsteps { position: fixed; z-index: 80; display: flex; gap: 4px; padding: 6px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 8px 24px rgba(0,0,0,.4); }
 .vsteps span { padding: 10px 14px; border-radius: 10px; font-weight: 700; font-size: 16px; }
 .vsteps span.on { color: var(--accent); }
-.vsteps span.hover { background: var(--accent); color: #fff; }
+.vsteps span.hover { background: var(--accent); color: var(--accent-text); }
 
 /* ===== look 1.8: Claude-like — warm neutral colours, seamless (surfaces instead of hard borders), slightly rounded ===== */
-:root { --radius: 14px; --bg: #f5f7f4; --surface: #ffffff; --surface2: #e8eee8; --text: #1a1f1c; --muted: #66706a; --line: #dfe6df; --accent: #2e7d5b; --accent-text: #fff; }
-[data-theme="dark"] { --bg: #18201c; --surface: #222b26; --surface2: #2c3630; --text: #eef3ef; --muted: #9eaaa2; --line: #34403a; --accent: #4f9e78; --accent-text: #fff; }   /* green (1.8.2) */
+:root { --radius: 14px; --bg: #f2f3f8; --surface: #ffffff; --surface2: #e6e8f1; --text: #23263a; --muted: #6a6e85; --line: #dcdfea; --accent: #3a9474; --accent-text: #fff; --accent2: #e8863a; }
+[data-theme="dark"] { --bg: #1e2236; --surface: #282d46; --surface2: #333955; --text: #eef0f8; --muted: #a3a8c3; --line: #3b4161; --accent: #5cc49a; --accent-text: #14172a; --accent2: #f5a25d; }   /* navy × green, orange as a small accent (1.8.4) */
 .card, .stat, .tile, .wcard, .choice, .subbox:not(.vp-root .subbox) { border-color: transparent; }
 .btn { border-color: transparent; background: var(--surface2); border-radius: 12px; }
 .btn.primary { background: var(--accent); color: var(--accent-text); }
@@ -1001,3 +1001,24 @@ dialog { border-radius: 16px; }
 /* performance: rows outside the screen are not drawn (Safari's built-in feature, no extra code) */
 .cuelist .cue { content-visibility: auto; contain-intrinsic-size: auto 72px; }
 .vbottom { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--bg); }
+/* the orange accent: only small marks (mode dot, weak-word count, repeat range, streak) */
+.vmode-btn.on::after { background: var(--accent2); }
+.kpi .c-review { color: var(--accent2); }
+.vs-range { background: color-mix(in srgb, var(--accent2) 45%, transparent) !important; border-color: var(--accent2) !important; }
+.tagp.warn { color: var(--accent2); }
+.vb-step { touch-action: none; -webkit-touch-callout: none; }
+.vsteps span { cursor: pointer; }
+/* Video Lab list (1.9) */
+.vresume { display: flex; align-items: center; gap: 12px; padding: 14px 16px; }
+.vresume b { display: block; font-size: 17px; line-height: 1.3; margin: 2px 0; overflow-wrap: anywhere; }
+.vresume-play { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--accent-text); font-size: 18px; flex: 0 0 auto; }
+.vacts { gap: 8px; margin: 4px 0 2px; }
+.vacts .btn { justify-content: center; }
+.vsec { font-size: 13px; font-weight: 700; color: var(--muted); letter-spacing: .02em; }
+#vl .vrow { padding: 12px 14px; margin-bottom: 8px; gap: 12px; }
+.vic2 { font-size: 20px; width: 28px; text-align: center; flex: 0 0 auto; }
+.vtxt b { display: block; font-size: 16px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.vmeta { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.vkids { margin: -4px 0 10px 18px; }
+.vkids > summary { font-size: 13px; color: var(--muted); padding: 4px 6px; cursor: pointer; }
+.vkid { background: color-mix(in srgb, var(--surface) 70%, var(--bg)); }

@@ -352,7 +352,7 @@ export async function videoPlay(el, params) {
     <div class="vwrap">${!url ? '<div class="card warn">動画ファイルがありません（バックアップから復元した場合は、動画をもう一度追加してください）</div>'
       : aurl ? `<video id="vpic" src="${url}" muted playsinline webkit-playsinline preload="metadata"></video><audio id="vid" src="${aurl}" preload="auto" playsinline></audio>`
       : `<video id="vid" src="${url}" playsinline webkit-playsinline preload="metadata"></video>`}</div>
-    <div class="vseek" id="seek"><div class="vs-track"><i class="vs-range" id="sRange"></i><i class="vs-played" id="sPlayed"></i><i class="vs-head" id="sHead"></i></div></div>
+    <div class="vstick"><div class="vseek" id="seek"><div class="vs-track"><i class="vs-range" id="sRange"></i><i class="vs-played" id="sPlayed"></i><i class="vs-head" id="sHead"></i></div></div>
     <div class="vs-info small"><span id="sTime">0:00.0</span><span id="sRangeTxt" class="grow center"></span><button class="link small" id="sClear" hidden>区間を解除</button></div>
     <div class="vctl1">
       <button class="btn" id="prevCue" aria-label="前の文">⏮</button>
@@ -363,7 +363,7 @@ export async function videoPlay(el, params) {
       <button class="btn" id="again" aria-label="この文をもう一度">↺</button>
       <button class="btn sm" id="stepSec" aria-label="戻す・送る秒数">3秒</button>
       <button class="btn sm" id="speed" aria-label="速さ">1×</button>
-    </div>
+    </div></div>
     <div class="subbox" id="sub"></div>
     <div id="grade"></div>
     <div class="vquick">

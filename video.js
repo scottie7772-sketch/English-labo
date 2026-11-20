@@ -63,7 +63,8 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true 
   const { copyBlob } = await import('./media-audio.js');
   // same material imported before (same studio set): update it in place, keeping the learning records
   const all = (await db.all('videos')).map(({ blob, ...x }) => x);
-  const mine = all.filter((x) => x.from?.material && x.from.material === manifest.materialId);
+  const mine = all.filter((x) => x.from?.material && x.from.material === manifest.materialId && x.kind !== 'multi');
+  const oldParent = all.find((x) => x.kind === 'multi' && x.from?.material === manifest.materialId);
   const findOld = (m) => mine.find((x) => x.from.media === m.id) || mine.find((x) => !x.from.media && (x.name === manifest.title || x.name === `${manifest.title}（${m.name}）`));
   const withText = (m) => mat.items.some((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja));
   const plan = mat.media.filter(withText).map((m) => ({ m, old: findOld(m) }));
@@ -74,7 +75,7 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true 
   }
   const missing = plan.filter((p) => !p.old && !p.m.included);
   if (!plan.some((p) => p.old || p.m.included)) throw new Error('このパックには動画・音声が入っていません。スタジオで「動画・音声も含める」を選んで書き出し直してください');
-  let first = null, nUpd = 0, nNew = 0;
+  let first = null, nUpd = 0, nNew = 0; const made = [];
   for (const { m, old } of plan) {
     if (!old && !m.included) continue;
     toast('取り込み中…', 10000);
@@ -116,7 +117,28 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true 
       }
     }
     await replaceCues(v.id, fresh);
-    first ||= v;
+    first ||= v; made.push({ m, v });
+  }
+  // several sound files in one material (a script with its audio pieces): also one entry that plays them as one timeline, in script order
+  const medias = mat.media.filter(withText);
+  if (medias.length > 1 && made.length === medias.length) {
+    const order = []; for (const it of mat.items) { const mid = it.segments?.[0]?.media; if (mid && !order.includes(mid) && medias.some((m) => m.id === mid)) order.push(mid); }
+    let off = 0; const parts = order.map((mid) => { const x = made.find((y) => y.m.id === mid); const dur = x.m.duration || x.v.duration || 0; const p = { videoId: x.v.id, media: mid, offset: +off.toFixed(3), dur }; off += dur; return p; });
+    const P = (update && oldParent) ? { ...(await db.get('videos', oldParent.id)) } : { id: uid('v_'), lang: manifest.lang || curLang(), lastTime: 0, createdAt: Date.now() };
+    Object.assign(P, { kind: 'multi', name: manifest.title, parts, duration: off, size: 0, mime: 'audio/mp4', audioChecked: true, audioFixed: true, from: { material: manifest.materialId, multi: true, pack: manifest.packId, updatedAt: Date.now() } });
+    delete P.blob; delete P.trim;
+    await db.put('videos', P);
+    const partOf = Object.fromEntries(parts.map((p) => [p.media, p]));
+    const fresh = mat.items.filter((it) => partOf[it.segments?.[0]?.media] && (it.text || it.ja)).map((it) => {
+      const p = partOf[it.segments[0].media], g0 = it.segments[0], g1 = it.segments.at(-1).media === g0.media ? it.segments.at(-1) : g0;
+      return { id: uid('c_'), videoId: P.id, itemId: it.id, part: p.videoId, start: +(p.offset + g0.start).toFixed(3), end: +(p.offset + g1.end).toFixed(3), en: it.text || '', ja: it.ja || '', ...(it.holes?.length ? { holes: it.holes } : {}) };
+    });   // script order = timeline order
+    if (update && oldParent) {
+      const prev = await db.byIndex('cues', 'videoId', P.id); const used = new Set();
+      for (const c of fresh) { const o = prev.find((x) => !used.has(x.id) && x.itemId === c.itemId); if (!o) continue; used.add(o.id); c.id = o.id; if (o.dict) c.dict = o.dict; if (o.en === c.en && o.holes?.length) c.holes = o.holes; }
+    }
+    await replaceCues(P.id, fresh);
+    first = P;
   }
   if (missing.length) toast(`音声が入っていない部分（${missing.length}件）は取り込めませんでした。スタジオで音声を含めて書き出してください`, 5000);
   if (!missing.length) toast(`${nUpd ? `更新しました` : '取り込みました'}（字幕 ${mat.items.filter((it) => it.segments?.length && (it.text || it.ja)).length}行）`);
@@ -145,7 +167,7 @@ async function migrateBlob(v) {
 // lightweight video list without loading blobs into the page
 async function videoMetas() {
   const files = new Set((await db.all('vblobs')).map((x) => x.id));
-  return (await db.all('videos')).map(({ blob, ...m }) => ({ ...m, hasBlob: !!blob || files.has(m.id) })).sort((a, b) => b.createdAt - a.createdAt);
+  return (await db.all('videos')).map(({ blob, ...m }) => ({ ...m, hasBlob: m.kind === 'multi' ? (m.parts || []).every((p) => files.has(p.videoId)) : !!blob || files.has(m.id) })).sort((a, b) => b.createdAt - a.createdAt);
 }
 export async function videoNames() { return Object.fromEntries((await videoMetas()).map((v) => [v.id, v])); }
 
@@ -173,7 +195,7 @@ export async function videoList(el) {
       <a class="card vrow" href="#video-play?id=${v.id}" data-id="${v.id}">
         <span class="vsel" hidden><input type="checkbox" data-pick="${v.id}"></span>
         <span class="vic">${icon('video', 26)}</span>
-        <span class="grow"><b>${esc(v.name)}</b><span class="tagp">${esc(L(v.lang || 'en').short)}</span><span class="small muted block">${v.duration ? fmtT(v.duration).replace(/\.\d$/, '') : ''}・${fmtSize(v.size || 0)}・字幕 ${cueCount[v.id] || 0}行${v.hasBlob ? '' : '・<span class="danger-text">動画ファイルなし</span>'}</span></span>
+        <span class="grow"><b>${esc(v.name)}</b><span class="tagp">${esc(L(v.lang || 'en').short)}</span><span class="small muted block">${v.kind === 'multi' ? `📚 音声${(v.parts || []).length}本をつないだ教材・` : ''}${v.duration ? fmtT(v.duration).replace(/\.\d$/, '') : ''}${v.kind === 'multi' ? '' : `・${fmtSize(v.size || 0)}`}・字幕 ${cueCount[v.id] || 0}行${v.hasBlob ? '' : '・<span class="danger-text">動画ファイルなし</span>'}</span></span>
         <span class="muted">›</span>
       </a>`).join('') || '<div class="card center muted">まだ動画がありません</div>'}</div>
     <details class="card" style="margin-top:14px"><summary><b>字幕・翻訳について（無料でできる範囲）</b></summary>
@@ -270,11 +292,48 @@ async function loadView() {
   return { ...VIEW_DEFAULTS, mode: en && ja ? 'both' : en ? 'en' : ja ? 'ja' : 'none', step };
 }
 
+// several files played as one timeline: looks like a <video> to the player (currentTime / duration / play / pause / events)
+function multiMedia(el, parts) {
+  let cur = 0, pendingSeek = null, rate = 1, endFns = [];
+  const total = parts.reduce((a, p) => Math.max(a, p.offset + p.dur), 0);
+  const partAt = (t) => { for (let i = parts.length - 1; i >= 0; i--) if (t >= parts[i].offset - 0.001) return i; return 0; };
+  const go = (i, local, play) => {
+    cur = i; pendingSeek = local; el.src = parts[i].url;
+    el.playbackRate = rate;
+    if (play) { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} el.play().catch(() => {}); }
+  };
+  el.addEventListener('loadedmetadata', () => { el.playbackRate = rate; if (pendingSeek != null) { try { el.currentTime = pendingSeek; } catch {} pendingSeek = null; } });
+  el.addEventListener('ended', () => { if (cur < parts.length - 1) go(cur + 1, 0, true); else endFns.forEach((f) => f()); });
+  const api = {
+    get currentTime() { return parts[cur].offset + (pendingSeek ?? el.currentTime ?? 0); },
+    set currentTime(t) { t = Math.max(0, Math.min(total, t)); const i = partAt(t), local = Math.max(0, t - parts[i].offset); if (i === cur && pendingSeek == null) el.currentTime = local; else if (i === cur) pendingSeek = local; else go(i, local, !el.paused); },
+    get duration() { return total; },
+    get paused() { return el.paused; },
+    get seeking() { return el.seeking || pendingSeek != null; },
+    get readyState() { return el.readyState; },
+    get videoWidth() { return el.videoWidth; },
+    get audioTracks() { return el.audioTracks; },
+    get playbackRate() { return rate; },
+    set playbackRate(r) { rate = r; el.playbackRate = r; },
+    play() { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} return el.play(); },
+    pause() { el.pause(); },
+    addEventListener(type, fn, opt) { if (type === 'ended') endFns.push(fn); else el.addEventListener(type, fn, opt); },
+    removeEventListener(type, fn, opt) { if (type === 'ended') endFns = endFns.filter((f) => f !== fn); else el.removeEventListener(type, fn, opt); },
+    get el() { return el; },
+  };
+  return api;
+}
 export async function videoPlay(el, params) {
   setCleanup(null);
   let v = await db.get('videos', params.get('id'));
   if (v) v = await migrateBlob(v);
-  const fileBlob = await videoBlob(v);
+  // one entry made of several sound files (a script and its audio pieces): one timeline over all parts
+  let parts = null, missingPart = false;
+  if (v?.kind === 'multi') {
+    parts = [];
+    for (const p of v.parts || []) { const b = await videoBlob(await db.get('videos', p.videoId)); if (!b) { missingPart = true; continue; } parts.push({ ...p, url: URL.createObjectURL(b), blob: b }); }
+  }
+  const fileBlob = parts ? parts[0]?.blob || null : await videoBlob(v);
   if (!v) { el.innerHTML = `<header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>動画が見つかりません</h1></header><div class="card muted">削除された可能性があります。</div>`; return; }
   const vlang = v.lang || 'en';
   const TL = L(vlang).name;
@@ -283,7 +342,7 @@ export async function videoPlay(el, params) {
   const saveView = () => setSetting('video.view', view);
   let loop = null, ab = null, curId = null, rafId = 0, saveT = 0, loopN = 0, stepCue = null, revealedCue = null, editing = false;
   const revealed = new Map();   // cueId -> Set(hole index)
-  const url = fileBlob ? URL.createObjectURL(fileBlob) : '';
+  const url = parts ? parts[0]?.url || '' : fileBlob ? URL.createObjectURL(fileBlob) : '';
   const aurl = '';   // (1.3.1–1.3.2 used a separate sound file; now the chosen track of the video itself is played)
   const MLABEL = (m) => MODES.find((x) => x[0] === m)[1].replace('英', L(vlang).ch);
 
@@ -349,7 +408,9 @@ export async function videoPlay(el, params) {
     <input type="file" id="fEn" hidden><input type="file" id="fJa" hidden>
     </div>`;
 
-  const root = $('#vroot', el), vid = $('#vid', el), sub = $('#sub', el), cl = $('#cl', el);
+  const root = $('#vroot', el), sub = $('#sub', el), cl = $('#cl', el);
+  const vid = parts && $('#vid', el) ? multiMedia($('#vid', el), parts) : $('#vid', el);
+  if (missingPart) toast('この教材の音声の一部が見つかりません（元の音声の教材が削除された可能性）', 5000);
   // every play: ask iOS for the "playback" sound session inside the tap (it can drop back after the app is reopened → no sound)
   if (vid) { const _play = vid.play.bind(vid); vid.play = () => { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} return _play(); }; }
   // sound only: a slim bar instead of a black video area

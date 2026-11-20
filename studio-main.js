@@ -12,7 +12,7 @@ import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.14.1';
+export const STUDIO_VERSION = '0.15.0';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -786,11 +786,10 @@ async function editorScreen(el, params) {
       const badges = [b.segments.length > 1 ? `<span class="tagp">${b.segments.length}区間</span>` : '', new Set(b.segments.map((s) => s.sourceId)).size > 1 ? '<span class="tagp">複数ファイル</span>' : '',
         b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声なし</span>' : ''].join('');
       return `<div class="st-row ${sel.has(b.id) ? 'sel' : ''} ${arrange ? 'jig' : ''}" data-id="${b.id}">
-        ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : ''}
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
         <span class="grow st-txt" data-play="${b.id}"><small class="muted">${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)} ${badges}</small>
           ${b.label ? `<b class="small">${esc(b.label)}</b>` : ''}<span class="st-en2">${holeHTML(b) || `<span class="muted">（英文なし${b.label ? '・✎で追加' : ''}）</span>`}</span><span class="st-ja2">${esc(b.ja || '')}</span></span>
-        ${selectMode || arrange ? '' : `<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
+        ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
     }).join('') || '<p class="empty">項目がありません</p>';
     $('#undoB', el).disabled = !(set.undo || []).length; $('#redoB', el).disabled = !(set.redo || []).length;
     const nScript = scriptLines().length, nAudio = blocks.filter((b) => b.segments.length && !b.aligned).length;

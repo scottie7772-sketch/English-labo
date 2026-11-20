@@ -139,7 +139,7 @@ export function openTranscriber(lang = 'en', onProgress = () => {}, { fast, qual
 // split [a, b] seconds of 16 kHz audio into pieces of about `len` seconds, cutting at the quietest point near each boundary
 export function pieceRanges(audio, a, b, len = 120) {
   const out = []; let s = a;
-  while (b - s > len * 1.3) {
+  while (b - s > Math.min(len * 1.3, 29)) {
     const target = s + len, F = 320, w = Math.min(6, len * 0.25); let best = target, bestE = Infinity;
     for (let t = target - w; t <= target + w; t += 0.02) {
       const i0 = Math.floor(t * 16000); if (i0 < 0 || i0 + F > audio.length) continue;
@@ -153,12 +153,12 @@ export function pieceRanges(audio, a, b, len = 120) {
 }
 
 // speech parts of [a, b]: long silences (> gap s) are skipped, parts are grouped into pieces of at most `len` s
-export function speechPieces(audio, a, b, { len = 60, gap = 1.2 } = {}) {
+export function speechPieces(audio, a, b, { len = 25, gap = 1.6 } = {}) {
   const F = 320, i0 = Math.floor(a * 16000), i1 = Math.min(audio.length, Math.floor(b * 16000));
   const rms = []; for (let i = i0; i + F <= i1; i += F) { let x = 0; for (let k = 0; k < F; k++) x += audio[i + k] * audio[i + k]; rms.push(Math.sqrt(x / F)); }
   if (!rms.length) return [[a, b]];
   const sorted = rms.slice().sort((x, y) => x - y);
-  const th = Math.max(sorted[Math.floor(sorted.length * 0.1)] * 3, sorted[Math.floor(sorted.length * 0.9)] * 0.08, 0.004);
+  const th = Math.max(Math.min(sorted[Math.floor(sorted.length * 0.1)] * 3, sorted[Math.floor(sorted.length * 0.9)] * 0.2), sorted[Math.floor(sorted.length * 0.9)] * 0.04, 0.002);   // conservative: quiet speech must not be skipped
   const regs = []; let st = -1, last = -1;
   rms.forEach((v, k) => { if (v >= th) { if (st < 0) st = k; last = k; } else if (st >= 0 && (k - last) * 0.02 > gap) { regs.push([st, last]); st = -1; } });
   if (st >= 0) regs.push([st, last]);
@@ -168,7 +168,7 @@ export function speechPieces(audio, a, b, { len = 60, gap = 1.2 } = {}) {
     let s = Math.max(a, t(s0) - 0.3); const e = Math.min(b, t(e0 + 1) + 0.3);
     const prev = out[out.length - 1];
     if (prev && e - prev[0] <= len && s - prev[1] < gap) { prev[1] = e; continue; }
-    if (e - s > len * 1.3) out.push(...pieceRanges(audio, s, e, len));   // long speech without pauses: cut at the quietest points
+    if (e - s > Math.min(len * 1.3, 29)) out.push(...pieceRanges(audio, s, e, len));   // keep every piece inside one 30 s window   // long speech without pauses: cut at the quietest points
     else out.push([s, e]);
   }
   return out.length ? out : [];

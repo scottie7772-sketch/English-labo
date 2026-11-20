@@ -1,5 +1,5 @@
 // Phase 3: Flashcards & Tests (setup / session / result)
-import { db, uid, getSetting, setSetting } from './db.js';
+import { db, uid, getSetting, setSetting, attemptsSince } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, speak } from './ui.js';
 import { SKILL_LABELS, LEVEL_LABELS, effLevel, filterLevel, levelText, loadAllMastery, loadWordMastery } from './mastery.js';
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
@@ -40,7 +40,7 @@ export function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = 
 
 // ---------- candidate selection ----------
 export async function selectWords(cfg) {
-  const [words0, mastery, attempts, decks] = await Promise.all([db.all('words'), loadAllMastery(), db.all('attempts'), db.all('decks')]);
+  const [words0, mastery, attempts, decks] = await Promise.all([db.all('words'), loadAllMastery(), attemptsSince(Date.now() - 7 * 86400000), db.all('decks')]);
   const words = words0.filter((w) => langOf(w) === curLang());
   const skills = basisSkills(cfg.direction, cfg.format);
   const needMeaning = cfg.direction !== 'audio2en';

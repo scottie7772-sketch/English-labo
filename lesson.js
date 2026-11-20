@@ -1,6 +1,6 @@
 // Lessons (Duolingo-style): due reviews first, then new / learning items, in varying formats.
 // A wrong item comes back 3 questions later in a different format (once).
-import { db, uid, getSetting, setSetting } from './db.js';
+import { db, uid, getSetting, setSetting, attemptDays } from './db.js';
 import { $, $$, esc, toast, go, speak } from './ui.js';
 import { icon } from './icons.js';
 import { L, curLang, langOf, numToMarks, isZh, langAttr } from './langs.js';
@@ -27,7 +27,7 @@ export async function lessonStats(lang = curLang()) {
   return { due: mine.filter((r) => r.due <= now).length, scheduled: mine.length, fresh: [...ids].filter((id) => !revs.some((r) => r.id === id)).length };
 }
 export async function streakDays() {
-  const days = new Set((await db.all('attempts')).map((a) => new Date(a.at).toDateString()));
+  const { days } = await attemptDays();
   let n = 0; const d = new Date();
   if (!days.has(d.toDateString())) d.setDate(d.getDate() - 1);   // today not yet studied: count up to yesterday
   while (days.has(d.toDateString())) { n++; d.setDate(d.getDate() - 1); }

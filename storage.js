@@ -19,7 +19,7 @@ export async function storageScreen(el) {
   const persisted = await navigator.storage?.persisted?.().catch(() => false);
   const files = Object.fromEntries((await db.all('vblobs').catch(() => [])).map((x) => [x.id, x.size || x.blob?.size || 0]));
   const vids = (await db.all('videos')).map((v) => (files[v.id] != null ? { ...v, fileSize: files[v.id] } : v));
-  const cueN = {}; for (const c of await db.all('cues')) cueN[c.videoId] = (cueN[c.videoId] || 0) + 1;
+  const cueN = await db.countEach('cues', 'videoId', vids.map((v) => v.id));
   const names = (await caches.keys().catch(() => [])) || [];
   const cs = await Promise.all(names.map(async (n) => ({ name: n, ...(await cacheSize(n)) })));
   const model = cs.filter((c) => isModelCache(c.name)), app = cs.filter((c) => !isModelCache(c.name));
@@ -59,7 +59,7 @@ export async function storageScreen(el) {
   $$('[data-del]', el).forEach((b) => (b.onclick = async () => {
     const v = await db.get('videos', b.dataset.del);
     if (!(await confirmDialog({ title: '動画を全部削除', body: `<p>「${esc(v.name)}」の動画・字幕・穴埋めを消します（元に戻せません）。</p>`, okLabel: '削除', danger: true }))) return;
-    const cs2 = (await db.all('cues')).filter((c) => c.videoId === v.id);
+    const cs2 = await db.byIndex('cues', 'videoId', v.id);
     for (const c of cs2) await db.delete('cues', c.id);
     await db.delete('vblobs', v.id); await db.delete('videos', v.id); toast('削除しました'); storageScreen(el);
   }));

@@ -1,6 +1,6 @@
 // 単語帳（Quick Flashcards）: swipe cards in units, with music-player-like repeat modes.
 // Linked to mastery / attempts / sessions exactly like before (self-report weights in judge.js).
-import { db, uid, getSetting, setSetting } from './db.js';
+import { db, uid, getSetting, setSetting, attemptsSince } from './db.js';
 import { $, $$, esc, toast, go, speak } from './ui.js';
 import { LEVEL_LABELS, SKILL_LABELS, effLevel, filterLevel, loadAllMastery } from './mastery.js';
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
@@ -62,7 +62,7 @@ async function buildList(cfg, extra = {}) {
   if (extra.tag) list = list.filter((w) => (w.tags || []).includes(extra.tag));
   if (extra.recentWrong) {
     const weekAgo = Date.now() - 7 * 86400000;
-    const ids = new Set((await db.all('attempts')).filter((a) => !a.correct && a.at >= weekAgo).map((a) => a.wordId));
+    const ids = new Set((await attemptsSince(weekAgo)).filter((a) => !a.correct).map((a) => a.wordId));
     list = list.filter((w) => ids.has(w.id));
   }
   const byOld = (a, b) => a.createdAt - b.createdAt;

@@ -1,5 +1,5 @@
 // Home / Review / Progress / Grammar hub screens (v0.8). Only real data is shown; unimplemented parts say 「準備中」.
-import { db, getMeta } from './db.js';
+import { db, getMeta, attemptsSince, attemptDays } from './db.js';
 import { $, esc, go } from './ui.js';
 import { icon } from './icons.js';
 import { overall, filterLevel, LEVEL_LABELS, loadAllMastery } from './mastery.js';
@@ -23,7 +23,8 @@ function stageOf(records) {
   return overall(records).level >= 4 ? 'done' : 'learning';
 }
 export async function collectStats() {
-  const [words0, mastery, attempts, sessions0, decks] = await Promise.all([db.all('words'), loadAllMastery(), db.all('attempts'), db.all('sessions'), db.all('decks')]);
+  const [words0, mastery, attempts, sessions0, decks] = await Promise.all([db.all('words'), loadAllMastery(), attemptsSince(Date.now() - 7 * DAY), db.all('sessions'), db.all('decks')]);
+  const { days, last: lastAt } = await attemptDays();
   const lang = curLang();
   const words = words0.filter((w) => langOf(w) === lang);
   const sessions = sessions0.filter((s) => (s.lang || 'en') === lang);
@@ -32,7 +33,6 @@ export async function collectStats() {
   const recentWrongIds = new Set(attempts.filter((a) => !a.correct && a.at >= weekAgo).map((a) => a.wordId));
   const recentWrong = words.filter((w) => recentWrongIds.has(w.id));
   const week = attempts.filter((a) => a.at >= weekAgo);
-  const days = new Set(attempts.map((a) => new Date(a.at).toDateString()));
   const totalMs = sessions.reduce((t, s) => t + (s.mode === 'quick' ? (s.elapsedMs || 0) : (s.activeMs || 0)), 0);
   const range = (list) => {
     const c = { new: 0, learning: 0, done: 0 };
@@ -40,12 +40,12 @@ export async function collectStats() {
     return { ...c, total: list.length };
   };
   return {
-    words, mastery, attempts, sessions, decks, weak, recentWrong,
+    words, mastery, attempts /* last 7 days only */, sessions, decks, weak, recentWrong,
     bookmarked: words.filter((w) => w.bookmarked),
     todayCount: attempts.filter((a) => a.at >= today).length,
     weekAcc: week.length ? Math.round((week.filter((a) => a.correct).length / week.length) * 100) : null,
     weekCount: week.length, studyDays: days.size, totalMs,
-    lastStudy: attempts.length ? Math.max(...attempts.map((a) => a.at)) : null,
+    lastStudy: lastAt,
     all: range(words),
     byDeck: decks.map((d) => ({ name: d.name, ...range(words.filter((w) => (w.deckIds || []).includes(d.id))) })).filter((r) => r.total),
     byTag: [...new Set(words.flatMap((w) => w.tags || []))].map((t) => ({ name: t, ...range(words.filter((w) => (w.tags || []).includes(t))) })).filter((r) => r.total).sort((a, b) => b.total - a.total).slice(0, 6),

@@ -184,8 +184,7 @@ addEventListener('hashchange', () => { if (!location.hash.startsWith('#video-pla
 export async function videoList(el) {
   setCleanup(null);
   const vids = await videoMetas();
-  const cueCount = {};
-  for (const c of await db.all('cues')) cueCount[c.videoId] = (cueCount[c.videoId] || 0) + 1;
+  const cueCount = await db.countEach('cues', 'videoId', vids.map((v) => v.id));
   // children of a "parent" (several sound files joined): shown folded under it
   const kidIds = new Set(vids.filter((v) => v.kind === 'multi').flatMap((v) => (v.parts || []).map((p) => p.videoId)));
   const recent = (v) => v.playedAt || v.createdAt || 0;
@@ -259,7 +258,7 @@ export async function videoList(el) {
     if (!ids.length) return false;
     const names = vids.filter((v) => ids.includes(v.id)).map((v) => v.name);
     if (!(await confirmDialog({ title: `${ids.length}件を削除`, body: `<p>${names.slice(0, 8).map(esc).join('<br>')}${names.length > 8 ? `<br>ほか${names.length - 8}件` : ''}</p><p class="hint">動画・音声と字幕・穴埋めを消します（元に戻せません）。この動画から登録した単語は残ります。</p>`, okLabel: '削除', danger: true }))) return false;
-    const cues = (await db.all('cues')).filter((c) => ids.includes(c.videoId));
+    const cues = (await Promise.all(ids.map((id) => db.byIndex('cues', 'videoId', id)))).flat();
     await db.tx(['videos', 'vblobs', 'cues'], 'readwrite', (t) => { for (const id of ids) { t.objectStore('videos').delete(id); t.objectStore('vblobs').delete(id); } cues.forEach((c) => t.objectStore('cues').delete(c.id)); });
     toast(`${ids.length}件を削除しました`); return true;
   }
@@ -1155,5 +1154,19 @@ export async function videoPlay(el, params) {
   const speed = await getSetting('video.speed', 1);
   if (vid) vid.playbackRate = SPEEDS.includes(speed) ? speed : 1;
   $('#speed', el).textContent = `${vid?.playbackRate || 1}×`;
-  setCleanup(() => { cancelAnimationFrame(rafId); savePos(); vid?.pause(); if (url) setTimeout(() => URL.revokeObjectURL(url), 1000); });
+  // lock screen / earphone controls (Media Session, built into Safari; nothing is sent anywhere)
+  const ms = navigator.mediaSession;
+  const MS_ACTS = ['play', 'pause', 'previoustrack', 'nexttrack', 'seekbackward', 'seekforward', 'seekto'];
+  if (ms && vid) {
+    try { ms.metadata = new MediaMetadata({ title: displayName(v.name), artist: 'Englabo', artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }] }); } catch {}
+    const on = (a, f) => { try { ms.setActionHandler(a, f); } catch {} };
+    on('play', () => vid.play()); on('pause', () => vid.pause());
+    on('previoustrack', () => $('#prevCue', el)?.click()); on('nexttrack', () => $('#nextCue', el)?.click());
+    on('seekbackward', () => $('#back', el)?.click()); on('seekforward', () => $('#fwd', el)?.click());
+    on('seekto', (d) => { if (d.seekTime != null) vid.currentTime = d.seekTime; });
+  }
+  setCleanup(() => {
+    cancelAnimationFrame(rafId); savePos(); vid?.pause(); if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (ms) { for (const a of MS_ACTS) { try { ms.setActionHandler(a, null); } catch {} } try { ms.metadata = null; } catch {} }
+  });
 }

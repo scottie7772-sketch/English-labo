@@ -18,7 +18,7 @@ import { storageScreen } from './storage.js';
 import { courseScreen, courseUnit, coursePuzzle } from './course.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.9.0';
+export const APP_VERSION = '1.10.0';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -42,7 +42,8 @@ async function applyTheme(mode) {
   mode = mode || await getSetting('theme', 'dark');
   const dark = mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-  $('meta[name=theme-color]')?.setAttribute('content', dark ? '#121418' : '#f3f4f6');
+  const pal = await getSetting('palette', 'forest'); document.documentElement.dataset.palette = pal;   // colour set: navy / forest
+  $('meta[name=theme-color]')?.setAttribute('content', dark ? (pal === 'forest' ? '#101a17' : '#1e2236') : (pal === 'forest' ? '#f3f6f2' : '#f2f3f8'));
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => applyTheme());
 
@@ -75,6 +76,9 @@ screens.settings = async (el) => {
     <div class="card">
       <div class="seg" id="theme">
         ${[['dark', 'ダーク'], ['light', 'ライト'], ['system', '端末に合わせる']].map(([v, l]) => `<button data-v="${v}" class="${theme === v ? 'on' : ''}">${l}</button>`).join('')}
+      </div>
+      <div class="seg" id="palette" style="margin-top:8px">
+        ${[['navy', 'ネイビー'], ['forest', 'フォレスト（濃い緑）']].map(([v, l]) => `<button data-v="${v}" class="${(document.documentElement.dataset.palette || 'forest') === v ? 'on' : ''}">${l}</button>`).join('')}
       </div>
     </div>
 
@@ -116,6 +120,7 @@ screens.settings = async (el) => {
 
     <p class="muted center small">v${APP_VERSION} / DB schema v${DB_VERSION}</p>`;
 
+  $('#palette', el).addEventListener('click', async (e) => { const v = e.target.dataset.v; if (!v) return; await setSetting('palette', v); await applyTheme(); render(); });
   $('#theme', el).addEventListener('click', async (e) => {
     const v = e.target.dataset.v; if (!v) return;
     await setSetting('theme', v); await applyTheme(v); render();

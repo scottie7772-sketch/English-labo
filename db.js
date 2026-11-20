@@ -78,12 +78,47 @@ export const db = {
   all: (store) => tx([store], 'readonly', (t) => wrap(t.objectStore(store).getAll())),
   count: (store) => tx([store], 'readonly', (t) => wrap(t.objectStore(store).count())),
   byIndex: (store, index, query) => tx([store], 'readonly', (t) => wrap(t.objectStore(store).index(index).getAll(query))),
+  // count records per key of an index, in one transaction: { key: n }
+  countEach: (store, index, keys) => tx([store], 'readonly', async (t) => {
+    const idx = t.objectStore(store).index(index), out = {};
+    await Promise.all(keys.map(async (k) => { out[k] = await wrap(idx.count(k)); }));
+    return out;
+  }),
   put: (store, value) => tx([store], 'readwrite', (t) => wrap(t.objectStore(store).put(value))),
   putMany: (store, values) => tx([store], 'readwrite', async (t) => { const os = t.objectStore(store); for (const v of values) os.put(v); }),
   delete: (store, key) => tx([store], 'readwrite', (t) => wrap(t.objectStore(store).delete(key))),
   clear: (store) => tx([store], 'readwrite', (t) => wrap(t.objectStore(store).clear())),
   tx,
 };
+
+// ---- attempts: read only what is needed (the 'at' index) instead of every record ----
+export const attemptsSince = (ts) => db.byIndex('attempts', 'at', IDBKeyRange.lowerBound(ts));
+// Days with at least one answer, and the latest answer time. Reads only keys of the 'at' index:
+// the first and last answer, then one count per calendar day in between (all requests in one transaction).
+export async function attemptDays() {
+  const r = await daysByCount();
+  if (r) return r;
+  const all = await db.all('attempts'), days = new Set(); let last = null;
+  for (const a of all) if (typeof a.at === 'number') { days.add(new Date(a.at).toDateString()); if (last == null || a.at > last) last = a.at; }
+  return { days, last };
+}
+function daysByCount() {
+  return tx(['attempts'], 'readonly', (t) => new Promise((res, rej) => {
+    const idx = t.objectStore('attempts').index('at'), num = IDBKeyRange.upperBound(Infinity);
+    const edge = (dir) => new Promise((ok) => { const r = idx.openKeyCursor(num, dir); r.onsuccess = () => ok(r.result ? r.result.key : null); r.onerror = () => rej(r.error); });
+    Promise.all([edge('next'), edge('prev')]).then(([first, last]) => {
+      const days = new Set();
+      if (first == null) return res({ days, last: null });
+      if (last - first > 4000 * 86400000) return res(null);   // odd old timestamps: use the full read below
+      const d0 = new Date(first), reqs = [];
+      for (let d = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()); d.getTime() <= last; d.setDate(d.getDate() + 1)) {
+        const s = d.getTime(), e = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime(), label = d.toDateString();
+        reqs.push(new Promise((ok) => { const r = idx.count(IDBKeyRange.bound(s, e, false, true)); r.onsuccess = () => { if (r.result) days.add(label); ok(); }; r.onerror = () => rej(r.error); }));
+      }
+      Promise.all(reqs).then(() => res({ days, last }));
+    });
+  }));
+}
 
 export async function getSetting(key, fallback) {
   const r = await db.get('settings', key);

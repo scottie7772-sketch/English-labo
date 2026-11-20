@@ -53,3 +53,18 @@ body.studio main { padding-bottom: 20px; }
 .st-vwrap.audio { background: var(--surface2); }
 .st-seekrow { align-items: center; gap: 8px; padding: 4px 2px 0; }
 .st-seek { flex: 1; min-width: 0; height: 28px; accent-color: var(--accent, #4a7bd0); }
+/* 結合・移動 mode */
+@keyframes st-jig { 0% { transform: rotate(-0.5deg); } 50% { transform: rotate(0.5deg); } 100% { transform: rotate(-0.5deg); } }
+.st-row.jig { animation: st-jig 0.28s ease-in-out infinite; }
+.st-row.jig:nth-child(2n) { animation-delay: -0.14s; }
+.st-grip { flex: 0 0 auto; font-size: 22px; line-height: 1; padding: 6px 8px; margin: -4px 0 -4px -4px; color: var(--muted); touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab; }
+.arranging .st-txt { user-select: none; -webkit-user-select: none; }
+.st-row.dragging { opacity: 0.3; animation: none; }
+.st-ghost { background: var(--card, #1d2230); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.45); opacity: 0.95; }
+.st-row.drop-merge { outline: 2px solid var(--accent, #4a7bd0); border-radius: 8px; background: color-mix(in srgb, var(--accent, #4a7bd0) 18%, transparent); }
+.st-row.drop-before { box-shadow: inset 0 3px 0 var(--accent, #4a7bd0); }
+.st-row.drop-after { box-shadow: inset 0 -3px 0 var(--accent, #4a7bd0); }
+.st-words { display: flex; flex-wrap: wrap; gap: 6px; max-height: 45vh; overflow: auto; }
+.st-wd { border: 1px solid var(--line); background: transparent; color: inherit; border-radius: 8px; padding: 6px 8px; font-size: 16px; }
+.st-wd.cut { background: var(--accent, #4a7bd0); color: #fff; box-shadow: -4px 0 0 #e5534b; }
+.st-wd:disabled { opacity: 0.5; }

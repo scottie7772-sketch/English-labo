@@ -11,7 +11,7 @@ import { findCandidates, applySpans } from './studio-names.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.8.3';
+export const STUDIO_VERSION = '0.9.0';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -566,6 +566,7 @@ async function editorScreen(el, params) {
   let srcs = await sourcesMap();
   let blocks = [], byId = {};
   const sel = new Set();
+  let arrange = false, drag = null;
   let selectMode = false, rangeMode = null, anchor = null, onlySel = false, moveMode = false, playing = null, curBlock = null;
   const reload = async () => { set = await sdb.get('sets', set.id); blocks = await liveBlocks(set); byId = Object.fromEntries(blocks.map((b) => [b.id, b])); for (const id of [...sel]) if (!byId[id]) sel.delete(id); };
   await reload();
@@ -575,7 +576,7 @@ async function editorScreen(el, params) {
     <div class="st-player"><div class="st-vwrap"><video id="vid" playsinline webkit-playsinline preload="metadata"></video></div>
       <div class="row st-seekrow"><input type="range" id="seek" class="st-seek" min="0" max="1" step="0.05" value="0" aria-label="再生位置"><span class="small muted" id="tdur"></span></div>
       <div class="st-sub" id="sub"></div>
-      <div class="row st-ctl"><button class="btn sm" id="back3">⟲3</button><button class="btn sm primary" id="pp">${icon('play')}</button><button class="btn sm" id="fwd3">3⟳</button><span class="small muted" id="tnow">0:00.0</span><span class="grow"></span><button class="btn sm" id="selB">選択</button></div></div>
+      <div class="row st-ctl"><button class="btn sm" id="back3">⟲3</button><button class="btn sm primary" id="pp">${icon('play')}</button><button class="btn sm" id="fwd3">3⟳</button><span class="small muted" id="tnow">0:00.0</span><span class="grow"></span><button class="btn sm" id="arrB">結合・移動</button><button class="btn sm" id="selB">選択</button></div></div>
     <div id="info" class="small muted"></div>
     <div id="list" class="st-list"></div>
     <div id="bar" class="st-bar" hidden></div>`;
@@ -679,20 +680,27 @@ async function editorScreen(el, params) {
     const rs = ops.ranges(set.order.filter((id) => byId[id]), sel);
     $('#info', el).textContent = `${blocks.length}項目${selectMode ? `・選択 ${rs.length}範囲 ${sel.size}項目` : ''}${(set.undo || []).length ? `・元に戻せる操作 ${set.undo.length}` : ''}`;
     const shown = onlySel ? blocks.filter((b) => sel.has(b.id)) : blocks;
+    list.classList.toggle('arranging', arrange);
     list.innerHTML = shown.map((b) => {
       const badges = [b.segments.length > 1 ? `<span class="tagp">${b.segments.length}区間</span>` : '', new Set(b.segments.map((s) => s.sourceId)).size > 1 ? '<span class="tagp">複数ファイル</span>' : '',
         b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', b.asr ? '<span class="tagp">自動起こし</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声なし</span>' : ''].join('');
-      return `<div class="st-row ${sel.has(b.id) ? 'sel' : ''}" data-id="${b.id}">
+      return `<div class="st-row ${sel.has(b.id) ? 'sel' : ''} ${arrange ? 'jig' : ''}" data-id="${b.id}">
+        ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : ''}
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
         <span class="grow st-txt" data-play="${b.id}"><small class="muted">${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)} ${badges}</small>
           ${b.label ? `<b class="small">${esc(b.label)}</b>` : ''}<span class="st-en2">${holeHTML(b) || `<span class="muted">（英文なし${b.label ? '・✎で追加' : ''}）</span>`}</span><span class="st-ja2">${esc(b.ja || '')}</span></span>
-        ${selectMode ? '' : `<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
+        ${selectMode || arrange ? '' : `<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
     }).join('') || '<p class="empty">項目がありません</p>';
     $('#undoB', el).disabled = !(set.undo || []).length; $('#redoB', el).disabled = !(set.redo || []).length;
     drawBar();
   }
   function drawBar() {
-    bar.hidden = !selectMode;
+    bar.hidden = !selectMode && !arrange;
+    if (arrange) {
+      bar.innerHTML = `<div class="small">≡ をつかんで動かします。<b>行の上に重ねる</b>と結合、<b>行と行の間</b>に置くと移動。行をタップすると分けられます。</div><div class="row"><button class="btn sm primary grow" id="arrDone">完了</button></div>`;
+      $('#arrDone', bar).onclick = () => { arrange = false; drawList(); };
+      return;
+    }
     if (!selectMode) return;
     const n = sel.size;
     if (moveMode) { bar.innerHTML = `<div class="small">移動先の行をタップ（その行の前に入ります）</div><div class="row"><button class="btn sm grow" id="mvEnd">末尾へ</button><button class="btn sm grow" id="mvCancel">やめる</button></div>`;
@@ -746,9 +754,77 @@ async function editorScreen(el, params) {
     const chk = e.target.closest('[data-chk]'); if (chk) { if (!('ontouchstart' in window)) tapRow(chk.dataset.chk); return; }
     const ed = e.target.closest('[data-edit]'); if (ed) return editBlock(byId[ed.dataset.edit]);
     const row = e.target.closest('.st-row'); if (!row) return;
+    if (arrange) { if (!e.target.closest('[data-grip]')) splitSheet(byId[row.dataset.id]); return; }
     if (selectMode) return tapRow(row.dataset.id);
     playBlock(byId[row.dataset.id], false, true);
   });
+
+  // ---------- 結合・移動 mode (like moving icons on the iPhone home screen): only after pressing the button ----------
+  const scroller = document.scrollingElement || document.documentElement;
+  list.addEventListener('pointerdown', (e) => {
+    const g = e.target.closest('[data-grip]'); if (!g || !arrange) return;
+    e.preventDefault();
+    const row = g.closest('.st-row'), r = row.getBoundingClientRect();
+    const ghost = row.cloneNode(true); ghost.classList.add('st-ghost'); ghost.classList.remove('jig');
+    ghost.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;pointer-events:none;z-index:60`;
+    document.body.appendChild(ghost); row.classList.add('dragging');
+    drag = { id: row.dataset.id, row, ghost, dy: e.clientY - r.top, x: r.left + r.width / 2, target: null, mode: null, y: e.clientY };
+    try { g.setPointerCapture(e.pointerId); } catch {}
+    const auto = () => { if (!drag) return; const top = (el.querySelector('.st-player')?.getBoundingClientRect().bottom || 0) + 40;
+      if (drag.y < top) scroller.scrollBy(0, -10); else if (drag.y > innerHeight - 70) scroller.scrollBy(0, 10); drag.raf = requestAnimationFrame(auto); };
+    drag.raf = requestAnimationFrame(auto);
+  });
+  list.addEventListener('pointermove', (e) => {
+    if (!drag) return; e.preventDefault();
+    drag.y = e.clientY; drag.ghost.style.top = `${e.clientY - drag.dy}px`;
+    $$('.drop-before,.drop-after,.drop-merge', list).forEach((x) => x.classList.remove('drop-before', 'drop-after', 'drop-merge'));
+    const over = document.elementFromPoint(drag.x, e.clientY)?.closest('.st-row');
+    if (!over || over === drag.row || !list.contains(over)) { drag.target = null; return; }
+    const r = over.getBoundingClientRect(), k = (e.clientY - r.top) / r.height;
+    drag.mode = k < 0.28 ? 'before' : k > 0.72 ? 'after' : 'merge'; drag.target = over.dataset.id;
+    over.classList.add(`drop-${drag.mode}`);
+  });
+  const endDrag = async (ok) => {
+    if (!drag) return; const d = drag; drag = null; cancelAnimationFrame(d.raf);
+    d.ghost.remove(); d.row.classList.remove('dragging');
+    $$('.drop-before,.drop-after,.drop-merge', list).forEach((x) => x.classList.remove('drop-before', 'drop-after', 'drop-merge'));
+    if (!ok || !d.target) return;
+    const order = set.order.filter((id) => byId[id]);
+    if (d.mode === 'merge') {
+      const items = order.filter((id) => id === d.id || id === d.target).map((id) => byId[id]);   // text in display order
+      const m = ops.merge(items);
+      const o = order.flatMap((id) => (id === items[0].id ? [m.id] : id === items[1].id ? [] : [id]));
+      return run('結合', { blocks: [m, ...items.map((b) => ({ ...b, deleted: true }))], order: o });
+    }
+    const rest = order.filter((id) => id !== d.id); let at = rest.indexOf(d.target) + (d.mode === 'after' ? 1 : 0);
+    const o = [...rest.slice(0, at), d.id, ...rest.slice(at)];
+    if (o.join() === order.join()) return;
+    return run('移動', { order: o });
+  };
+  list.addEventListener('pointerup', () => endDrag(true));
+  list.addEventListener('pointercancel', () => endDrag(false));
+  // split one line: tap the word that should start the new line
+  async function splitSheet(b) {
+    const toks = tokensOf(b.text || '');
+    if (toks.length < 2) return toast('分けられる英文がありません');
+    const dlg = $('#dialog'); let k = null;
+    const sents = ops.splitSentences(b);
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>行を分ける</h3><p class="small muted">新しい行の<b>最初の語</b>をタップしてください。</p>
+      <div class="st-words">${toks.map((w, i) => `<button type="button" class="st-wd" data-k="${i}" ${i ? '' : 'disabled'}>${esc(w)}</button>`).join('')}</div>
+      <div class="small" id="spPrev"></div>
+      <div class="row end">${sents ? `<button class="btn" value="sent">文ごとに分ける（${sents.length}行）</button>` : ''}<button class="btn ghost" value="cancel">やめる</button><button class="btn primary" value="ok" id="spOk" disabled>ここで分ける</button></div></form>`;
+    $$('.st-wd', dlg).forEach((x) => (x.onclick = () => {
+      k = +x.dataset.k; $$('.st-wd', dlg).forEach((y) => y.classList.toggle('cut', +y.dataset.k === k));
+      $('#spPrev', dlg).innerHTML = `<div>1：${esc(toks.slice(0, k).join(' '))}</div><div>2：${esc(toks.slice(k).join(' '))}</div>`; $('#spOk', dlg).disabled = false;
+    }));
+    dlg.returnValue = ''; dlg.showModal();
+    await new Promise((q) => (dlg.onclose = q));
+    const order = set.order.slice();
+    if (dlg.returnValue === 'sent' && sents) { order.splice(order.indexOf(b.id), 1, ...sents.map((p) => p.id)); return run(`${sents.length}行に分割`, { blocks: [...sents, { ...b, deleted: true }], order }); }
+    if (dlg.returnValue !== 'ok' || k == null) return;
+    try { const [A, B] = ops.splitAt(b, k); order.splice(order.indexOf(b.id), 1, A.id, B.id); await run('分割', { blocks: [A, B, { ...b, deleted: true }], order }); }
+    catch (e) { toast(e?.message || String(e), 3500); }
+  }
 
   // ---------- actions (each = one undoable operation) ----------
   const ordered = () => ops.orderedSelection(set.order, sel).map((id) => byId[id]).filter(Boolean);
@@ -1178,7 +1254,8 @@ async function editorScreen(el, params) {
   // ---------- header buttons ----------
   $('#undoB', el).onclick = async () => { const op = await undo(set); if (op) { await reload(); drawList(); toast(`元に戻しました：${op.label}`, 1500); } };
   $('#redoB', el).onclick = async () => { const op = await redo(set); if (op) { await reload(); drawList(); toast(`やり直しました：${op.label}`, 1500); } };
-  $('#selB', el).onclick = () => { selectMode = !selectMode; if (!selectMode) { sel.clear(); onlySel = false; } drawList(); };
+  $('#selB', el).onclick = () => { selectMode = !selectMode; arrange = false; if (!selectMode) { sel.clear(); onlySel = false; } drawList(); };
+  $('#arrB', el).onclick = () => { arrange = !arrange; if (arrange) { selectMode = false; sel.clear(); onlySel = false; vid.pause(); playing = null; } drawList(); };
   $('#pp', el).onclick = () => {
     if (!vid.paused) return vid.pause();
     if (playing) { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} return vid.play().catch(() => {}); }   // resume where it stopped

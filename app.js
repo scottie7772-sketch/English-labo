@@ -17,7 +17,7 @@ import { dataCheckScreen, scanWords } from './datacheck.js';
 import { courseScreen, courseUnit, coursePuzzle } from './course.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.2.3';
+export const APP_VERSION = '1.3.1';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },

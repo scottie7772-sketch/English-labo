@@ -879,3 +879,27 @@ input, select, textarea { font-size: max(16px, 1em); }
 .top h1 { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; -webkit-user-select: none; user-select: none; }
 .top > :not(h1) { flex-shrink: 0; }
 .top > .grow { flex: 0 0 0; }
+/* video lab: wide seek bar with a repeat range */
+.vseek { padding: 10px 2px 4px; touch-action: none; -webkit-user-select: none; user-select: none; cursor: pointer; }
+.vs-track { position: relative; height: 26px; border-radius: 13px; background: var(--surface2); overflow: hidden; }
+.vs-played { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.vs-range { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, #f0a020 55%, transparent); border-left: 2px solid #f0a020; border-right: 2px solid #f0a020; }
+.vs-range[hidden] { display: none; }
+.vs-head { position: absolute; top: -2px; bottom: -2px; width: 3px; margin-left: -1px; background: var(--text); border-radius: 2px; }
+.vs-info { display: flex; gap: 8px; align-items: center; padding: 0 4px 4px; color: var(--muted); }
+.vctl.sub2 { margin-top: 4px; }
+.vctl.sub2 .btn { flex: 1; }
+.rk { padding: 2px 3px; border-radius: 5px; background: color-mix(in srgb, #f0a020 12%, transparent); cursor: pointer; }
+.rk.rsel { background: #f0a020; color: #000; }
+/* dictation result: matched words in one run; differences in two lines (typed = red, answer = green) */
+.dict textarea { width: 100%; font-size: 17px; }
+.dline { line-height: 2.1; font-size: 17px; margin-top: 6px; }
+.dk.ok { color: var(--text); }
+.dk.ng { display: inline-flex; flex-direction: column; vertical-align: top; line-height: 1.35; margin: 0 2px; padding: 0 3px; border-radius: 6px; background: var(--surface2); }
+.dk-t { color: #e5484d; text-decoration: line-through; text-decoration-thickness: 1px; }
+.dk-a { color: #30a46c; font-weight: 700; }
+.dans { font-size: 17px; color: #30a46c; }
+.ok-text { color: #30a46c; font-weight: 700; }
+.dnames { flex-wrap: wrap; gap: 6px; align-items: center; }
+.chip { font: inherit; font-size: 14px; padding: 3px 10px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface2); color: var(--text); }
+.dk-name { text-decoration: underline dotted; color: var(--muted); }

@@ -2,7 +2,7 @@ import { db, STORES, DB_VERSION, setMeta } from './db.js';
 import { effLevel } from './mastery.js';
 
 export const APP_ID = 'english-learning-lab';
-const EXCLUDE_FIELDS = { videos: ['blob'] }; // video files are too large for JSON
+const EXCLUDE_FIELDS = { videos: ['blob', 'audioBlob'] }; // video files are too large for JSON
 
 export async function buildBackup() {
   const data = {};
@@ -44,13 +44,13 @@ export async function restoreBackup(backup) {
   const b = upgradeBackup(backup);
   const names = Object.keys(STORES);
   // keep existing video blobs if the same id exists (JSON has no blobs)
-  const existingVideos = new Map((await db.all('videos')).map((v) => [v.id, v.blob]));
+  const existingVideos = new Map((await db.all('videos')).map((v) => [v.id, v]));
   await db.tx(names, 'readwrite', (t) => {
     for (const name of names) {
       const os = t.objectStore(name);
       os.clear();
       for (const row of b.data[name] || []) {
-        if (name === 'videos' && existingVideos.has(row.id)) row.blob = existingVideos.get(row.id);
+        if (name === 'videos' && existingVideos.has(row.id)) { const old = existingVideos.get(row.id); row.blob = old.blob; if (old.audioBlob) row.audioBlob = old.audioBlob; }
         os.put(row);
       }
     }

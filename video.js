@@ -107,8 +107,8 @@ export async function videoList(el) {
       let first = null;
       for (const m of media) {
         toast('取り込み中…', 10000);
-        const raw = await z.file(m.path); const blob = await copyBlob(raw, (r) => toast(`取り込み中… ${Math.round(r * 100)}%`, 10000));
-        const v = { id: uid('v_'), lang: manifest.lang || curLang(), name: media.length > 1 ? `${manifest.title}（${m.name}）` : manifest.title, blob: new Blob([blob], { type: m.mime || 'video/mp4' }), mime: m.mime || 'video/mp4', size: blob.size, duration: m.duration || 0, lastTime: 0, createdAt: Date.now(), from: { pack: manifest.packId, material: manifest.materialId } };
+        const raw = await z.file(m.path); const blob = await copyBlob(raw, (r) => toast(`取り込み中… ${Math.round(r * 100)}%`, 10000), { name: m.name, type: m.mime || 'video/mp4' });
+        const v = { id: uid('v_'), lang: manifest.lang || curLang(), name: media.length > 1 ? `${manifest.title}（${m.name}）` : manifest.title, blob, mime: m.mime || 'video/mp4', size: blob.size, duration: m.duration || 0, lastTime: 0, createdAt: Date.now(), from: { pack: manifest.packId, material: manifest.materialId } };
         await db.put('videos', v);
         const cues = mat.items.filter((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja))
           .map((it) => ({ id: uid('c_'), videoId: v.id, start: it.segments[0].start, end: it.segments.at(-1).media === m.id ? it.segments.at(-1).end : it.segments[0].end, en: it.text || '', ja: it.ja || '', ...(it.holes?.length ? { holes: it.holes } : {}) }))
@@ -129,8 +129,10 @@ export async function videoList(el) {
       const duration = await probeDuration(f);
       // a real copy (Safari may otherwise keep only a reference to a temporary file that iOS deletes later)
       const { copyBlob } = await import('./media-audio.js');
-      const blob = f.size <= 600 * 1048576 ? await copyBlob(f, (r) => toast(`保存中… ${Math.round(r * 100)}%`, 10000)) : new Blob([f], { type: f.type || 'video/mp4' });
-      const v = { id: uid('v_'), lang: curLang(), name: f.name.replace(/\.[^.]+$/, '') || '動画', blob: blob.type ? blob : new Blob([blob], { type: f.type || 'video/mp4' }), mime: f.type || 'video/mp4', size: f.size, duration, lastTime: 0, createdAt: Date.now() };
+      const blob = f.size <= 600 * 1048576 ? await copyBlob(f, (r) => toast(`保存中… ${Math.round(r * 100)}%`, 10000), { type: f.type || 'video/mp4' }) : f;
+      const v = { id: uid('v_'), lang: curLang(), name: f.name.replace(/\.[^.]+$/, '') || '動画', blob, mime: f.type || 'video/mp4', size: f.size, duration, lastTime: 0, createdAt: Date.now(), audioChecked: true };
+      // screen recordings have app sound and microphone as separate tracks: keep the speech track as its own sound file
+      try { const { separateSpeechTrack } = await import('./media-audio.js'); const sp = await separateSpeechTrack(blob, f.name, (m) => toast(m, 8000)); if (sp) { v.audioBlob = sp.file; v.audioTrack = sp.index; v.audioInfo = { count: sp.count, reason: sp.reason, auto: sp.auto }; } } catch {}
       await db.put('videos', v);
       toast('動画を追加しました');
       go(`#video-play?id=${v.id}`);
@@ -172,27 +174,42 @@ export async function videoPlay(el, params) {
   let loop = null, ab = null, curId = null, rafId = 0, saveT = 0, loopN = 0, stepCue = null, revealedCue = null, editing = false;
   const revealed = new Map();   // cueId -> Set(hole index)
   const url = v.blob ? URL.createObjectURL(v.blob) : '';
+  const aurl = v.audioBlob ? URL.createObjectURL(v.audioBlob) : '';
   const MLABEL = (m) => MODES.find((x) => x[0] === m)[1].replace('英', L(vlang).ch);
 
   el.innerHTML = `
     <div class="vp-root" id="vroot">
     <header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1 class="vtitle">${esc(v.name)}</h1><span class="grow"></span><button class="icon-btn" id="menu" aria-label="メニュー">⋯</button></header>
-    <div class="vwrap">${url ? `<video id="vid" src="${url}" playsinline webkit-playsinline preload="metadata"></video>` : '<div class="card warn">動画ファイルがありません（バックアップから復元した場合は、動画をもう一度追加してください）</div>'}</div>
+    <div class="vwrap">${!url ? '<div class="card warn">動画ファイルがありません（バックアップから復元した場合は、動画をもう一度追加してください）</div>'
+      : aurl ? `<video id="vpic" src="${url}" muted playsinline webkit-playsinline preload="metadata"></video><audio id="vid" src="${aurl}" preload="auto" playsinline></audio>`
+      : `<video id="vid" src="${url}" playsinline webkit-playsinline preload="metadata"></video>`}</div>
     <div class="subbox" id="sub"></div>
     <div id="grade"></div>
+    <div class="vseek" id="seek"><div class="vs-track"><i class="vs-range" id="sRange"></i><i class="vs-played" id="sPlayed"></i><i class="vs-head" id="sHead"></i></div></div>
+    <div class="vs-info small"><span id="sTime">0:00.0</span><span id="sRangeTxt" class="grow center"></span><button class="link small" id="sClear" hidden>区間を解除</button></div>
     <div class="vctl">
-      <button class="btn" id="prevCue" aria-label="前の文">⏮</button>
-      <button class="btn" id="again" aria-label="直前のフレーズをもう一度">↺</button>
+      <button class="btn" id="back" aria-label="戻す">⟲3</button>
       <button class="btn primary" id="play" aria-label="再生">▶︎</button>
-      <button class="btn" id="nextCue" aria-label="次の文">⏭</button>
-      <button class="btn" id="speed">1×</button>
+      <button class="btn" id="fwd" aria-label="送る">3⟳</button>
+      <button class="btn sm" id="stepSec" aria-label="戻す・送る秒数">3秒</button>
+      <button class="btn sm" id="speed" aria-label="速さ">1×</button>
+    </div>
+    <div class="vctl sub2">
+      <button class="btn sm" id="prevCue" aria-label="前の文">⏮ 前の文</button>
+      <button class="btn sm" id="again" aria-label="この文をもう一度">↺ もう一度</button>
+      <button class="btn sm" id="nextCue" aria-label="次の文">次の文 ⏭</button>
     </div>
     <div class="vquick">
       <button class="tgl" id="qMode"></button>
+      <button class="tgl" id="qDict">ディクテーション</button>
+      <button class="tgl" id="qShadow">シャドーイング</button>
+      <button class="tgl" id="qRange">字幕で区間指定</button>
       <button class="tgl" id="qCloze">穴埋め</button>
       <button class="tgl" id="qLoop">ループ</button>
       <button class="tgl" id="qTest">字幕なしテスト</button>
     </div>
+    <div id="dict" class="card stack dict" hidden></div>
+    <div id="shadow" class="card stack" hidden></div>
     <details class="card details vset" id="set"><summary>表示・学習の設定</summary>
       <div class="fgrp"><span>2言語のとき</span><div class="seg" id="order"><button data-v="en">${esc(L(vlang).ch)}が上</button><button data-v="ja">日本語が上</button></div></div>
       <div class="fgrp"><span>${esc(TL)}の透明度</span><div class="seg" id="opEn">${OPS.map((o) => `<button data-v="${o}">${o * 100}%</button>`).join('')}</div></div>
@@ -226,7 +243,31 @@ export async function videoPlay(el, params) {
     </div>`;
 
   const root = $('#vroot', el), vid = $('#vid', el), sub = $('#sub', el), cl = $('#cl', el);
-  if (vid) {
+  const pic = $('#vpic', el);
+  if (vid && pic) {   // picture follows the sound
+    vid.addEventListener('play', () => pic.play().catch(() => {}));
+    vid.addEventListener('pause', () => pic.pause());
+    vid.addEventListener('ratechange', () => (pic.playbackRate = vid.playbackRate));
+    vid.addEventListener('seeked', () => { pic.currentTime = vid.currentTime; });
+    const sync = setInterval(() => { if (!document.contains(pic)) return clearInterval(sync); if (Math.abs(pic.currentTime - vid.currentTime) > 0.25) pic.currentTime = vid.currentTime; }, 500);
+    pic.addEventListener('click', () => (vid.paused ? vid.play() : vid.pause()));
+  }
+  // videos saved before: check once for several sound tracks and keep the speech track separately
+  if (vid && !pic && v.blob && !v.audioChecked) {
+    (async () => {
+      try {
+        const { separateSpeechTrack, readable } = await import('./media-audio.js');
+        if (!(await readable(v.blob))) return;
+        const sp = await separateSpeechTrack(v.blob, v.name + ((v.mime || '').includes('quicktime') ? '.mov' : '.mp4'));
+        const cur = await db.get('videos', v.id); if (!cur) return;
+        cur.audioChecked = true;
+        if (sp) { Object.assign(cur, { audioBlob: sp.file, audioTrack: sp.index, audioInfo: { count: sp.count, reason: sp.reason, auto: sp.auto } }); }
+        await db.put('videos', cur);
+        if (sp && location.hash.includes(v.id)) { toast(`音声が${sp.count}本あったので、話し声の方（音声${sp.index + 1}）で再生します`, 3500); videoPlay(el, params); }
+      } catch {}
+    })();
+  }
+  if (vid && !pic) {
     // several sound tracks (screen recordings: app sound + microphone): play only the one with speech, never mix
     const pickTrack = async () => {
       const at = vid.audioTracks; if (!at || at.length < 2) return;
@@ -257,7 +298,8 @@ export async function videoPlay(el, params) {
     $('#qCloze', el).classList.toggle('on', view.cloze);
     $('#qLoop', el).classList.toggle('on', !!loop); $('#qLoop', el).textContent = !loop ? 'ループ' : view.loopMax ? `ループ${view.loopMax}回` : 'ループ∞';
     $('#qTest', el).classList.toggle('on', view.test);
-    $('#tAB', el).classList.toggle('on', !!ab); $('#tAB', el).textContent = !ab ? 'A-B区間リピート' : ab.b == null ? 'B地点を押す' : `A-B ${fmtT(ab.a)}–${fmtT(ab.b)}（押すと解除）`;
+    $('#qDict', el).classList.toggle('on', dictOn); $('#qShadow', el).classList.toggle('on', shadowOn); $('#qRange', el).classList.toggle('on', !!rangeMode);
+    $('#tAB', el).classList.toggle('on', !!ab); drawSeek?.(); $('#tAB', el).textContent = !ab ? 'A-B区間リピート' : ab.b == null ? 'B地点を押す' : `A-B ${fmtT(ab.a)}–${fmtT(ab.b)}（押すと解除）`;
     $('#edit', el).classList.toggle('on', editing); $('#edit', el).textContent = editing ? '穴を選び終える' : '穴を選ぶ（語をタップ）';
     $('#autoGo', el).hidden = !view.clozeAuto;
     $('#modeTxt', el).textContent = [view.test ? '聞き取りテスト中：字幕はタップで表示' : '', view.cloze ? '穴埋め：_____ をタップで答え' : '', editing ? '穴を選ぶ：字幕の語をタップ' : '', view.step && !view.test ? '1文ごとに停止' : ''].filter(Boolean).join('・');
@@ -281,7 +323,7 @@ export async function videoPlay(el, params) {
     cl.innerHTML = cues.map((c) => `
       <div class="cue ${c.id === curId ? 'cur' : ''}" data-id="${c.id}">
         <span class="ct">${fmtT(c.start)}</span>
-        <span class="grow ctext ${view.test ? 'veil' : ''}">${textHTML(c, 'list') || '<span class="muted small">（非表示）</span>'}</span>
+        <span class="grow ctext ${view.test && !rangeMode ? 'veil' : ''}">${rangeMode && c.en ? `<div class="sen" ${langAttr(vlang)}>${toks(c).map((k, i) => `<span class="rk" data-rk="${c.id}:${i}">${esc(k.w)}</span>`).join(' ')}</div>` : textHTML(c, 'list') || '<span class="muted small">（非表示）</span>'}</span>
         ${c.en ? `<button class="cbtn" data-word="${c.id}" aria-label="単語登録">＋語</button>` : ''}
         <button class="cbtn" data-edit="${c.id}" aria-label="編集">✎</button>
       </div>`).join('');
@@ -305,6 +347,7 @@ export async function videoPlay(el, params) {
       } else vid.currentTime = loop.start;
     }
     if (ab?.b != null && t >= ab.b) vid.currentTime = ab.a;
+    if (shadowOn) shadowTick(t);
     if ((view.step || view.test) && !loop && stepCue && t >= stepCue.end - 0.03 && !vid.paused) { vid.pause(); vid.currentTime = Math.max(stepCue.start, stepCue.end - 0.05); stepCue = null; }
     const c = cueAt(t), id = c?.id || null;
     if (id !== curId) {
@@ -385,8 +428,178 @@ export async function videoPlay(el, params) {
     if (onTextTap(e)) return;
     const w = e.target.closest('[data-word]'); if (w) return wordFromCue(w.dataset.word);
     const ed = e.target.closest('[data-edit]'); if (ed) return editCue(ed.dataset.edit);
-    const row = e.target.closest('.cue'); if (row) playFrom(cues.find((x) => x.id === row.dataset.id));
+    const row = e.target.closest('.cue'); if (!row) return;
+    const c = cues.find((x) => x.id === row.dataset.id);
+    if (dictOn) { dictTyped = ''; return setRange(c.start, c.end, c.en); }   // dictation: the tapped sentence becomes the repeat range
+    if (shadowOn) { shadow.cur = c; shadow.n = 0; shadow.waiting = false; clearTimeout(shadowT); }
+    playFrom(c);
   });
+
+  // ================= dictation / shadowing tools =================
+  const STEPS = [3, 5, 10], RATES = [1, 0.7, 0.5];
+  let stepSec = (await getSetting('video.stepSec', 3)) || 3, dictOn = false, rangeMode = null, shadowOn = false, shadowT = null;
+  const shadow = { gap: (await getSetting('video.shGap', 1.5)) || 1.5, rep: (await getSetting('video.shRep', 1)) || 1, n: 0, waiting: false };
+  // words of a cue with estimated times (spread by characters inside the cue)
+  const toks = (c) => { const out = []; const re = /\S+/g; let m; const L0 = Math.max(1, (c.en || '').length); while ((m = re.exec(c.en || ''))) out.push({ w: m[0], t0: c.start + ((c.end - c.start) * m.index) / L0, t1: c.start + ((c.end - c.start) * (m.index + m[0].length)) / L0 }); return out; };
+  // text inside the current range (A–B), or the current / next sentence
+  function targetText() {
+    if (ab?.b != null) {
+      if (ab.text) return ab.text;
+      return cues.flatMap((c) => toks(c).filter((k) => (k.t0 + k.t1) / 2 >= ab.a - 0.05 && (k.t0 + k.t1) / 2 <= ab.b + 0.05).map((k) => k.w)).join(' ');
+    }
+    const t = vid?.currentTime || 0; const c = cueAt(t) || cues.find((x) => x.start >= t) || cues[cues.length - 1];
+    return c?.en || '';
+  }
+  function setRange(a, b, text = null) {
+    if (b - a < 0.2) return;
+    ab = { a: Math.max(0, a), b: Math.min(vid?.duration || b, b), text }; loop = null;
+    if (vid) { vid.currentTime = ab.a; vid.play().catch(() => {}); }
+    applyView(); drawSeek(); if (dictOn) drawDict();
+  }
+  function clearRange() { ab = null; rangeMode = null; applyView(); drawSeek(); if (dictOn) drawDict(); }
+  // ---- wide seek bar: tap = jump, drag = choose a range that repeats ----
+  const seekEl = $('#seek', el);
+  function drawSeek() {
+    if (!vid || !seekEl) return;
+    const D = vid.duration || 1, t = vid.currentTime || 0;
+    $('#sPlayed', el).style.width = `${(t / D) * 100}%`; $('#sHead', el).style.left = `${(t / D) * 100}%`;
+    const r = $('#sRange', el);
+    if (ab?.b != null) { r.hidden = false; r.style.left = `${(ab.a / D) * 100}%`; r.style.width = `${((ab.b - ab.a) / D) * 100}%`; $('#sRangeTxt', el).textContent = `区間 ${fmtT(ab.a)}–${fmtT(ab.b)} をくり返し`; $('#sClear', el).hidden = false; }
+    else { r.hidden = true; $('#sRangeTxt', el).textContent = 'バーを指でなぞると区間をくり返し'; $('#sClear', el).hidden = true; }
+    $('#sTime', el).textContent = `${fmtT(t)} / ${fmtT(D)}`;
+  }
+  if (seekEl) {
+    let d = null;
+    const posT = (x) => { const r = seekEl.getBoundingClientRect(); return Math.max(0, Math.min(1, (x - r.left) / r.width)) * (vid?.duration || 0); };
+    seekEl.addEventListener('pointerdown', (e) => { if (!vid) return; seekEl.setPointerCapture(e.pointerId); d = { x0: e.clientX, t0: posT(e.clientX), moved: false }; });
+    seekEl.addEventListener('pointermove', (e) => {
+      if (!d) return; if (!d.moved && Math.abs(e.clientX - d.x0) < 8) return; d.moved = true;
+      const t1 = posT(e.clientX), a = Math.min(d.t0, t1), b = Math.max(d.t0, t1), D = vid.duration || 1, r = $('#sRange', el);
+      r.hidden = false; r.style.left = `${(a / D) * 100}%`; r.style.width = `${((b - a) / D) * 100}%`; $('#sRangeTxt', el).textContent = `${fmtT(a)}–${fmtT(b)}`;
+    });
+    seekEl.addEventListener('pointerup', (e) => {
+      if (!d) return; const t1 = posT(e.clientX), x = d; d = null;
+      if (!x.moved) { vid.currentTime = t1; if (ab?.b != null && (t1 < ab.a || t1 > ab.b)) ab = null; drawSeek(); applyView(); return; }
+      setRange(Math.min(x.t0, t1), Math.max(x.t0, t1));
+    });
+    seekEl.addEventListener('pointercancel', () => { d = null; drawSeek(); });
+    $('#sClear', el).onclick = clearRange;
+    setInterval(() => { if (document.contains(seekEl)) drawSeek(); }, 200);
+    vid?.addEventListener('loadedmetadata', drawSeek);
+  }
+  // ---- back / forward (seconds cycle 3 → 5 → 10), speed (1 → 0.7 → 0.5) ----
+  const drawSteps = () => { $('#back', el).textContent = `⟲${stepSec}`; $('#fwd', el).textContent = `${stepSec}⟳`; $('#stepSec', el).textContent = `${stepSec}秒`; };
+  drawSteps();
+  $('#stepSec', el).onclick = async () => { stepSec = STEPS[(STEPS.indexOf(stepSec) + 1) % STEPS.length]; drawSteps(); await setSetting('video.stepSec', stepSec); };
+  $('#back', el).onclick = () => { if (vid) vid.currentTime = Math.max(ab?.b != null ? ab.a : 0, vid.currentTime - stepSec); };
+  $('#fwd', el).onclick = () => { if (vid) vid.currentTime = Math.min(ab?.b != null ? ab.b - 0.05 : vid.duration || 1e9, vid.currentTime + stepSec); };
+  // ---- range from the subtitle text: tap the first word, then the last word ----
+  $('#qRange', el).onclick = () => { rangeMode = rangeMode ? null : { first: null }; if (rangeMode) toast('字幕の一覧で、区間の最初の語→最後の語をタップ', 3000); applyView(); };
+  cl.addEventListener('click', (e) => {
+    if (!rangeMode) return;
+    const k = e.target.closest('[data-rk]'); if (!k) return;
+    e.stopImmediatePropagation(); e.preventDefault();
+    const [cid, i] = k.dataset.rk.split(':'); const c = cues.find((x) => x.id === cid), tk = toks(c)[+i];
+    if (!rangeMode.first) { rangeMode.first = { c, i: +i, tk }; k.classList.add('rsel'); toast('最後の語をタップ', 1500); return; }
+    let A = rangeMode.first, B = { c, i: +i, tk };
+    if (B.tk.t0 < A.tk.t0) [A, B] = [B, A];
+    const words = cues.filter((x) => x.start >= A.c.start && x.start <= B.c.start).flatMap((x) => toks(x).filter((t) => t.t0 >= A.tk.t0 - 0.001 && t.t0 <= B.tk.t0 + 0.001).map((t) => t.w));
+    rangeMode = null;
+    setRange(A.tk.t0 - 0.15, B.tk.t1 + 0.25, words.join(' '));
+  }, true);
+
+  // ---- dictation: type what you hear, compare word by word ----
+  const normW = (w) => w.toLowerCase().replace(/[’‘]/g, "'").replace(/^[^a-z0-9']+|[^a-z0-9']+$/g, '');
+  function compareWords(answer, typed) {
+    const A = answer.split(/\s+/).filter(Boolean), T = typed.split(/\s+/).filter(Boolean);
+    const a = A.map(normW), t = T.map(normW);
+    const names = new Set((v.properNouns || []).flatMap((x) => x.split(/\s+/)).map(normW).filter(Boolean));
+    const del = (i) => (names.has(a[i]) ? 0 : 1);   // a registered proper noun may be left out (counted as given)
+    const n = a.length, m = t.length, dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = 1; i <= n; i++) dp[i][0] = dp[i - 1][0] + del(i - 1); for (let j = 0; j <= m; j++) dp[0][j] = j;
+    for (let i = 1; i <= n; i++) for (let j = 1; j <= m; j++) dp[i][j] = Math.min(dp[i - 1][j] + del(i - 1), dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === t[j - 1] ? 0 : 1));
+    const ops = []; let i = n, j = m;
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0 && a[i - 1] === t[j - 1] && dp[i][j] === dp[i - 1][j - 1]) { ops.push({ k: 'ok', a: A[i - 1], t: T[j - 1] }); i--; j--; }
+      else if (i > 0 && names.has(a[i - 1]) && dp[i][j] === dp[i - 1][j]) { ops.push({ k: 'ok', a: A[i - 1], t: '', name: true }); i--; }
+      else if (i > 0 && j > 0 && dp[i][j] === dp[i - 1][j - 1] + 1) { ops.push({ k: 'sub', a: A[i - 1], t: T[j - 1] }); i--; j--; }
+      else if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) { ops.push({ k: 'miss', a: A[i - 1], t: '' }); i--; }
+      else { ops.push({ k: 'extra', a: '', t: T[j - 1] }); j--; }
+    }
+    ops.reverse();
+    // group: runs of matches become one chunk; runs of differences become one two-line chunk (typed in red / answer in green)
+    const chunks = []; for (const o of ops) { const ok = o.k === 'ok'; const last = chunks[chunks.length - 1]; if (last && last.ok === ok) last.ops.push(o); else chunks.push({ ok, ops: [o] }); }
+    const good = ops.filter((o) => o.k === 'ok').length;
+    return { chunks, good, total: a.length, perfect: good === a.length && !ops.some((o) => o.k === 'extra') };
+  }
+  function diffHTML(r) {
+    return r.chunks.map((ch) => ch.ok
+      ? `<span class="dk ok">${ch.ops.map((o) => (o.name ? `<u class="dk-name">${esc(o.a)}</u>` : esc(o.a))).join(' ')}</span>`
+      : `<span class="dk ng"><span class="dk-t">${esc(ch.ops.map((o) => o.t).filter(Boolean).join(' ')) || '＿'}</span><span class="dk-a">${esc(ch.ops.map((o) => o.a).filter(Boolean).join(' ')) || '（不要）'}</span></span>`).join(' ');
+  }
+  let dictTyped = '';
+  function drawDict() {
+    const box = $('#dict', el); box.hidden = !dictOn; if (!dictOn) return;
+    const target = targetText();
+    box.innerHTML = `<div class="row between"><b>ディクテーション</b><span class="small muted">${ab?.b != null ? `区間 ${fmtT(ab.a)}–${fmtT(ab.b)}` : '今の文'}</span></div>
+      <div class="row"><button class="btn sm" id="dPlay">▶︎ 聞く（くり返し）</button><button class="btn sm" id="dNext">次の文へ</button></div>
+      <div class="row dnames"><span class="small muted">固有名詞：</span>${(v.properNouns || []).map((x, i) => `<button class="chip" data-pn="${i}">${esc(x)}</button>`).join('') || '<span class="small muted">なし</span>'}<button class="link small" id="dPN">${(v.properNouns || []).length ? '編集' : '＋登録'}</button></div>
+      <textarea id="dIn" rows="3" placeholder="聞こえた英語を入力" autocapitalize="off" autocorrect="off" spellcheck="false" ${langAttr(vlang)}>${esc(dictTyped)}</textarea>
+      <div class="row"><button class="btn primary grow" id="dCheck">判定</button><button class="btn sm" id="dShow">答えを見る</button></div>
+      <div id="dOut"></div>`;
+    $('#dIn', el).oninput = (e) => (dictTyped = e.target.value);
+    // proper nouns of this video: tap to insert; if left out, they count as given
+    $$('[data-pn]', el).forEach((b) => (b.onclick = () => { const ta = $('#dIn', el), w = v.properNouns[+b.dataset.pn]; const p0 = ta.selectionStart ?? ta.value.length; ta.value = ta.value.slice(0, p0) + (p0 && !/\s$/.test(ta.value.slice(0, p0)) ? ' ' : '') + w + ' ' + ta.value.slice(p0); dictTyped = ta.value; ta.focus(); }));
+    $('#dPN', el).onclick = async () => {
+      const cur = (v.properNouns || []).join(', ');
+      const ans = prompt('この動画の固有名詞（人名・地名など）をカンマ区切りで\n例：Maria, Cleveland, Burns and Associates', cur); if (ans == null) return;
+      v.properNouns = [...new Set(ans.split(/[,、，\n]/).map((x) => x.trim()).filter(Boolean))];
+      const dbv = await db.get('videos', v.id); if (dbv) { dbv.properNouns = v.properNouns; await db.put('videos', dbv); }
+      drawDict();
+    };
+    $('#dPlay', el).onclick = () => {
+      if (ab?.b == null) { const t = vid.currentTime; const c = cueAt(t) || cues.find((x) => x.start >= t); if (c) setRange(c.start, c.end, c.en); return; }
+      vid.currentTime = ab.a; vid.play().catch(() => {});
+    };
+    $('#dNext', el).onclick = () => { const c = cues.find((x) => x.start > (ab?.b != null ? ab.a : vid.currentTime) + 0.05); dictTyped = ''; if (c) setRange(c.start, c.end, c.en); else toast('最後の文です'); };
+    $('#dShow', el).onclick = () => { $('#dOut', el).innerHTML = `<div class="dans">${esc(target)}</div>`; };
+    $('#dCheck', el).onclick = async () => {
+      if (!target) return toast('答えの字幕がありません');
+      if (!dictTyped.trim()) return toast('聞こえた英語を入力してください');
+      const r = compareWords(target, dictTyped);
+      $('#dOut', el).innerHTML = `<div class="small ${r.perfect ? 'ok-text' : ''}">${r.perfect ? '全部合っています！' : `${r.good} / ${r.total} 語が一致`}</div><div class="dline">${diffHTML(r)}</div>`;
+      // keep a small record on the sentence (used later for review)
+      const c = cues.find((x) => x.start <= (ab?.a ?? vid.currentTime) + 0.3 && x.end >= (ab?.a ?? vid.currentTime)); if (c) { c.dict = { n: (c.dict?.n || 0) + 1, best: Math.max(c.dict?.best || 0, r.good / Math.max(1, r.total)), last: r.good / Math.max(1, r.total), at: Date.now() }; db.put('cues', c); }
+    };
+  }
+  $('#qDict', el).onclick = () => {
+    dictOn = !dictOn; if (dictOn) { shadowOn = false; view.test = true; dictTyped = ''; const t = vid?.currentTime || 0; const c = ab?.b != null ? null : cueAt(t) || cues.find((x) => x.start >= t); if (c) setRange(c.start, c.end, c.en); }
+    else view.test = false;
+    applyView(); drawDict(); drawShadow();
+  };
+  // ---- shadowing: play a sentence, pause so you can repeat, then go on ----
+  function drawShadow() {
+    const box = $('#shadow', el); box.hidden = !shadowOn; if (!shadowOn) return;
+    box.innerHTML = `<div class="row between"><b>シャドーイング</b><span class="small muted" id="shSt">${shadow.waiting ? '今、くり返して言う番です' : '聞いて、続けて言う'}</span></div>
+      <div class="row"><button class="btn sm" id="shGap">間：文の${shadow.gap}倍</button><button class="btn sm" id="shRep">${shadow.rep}回ずつ</button><button class="btn sm" id="shStart">${vid?.paused ? '▶︎ 始める' : '❚❚ 止める'}</button></div>
+      <p class="hint">文が終わると止まり、その文の長さ×「間」だけ待って次へ進みます。字幕の表示は上の「字幕：」で切り替え。速さは「1×」ボタン。</p>`;
+    $('#shGap', el).onclick = async () => { const G = [1, 1.5, 2]; shadow.gap = G[(G.indexOf(shadow.gap) + 1) % G.length]; await setSetting('video.shGap', shadow.gap); drawShadow(); };
+    $('#shRep', el).onclick = async () => { const R = [1, 2, 3]; shadow.rep = R[(R.indexOf(shadow.rep) + 1) % R.length]; await setSetting('video.shRep', shadow.rep); drawShadow(); };
+    $('#shStart', el).onclick = () => { if (vid.paused) { clearTimeout(shadowT); shadow.waiting = false; const c = cueAt(vid.currentTime) || cues.find((x) => x.start >= vid.currentTime); if (c) { shadow.cur = c; shadow.n = 0; vid.currentTime = c.start; } vid.play().catch(() => {}); } else { vid.pause(); clearTimeout(shadowT); } drawShadow(); };
+  }
+  function shadowTick(t) {
+    const c = shadow.cur; if (!c || shadow.waiting || vid.paused) return;
+    if (t >= c.end - 0.03) {
+      vid.pause(); shadow.waiting = true; drawShadow();
+      shadowT = setTimeout(() => {
+        if (!shadowOn) return; shadow.waiting = false; shadow.n++;
+        let nx = c; if (shadow.n >= shadow.rep) { shadow.n = 0; nx = cues.find((x) => x.start >= c.end - 0.01 && x.id !== c.id); }
+        if (!nx) { drawShadow(); return toast('最後まで終わりました'); }
+        shadow.cur = nx; vid.currentTime = nx.start; vid.play().catch(() => {}); drawShadow();
+      }, Math.max(800, (c.end - c.start) * shadow.gap * 1000 / (vid.playbackRate || 1)));
+    }
+  }
+  $('#qShadow', el).onclick = () => { shadowOn = !shadowOn; clearTimeout(shadowT); shadow.waiting = false; if (shadowOn) { dictOn = false; view.test = false; ab = null; loop = null; } applyView(); drawDict(); drawShadow(); drawSeek(); };
 
   // ---- controls ----
   const jump = (dir) => {
@@ -406,7 +619,7 @@ export async function videoPlay(el, params) {
   $('#play', el).onclick = () => vid && (vid.paused ? vid.play() : vid.pause());
   $('#speed', el).onclick = async () => {
     const cur = vid?.playbackRate || 1;
-    const nx = SPEEDS[(SPEEDS.indexOf(cur) + 1) % SPEEDS.length] || 1;
+    const nx = RATES[(RATES.indexOf(cur) + 1) % RATES.length] ?? 1;
     if (vid) vid.playbackRate = nx; $('#speed', el).textContent = `${nx}×`; await setSetting('video.speed', nx);
   };
   $('#qMode', el).onclick = () => { const i = MODES.findIndex((m) => m[0] === view.mode); view.mode = MODES[(i + 1) % MODES.length][0]; saveView(); applyView(); };
@@ -475,7 +688,8 @@ export async function videoPlay(el, params) {
     const say = (msg, p) => { if (cancelled) return; const m = $('#asrMsg', dlg); if (m) m.textContent = msg; const b = $('#asrBar', dlg); if (b && p != null) b.style.width = Math.max(2, p * 100) + '%'; };
     try {
       const { audio16kFromBlob, transcribeAudio } = await import('./media-audio.js');
-      const a = await audio16kFromBlob(v.blob, { name: v.name + '.' + ((v.mime || '').includes('quicktime') ? 'mov' : 'mp4'), trackIndex: v.audioTrack ?? null, onStep: (m) => say(m, 0.05) });
+      const a = v.audioBlob ? await audio16kFromBlob(v.audioBlob, { name: 'speech.m4a', onStep: (m) => say(m, 0.05) })
+        : await audio16kFromBlob(v.blob, { name: v.name + '.' + ((v.mime || '').includes('quicktime') ? 'mov' : 'mp4'), trackIndex: v.audioTrack ?? null, onStep: (m) => say(m, 0.05) });
       if (a.track && a.track.count > 1 && v.audioTrack == null) { v.audioTrack = a.track.index; await db.put('videos', v); }   // remember the chosen sound track (also used for playback)
       const fast = (await getSetting('video.asrFast', true)) !== false;
       const out = await transcribeAudio(a.audio, { lang: vlang, fast, onProgress: (m, p) => say(m, p == null ? null : 0.1 + p * 0.9), isCancelled: () => cancelled });
@@ -500,7 +714,11 @@ export async function videoPlay(el, params) {
       const f = inp.files[0]; if (!f) return;
       const { copyBlob } = await import('./media-audio.js');
       toast('保存中…', 10000);
-      try { const b = await copyBlob(f, (r) => toast(`保存中… ${Math.round(r * 100)}%`, 10000)); v.blob = new Blob([b], { type: f.type || v.mime || 'video/mp4' }); v.size = f.size; delete v.audioTrack; await db.put('videos', v); toast('動画を選び直しました'); videoPlay(el, params); }
+      try {
+        v.blob = await copyBlob(f, (r) => toast(`保存中… ${Math.round(r * 100)}%`, 10000), { type: f.type || v.mime || 'video/mp4' }); v.size = f.size; delete v.audioTrack; delete v.audioBlob;
+        try { const { separateSpeechTrack } = await import('./media-audio.js'); const sp = await separateSpeechTrack(v.blob, f.name, (m) => toast(m, 8000)); if (sp) { v.audioBlob = sp.file; v.audioTrack = sp.index; v.audioInfo = { count: sp.count, reason: sp.reason, auto: sp.auto }; } } catch {}
+        await db.put('videos', v); toast('動画を選び直しました'); videoPlay(el, params);
+      }
       catch (e) { toast('保存できませんでした: ' + (e?.message || e)); }
     };
     inp.click();

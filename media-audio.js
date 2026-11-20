@@ -5,10 +5,25 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack } from './med
 
 // iPhone Safari can keep only a reference to the picked file (a temporary copy that iOS deletes later);
 // reading it into memory in pieces makes a real copy that stays readable
-export async function copyBlob(file, onProgress = () => {}) {
+// Saved as a File (not a Blob made from other blobs): those came back unreadable after reopening the app on iPhone,
+// while File objects (as the studio saves them) stayed readable.
+export async function copyBlob(file, onProgress = () => {}, { name = file.name || 'media', type = file.type || '' } = {}) {
   const parts = [], N = 8 * 1024 * 1024;
   for (let o = 0; o < file.size; o += N) { parts.push(await file.slice(o, Math.min(file.size, o + N)).arrayBuffer()); onProgress(Math.min(1, (o + N) / file.size)); }
-  return new Blob(parts, { type: file.type || '' });
+  return new File(parts, name, { type });
+}
+// several sound tracks (screen recordings: app sound + microphone): take the one with speech out as its own .m4a (no re-encoding).
+// Returns null when there is only one track (or the file is not mp4/mov).
+export async function separateSpeechTrack(blob, name = '', onStep = () => {}) {
+  if (!isContainer(blob, name)) return null;
+  let info; try { info = await probe(blob); } catch { return null; }
+  const at = audioTracks(info); if (at.length < 2) return null;
+  onStep(`音声が${at.length}本あります。話し声のある方を選んでいます…`);
+  const r = await chooseTrack(blob, info, decodeTo16k);
+  const t = r.chosen || at[0]; if (!canExtract(t)) return null;
+  onStep('選んだ音声を取り出しています…');
+  const x = await extractTrack(blob, t);
+  return { file: new File([x.blob], (name || 'audio').replace(/\.[^.]+$/, '') + '.m4a', { type: 'audio/mp4' }), index: at.indexOf(t), count: at.length, reason: r.reason, auto: r.auto };
 }
 export async function readable(blob) {
   if (!blob) return false;

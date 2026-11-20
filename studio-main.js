@@ -9,7 +9,7 @@ import { decodeTo16k, openTranscriber, speechPieces, captureTo16k } from './asr.
 import { extractPhrases, extractWords } from './studio-words.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 
-export const STUDIO_VERSION = '0.6.2';
+export const STUDIO_VERSION = '0.6.3';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -272,20 +272,37 @@ async function importScreen(el) {
 function highPass(a, fc = 80) { const rc = 1 / (2 * Math.PI * fc), dt = 1 / 16000, al = rc / (rc + dt); let py = 0, px = a[0] || 0; for (let i = 0; i < a.length; i++) { const x = a[i]; py = al * (py + x - px); px = x; a[i] = py; } return a; }
 // ---- trimming the start / end (screen-recording sounds, silence) ----
 const frameRms = (a) => { const F = 320, r = []; for (let i = 0; i + F <= a.length; i += F) { let x = 0; for (let k = 0; k < F; k++) x += a[i + k] * a[i + k]; r.push(Math.sqrt(x / F)); } return r; };
-// rms: 20 ms frames from the edge inward. Returns seconds to cut from that edge.
-function edgeCut(rms) {
+const frameZcr = (a) => { const F = 320, r = []; for (let i = 0; i + F <= a.length; i += F) { let z = 0; for (let k = i + 1; k < i + F; k++) if ((a[k] >= 0) !== (a[k - 1] >= 0)) z++; r.push(z / F); } return r; };
+// rms / zcr: 20 ms frames from the edge inward. Returns seconds to cut from that edge.
+function edgeCut(rms, zcr = []) {
   if (rms.length < 10) return { cut: 0, why: '' };
   const s = rms.slice().sort((a, b) => a - b), floor = s[Math.floor(s.length * 0.1)];
   const th = Math.max(floor * 4, s[Math.floor(s.length * 0.9)] * 0.12, 0.004);
-  let i = 0; while (i < rms.length && rms[i] < th) i++;          // leading silence
+  // 1) an electronic tone (start/stop sound): steady, high-pitched for 80–900 ms within the first 3 s — even when speech follows at once
+  const lim = Math.min(rms.length, 150);
+  for (let i = 0; i < lim; i++) {
+    let j = i; while (j < rms.length && rms[j] >= th * 0.7 && zcr[j] >= 0.09 && zcr[j] <= 0.6 && (j === i || Math.abs(zcr[j] - zcr[j - 1]) < 0.025)) j++;
+    const len = (j - i) * 0.02;
+    if (len >= 0.08 && len <= 0.9) {   // cut just after the tone (+ margin); if silence follows, up to just before the speech
+      let k = j; while (k < rms.length && k < j + 75 && rms[k] < th) k++;
+      return { cut: Math.max(j * 0.02 + 0.12, k > j ? k * 0.02 - 0.15 : 0), why: `電子音（${len.toFixed(1)}秒）` };
+    }
+    if (j > i) i = j;
+  }
+  // 2) a short sound followed by silence
+  let i = 0; while (i < rms.length && rms[i] < th) i++;
   const lead = i;
-  let j = i; while (j < rms.length && rms[j] >= th) j++;          // first sound
-  let k = j; while (k < rms.length && rms[k] < th) k++;           // gap after it
+  let j = i; while (j < rms.length && rms[j] >= th) j++;
+  let k = j; while (k < rms.length && rms[k] < th) k++;
   const burst = (j - i) * 0.02, gap = (k - j) * 0.02;
   if (i < rms.length && burst > 0.04 && burst <= 0.9 && gap >= 0.25 && k < rms.length) return { cut: Math.max(0, k * 0.02 - 0.15), why: `短い音（${burst.toFixed(1)}秒）とその後の無音` };
+  // 3) silence
   if (lead * 0.02 >= 0.3) return { cut: Math.max(0, lead * 0.02 - 0.15), why: '無音' };
   return { cut: 0, why: '' };
 }
+// when nothing is found in a screen recording: cut a fixed length (the usual start/stop sound), set by the user
+const isScreenRec = (name) => /screen\s*recording|画面収録|RPReplay/i.test(name || '');
+const defaultCut = () => { try { return +(localStorage.getItem('st-defCut') ?? 1); } catch { return 1; } };
 async function findEdges(src, blob, D) {
   const W = Math.min(6, D / 3);
   let a0, a1;
@@ -296,7 +313,9 @@ async function findEdges(src, blob, D) {
     a0 = (await decodeTo16k((await extractTrack(blob, t, 0, W)).blob)).audio;
     const x = await extractTrack(blob, t, Math.max(0, D - W), D); const d1 = await decodeTo16k(x.blob); a1 = d1.audio; D = x.start + d1.duration;
   } else { const { audio, duration } = await decodeTo16k(blob); D = duration; a0 = audio.subarray(0, W * 16000); a1 = audio.subarray(Math.max(0, audio.length - W * 16000)); }
-  const st = edgeCut(frameRms(a0)), en = edgeCut(frameRms(a1).reverse());
+  let st = edgeCut(frameRms(a0), frameZcr(a0)), en = edgeCut(frameRms(a1).reverse(), frameZcr(a1).reverse());
+  const dc = defaultCut();
+  if (isScreenRec(src.name) && dc > 0) { if (!st.cut) st = { cut: dc, why: `画面収録の既定 ${dc}秒` }; if (!en.cut) en = { cut: dc, why: `画面収録の既定 ${dc}秒` }; }
   return { start: +st.cut.toFixed(2), end: +(D - en.cut).toFixed(2), whyStart: st.why, whyEnd: en.why, duration: D };
 }
 const dropCutSetting = () => { try { return localStorage.getItem('st-dropCut') === '1'; } catch { return false; } };
@@ -961,11 +980,13 @@ async function editorScreen(el, params) {
     const draw = () => {
       dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>前後をカット</h3><p class="small">教材の始まりと終わりを決めます。元のファイルは変えません（↶で戻せます）。</p>
         <button type="button" class="btn" id="tAuto">自動で見つける（画面収録の音・無音）</button>
+        <div class="row"><span class="small grow">画面収録で音が見つからない時に切る長さ</span><button type="button" class="btn xs" id="tDef">${defaultCut() ? `前後${defaultCut()}秒` : '切らない'}</button></div>
         <div class="st-segrow"><b>開始 ${fmt(st)}</b><div class="row"><button type="button" class="btn xs" data-d="s:-0.5">−0.5</button><button type="button" class="btn xs" data-d="s:-0.1">−0.1</button><button type="button" class="btn xs" data-d="s:0.1">＋0.1</button><button type="button" class="btn xs" data-d="s:0.5">＋0.5</button><button type="button" class="btn xs" id="sNow">今の位置</button></div><button type="button" class="btn sm" id="sPlay">▶︎ 開始から3秒聞く</button></div>
         <div class="st-segrow"><b>終了 ${fmt(en)}</b><div class="row"><button type="button" class="btn xs" data-d="e:-0.5">−0.5</button><button type="button" class="btn xs" data-d="e:-0.1">−0.1</button><button type="button" class="btn xs" data-d="e:0.1">＋0.1</button><button type="button" class="btn xs" data-d="e:0.5">＋0.5</button><button type="button" class="btn xs" id="eNow">今の位置</button></div><button type="button" class="btn sm" id="ePlay">▶︎ 終了の3秒前から聞く</button></div>
         <label class="chk"><input type="checkbox" id="tDrop" ${dropCutSetting() ? 'checked' : ''}> カットした部分は保存しない（元に戻せません）</label>
         <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">保存</button></div></form>`;
       $('#tDrop', dlg).onchange = (ev) => setDropCut(ev.target.checked);
+      $('#tDef', dlg).onclick = () => { const L = [0, 0.5, 1, 1.5, 2]; const nx = L[(L.indexOf(defaultCut()) + 1) % L.length]; try { localStorage.setItem('st-defCut', String(nx)); } catch {} draw(); };
       $$('[data-d]', dlg).forEach((b) => (b.onclick = () => { const [k, d] = b.dataset.d.split(':'); const maxEnd = srcs[e.last.segments.at(-1).sourceId]?.duration || Infinity; if (k === 's') st = Math.min(en - 0.3, Math.max(0, +(st + +d).toFixed(2))); else en = Math.min(maxEnd, Math.max(st + 0.3, +(en + +d).toFixed(2))); draw(); }));
       $('#sNow', dlg).onclick = () => { st = +vid.currentTime.toFixed(2); draw(); };
       $('#eNow', dlg).onclick = () => { en = +vid.currentTime.toFixed(2); draw(); };

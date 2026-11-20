@@ -903,3 +903,19 @@ input, select, textarea { font-size: max(16px, 1em); }
 .dnames { flex-wrap: wrap; gap: 6px; align-items: center; }
 .chip { font: inherit; font-size: 14px; padding: 3px 10px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface2); color: var(--text); }
 .dk-name { text-decoration: underline dotted; color: var(--muted); }
+/* player layout 1.4.3: one control row, sheets for settings */
+.vctl1 { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px; margin-top: 6px; }
+.vctl1 .btn { min-height: 44px; padding: 0; min-width: 0; font-size: 16px; }
+.vctl1 #play { font-size: 20px; }
+.vctl1 .btn.sm { font-size: 13px; }
+.vquick { display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 6px; margin-top: 8px; padding-bottom: 2px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.vquick::-webkit-scrollbar { display: none; }
+.vquick .tgl { flex: 0 0 auto; min-height: 36px; padding: 0 10px; }
+.vwrap.audio { height: 40px; position: relative; display: flex; align-items: center; justify-content: center; background: var(--surface); border: 1px solid var(--line); }
+.vwrap.audio::after { content: '🎧 音声のみ'; font-size: 13px; color: var(--muted); }
+.vwrap.audio video { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.vsheet { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, .45); display: flex; align-items: flex-end; }
+.vsheet[hidden] { display: none; }
+.vsheet-in { width: 100%; max-height: 82vh; overflow: auto; margin: 0; border-radius: 16px 16px 0 0; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+.vh-btn { font-size: 18px; }
+.vp-root .subbox { margin-top: 6px; }

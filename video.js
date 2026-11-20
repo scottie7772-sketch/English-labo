@@ -224,26 +224,24 @@ export async function videoPlay(el, params) {
 
   el.innerHTML = `
     <div class="vp-root" id="vroot">
-    <header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1 class="vtitle">${esc(v.name)}</h1><span class="grow"></span><button class="icon-btn" id="menu" aria-label="メニュー">⋯</button></header>
+    <header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1 class="vtitle">${esc(v.name)}</h1><span class="grow"></span><button class="icon-btn vh-btn" id="openSet" aria-label="表示・学習の設定">⚙︎</button><button class="icon-btn vh-btn" id="openMake" aria-label="字幕・日本語訳">字</button><button class="icon-btn" id="menu" aria-label="メニュー">⋯</button></header>
     <div class="vwrap">${!url ? '<div class="card warn">動画ファイルがありません（バックアップから復元した場合は、動画をもう一度追加してください）</div>'
       : aurl ? `<video id="vpic" src="${url}" muted playsinline webkit-playsinline preload="metadata"></video><audio id="vid" src="${aurl}" preload="auto" playsinline></audio>`
       : `<video id="vid" src="${url}" playsinline webkit-playsinline preload="metadata"></video>`}</div>
-    <div class="subbox" id="sub"></div>
-    <div id="grade"></div>
     <div class="vseek" id="seek"><div class="vs-track"><i class="vs-range" id="sRange"></i><i class="vs-played" id="sPlayed"></i><i class="vs-head" id="sHead"></i></div></div>
     <div class="vs-info small"><span id="sTime">0:00.0</span><span id="sRangeTxt" class="grow center"></span><button class="link small" id="sClear" hidden>区間を解除</button></div>
-    <div class="vctl">
+    <div class="vctl1">
+      <button class="btn" id="prevCue" aria-label="前の文">⏮</button>
       <button class="btn" id="back" aria-label="戻す">⟲3</button>
       <button class="btn primary" id="play" aria-label="再生">▶︎</button>
       <button class="btn" id="fwd" aria-label="送る">3⟳</button>
+      <button class="btn" id="nextCue" aria-label="次の文">⏭</button>
+      <button class="btn" id="again" aria-label="この文をもう一度">↺</button>
       <button class="btn sm" id="stepSec" aria-label="戻す・送る秒数">3秒</button>
       <button class="btn sm" id="speed" aria-label="速さ">1×</button>
     </div>
-    <div class="vctl sub2">
-      <button class="btn sm" id="prevCue" aria-label="前の文">⏮ 前の文</button>
-      <button class="btn sm" id="again" aria-label="この文をもう一度">↺ もう一度</button>
-      <button class="btn sm" id="nextCue" aria-label="次の文">次の文 ⏭</button>
-    </div>
+    <div class="subbox" id="sub"></div>
+    <div id="grade"></div>
     <div class="vquick">
       <button class="tgl" id="qMode"></button>
       <button class="tgl" id="qDict">ディクテーション</button>
@@ -255,7 +253,7 @@ export async function videoPlay(el, params) {
     </div>
     <div id="dict" class="card stack dict" hidden></div>
     <div id="shadow" class="card stack" hidden></div>
-    <details class="card details vset" id="set"><summary>表示・学習の設定</summary>
+    <div class="vsheet" id="shSet" hidden><div class="vsheet-in card stack"><div class="row between"><b>表示・学習の設定</b><button class="btn sm" data-shclose>閉じる</button></div><div class="vset stack" id="set">
       <div class="fgrp"><span>2言語のとき</span><div class="seg" id="order"><button data-v="en">${esc(L(vlang).ch)}が上</button><button data-v="ja">日本語が上</button></div></div>
       <div class="fgrp"><span>${esc(TL)}の透明度</span><div class="seg" id="opEn">${OPS.map((o) => `<button data-v="${o}">${o * 100}%</button>`).join('')}</div></div>
       <div class="fgrp"><span>${esc(TL)}の文字</span><div class="seg" id="fsEn">${FS_EN.map(([n, l]) => `<button data-v="${n}">${l}</button>`).join('')}</div></div>
@@ -270,16 +268,16 @@ export async function videoPlay(el, params) {
       <label class="chk"><input type="checkbox" id="jaHint"> 日本語訳をヒントとして表示（字幕モードに関係なく）</label>
       <div class="row"><button class="btn sm grow" id="edit">穴を選ぶ（語をタップ）</button><button class="btn sm grow" id="autoGo">自動の候補で穴を作る</button></div>
       <div id="czStats" class="small"></div>
-    </details>
-    <details class="card details" id="make"><summary>字幕を読み込む・日本語訳</summary>
-      <div class="stack" style="margin-top:8px">
+    </div></div></div>
+    <div class="vsheet" id="shMake" hidden><div class="vsheet-in card stack"><div class="row between"><b>字幕・日本語訳</b><button class="btn sm" data-shclose>閉じる</button></div><div id="make">
+      <div class="stack">
         <p class="hint">字幕の自動作成・前後のカット・スクリプト合わせは<b>教材スタジオ</b>で行います（ここは再生と学習用）。字幕ファイル（SRT/VTT）の読み込みと日本語訳の依頼はここでもできます。</p>
         <button class="btn" id="askClaude" ${cues.some((c) => c.en) ? '' : 'disabled'}>日本語訳をClaudeに頼む（依頼文ごとコピー）</button>
         <button class="btn" data-paste="ja">返ってきた日本語訳を貼り付け</button>
         <label class="btn" for="fEn">${esc(TL)}字幕ファイル（SRT/VTT）を読み込む</label>
         <label class="btn" for="fJa">日本語訳ファイルを読み込む</label>
         <button class="btn" data-paste="en">${esc(TL)}字幕を貼り付け</button>
-      </div></details>
+      </div></div></div></div>
     <p class="small muted center" id="modeTxt"></p>
     <div class="row between"><h2 class="sec" style="margin:14px 4px 6px">字幕 <span class="muted small">${cues.length}行</span></h2><button class="link small" id="addCue">＋ 現在位置に追加</button></div>
     <div class="cuelist" id="cl"></div>
@@ -287,6 +285,16 @@ export async function videoPlay(el, params) {
     </div>`;
 
   const root = $('#vroot', el), vid = $('#vid', el), sub = $('#sub', el), cl = $('#cl', el);
+  // every play: ask iOS for the "playback" sound session inside the tap (it can drop back after the app is reopened → no sound)
+  if (vid) { const _play = vid.play.bind(vid); vid.play = () => { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} return _play(); }; }
+  // sound only: a slim bar instead of a black video area
+  const markAudio = () => { if (vid && (String(v.mime || '').startsWith('audio') || (vid.readyState >= 1 && !vid.videoWidth))) $('.vwrap', el)?.classList.add('audio'); };
+  vid?.addEventListener('loadedmetadata', markAudio); markAudio();
+  // settings / subtitles open as sheets (hidden by default)
+  const sheet = (id, on) => { const x = $(id, el); if (x) x.hidden = !on; };
+  $('#openSet', el).onclick = () => sheet('#shSet', true);
+  $('#openMake', el).onclick = () => sheet('#shMake', true);
+  $$('.vsheet', el).forEach((x) => x.addEventListener('click', (e) => { if (e.target === x || e.target.closest('[data-shclose]')) x.hidden = true; }));
   const pic = null;
   if (v.audioBlob) { (async () => { const cur = await db.get('videos', v.id); if (cur?.audioBlob) { delete cur.audioBlob; await db.put('videos', cur); } })(); }   // free the old separate sound file
   // videos saved before: decide the speech track once — only while paused (Web Audio during playback can stop the sound on iPhone)

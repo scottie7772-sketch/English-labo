@@ -18,7 +18,7 @@ import { storageScreen } from './storage.js';
 import { courseScreen, courseUnit, coursePuzzle } from './course.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.4.2';
+export const APP_VERSION = '1.4.3';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -203,6 +203,7 @@ function renderTabs() {
 async function boot() {
   document.addEventListener('gesturestart', (e) => e.preventDefault());   // no pinch zoom (iOS)
   try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}   // keep sound with the silent switch on, also after Web Audio was used
+  document.addEventListener('pointerdown', () => { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} }, { capture: true, passive: true });   // again inside a real tap (iOS may ignore it at start-up)
   try { await openDB(); }
   catch (e) { $('#main').innerHTML = `<div class="card warn">データベースを開けません: ${esc(e.message)}<br>プライベートブラウズでは保存できません。</div>`; return; }
   await applyTheme();

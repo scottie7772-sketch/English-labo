@@ -9,7 +9,7 @@ import { decodeTo16k, openTranscriber, speechPieces, captureTo16k } from './asr.
 import { extractPhrases, extractWords } from './studio-words.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 
-export const STUDIO_VERSION = '0.6.6';
+export const STUDIO_VERSION = '0.6.7';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -277,11 +277,13 @@ const frameZcr = (a) => { const F = 320, r = []; for (let i = 0; i + F <= a.leng
 function edgeCut(rms, zcr = []) {
   if (rms.length < 10) return { cut: 0, why: '' };
   const s = rms.slice().sort((a, b) => a - b), floor = s[Math.floor(s.length * 0.1)];
-  const th = Math.max(floor * 4, s[Math.floor(s.length * 0.9)] * 0.12, 0.004);
+  const p90 = s[Math.floor(s.length * 0.9)];
+  const th = Math.max(Math.min(floor * 4, p90 * 0.3), p90 * 0.12, 0.004);   // (background music under speech must not count as silence)
   // 1) an electronic tone (start/stop sound): steady, high-pitched for 80–900 ms within the first 3 s — even when speech follows at once
-  const lim = Math.min(rms.length, 150);
-  for (let i = 0; i < lim; i++) {
-    let j = i; while (j < rms.length && rms[j] >= th * 0.7 && zcr[j] >= 0.09 && zcr[j] <= 0.6 && (j === i || Math.abs(zcr[j] - zcr[j - 1]) < 0.025)) j++;
+  // (a fading tone counts: its loudness drops fast but its pitch stays the same; measured on a real iPhone recording: ~1.2 kHz, 0.45 s)
+  const lim = Math.min(rms.length, 150), thTone = Math.max(floor * 3, 0.0004);
+  for (let i = 3; i < lim; i++) {   // the first 60 ms often hold a click: skip
+    let j = i; while (j < rms.length && rms[j] >= thTone && zcr[j] >= 0.09 && zcr[j] <= 0.6 && (j === i || Math.abs(zcr[j] - zcr[j - 1]) < 0.025)) j++;
     const len = (j - i) * 0.02;
     if (len >= 0.08 && len <= 0.9) {   // cut just after the tone (+ margin); if silence follows, up to just before the speech
       let k = j; while (k < rms.length && k < j + 75 && rms[k] < th) k++;
@@ -290,7 +292,7 @@ function edgeCut(rms, zcr = []) {
     if (j > i) i = j;
   }
   // 2) a short sound followed by silence
-  let i = 0; while (i < rms.length && rms[i] < th) i++;
+  let i = 3; while (i < rms.length && rms[i] < th) i++;
   const lead = i;
   let j = i; while (j < rms.length && rms[j] >= th) j++;
   let k = j; while (k < rms.length && rms[k] < th) k++;
@@ -317,7 +319,8 @@ async function findEdges(src, blob, D) {
   let st = edgeCut(frameRms(a0), frameZcr(a0)), en = edgeCut(frameRms(a1).reverse(), frameZcr(a1).reverse());
   const dc = defaultCut();
   // screen recordings: always cut at least the usual sound length (more if a longer sound/silence was found)
-  if (isScreenRec(src.name) && dc > 0) { if (st.cut < dc) st = { cut: dc, why: `画面収録の音 ${dc}秒` }; if (en.cut < dc) en = { cut: dc, why: `画面収録の音 ${dc}秒` }; }
+  // (start only: the stop sound is not in the recording — on a real recording the speech runs to the very end)
+  if (isScreenRec(src.name) && dc > 0 && st.cut < dc) st = { cut: dc, why: `画面収録の音 ${dc}秒` };
   return { start: +st.cut.toFixed(2), end: +(D - en.cut).toFixed(2), whyStart: st.why, whyEnd: en.why, duration: D };
 }
 const dropCutSetting = () => { try { return localStorage.getItem('st-dropCut') === '1'; } catch { return false; } };
@@ -982,7 +985,7 @@ async function editorScreen(el, params) {
     const draw = () => {
       dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>前後をカット</h3><p class="small">教材の始まりと終わりを決めます。元のファイルは変えません（↶で戻せます）。</p>
         <button type="button" class="btn" id="tAuto">自動で見つける（画面収録の音・無音）</button>
-        <div class="row"><span class="small grow">画面収録の前後で必ず切る長さ（録画開始・終了の音）</span><button type="button" class="btn xs" id="tDef">${defaultCut() ? `前後${defaultCut()}秒` : '切らない'}</button></div>
+        <div class="row"><span class="small grow">画面収録の始めで必ず切る長さ（録画開始の音）</span><button type="button" class="btn xs" id="tDef">${defaultCut() ? `始め${defaultCut()}秒` : '切らない'}</button></div>
         <div class="st-segrow"><b>開始 ${fmt(st)}</b><div class="row"><button type="button" class="btn xs" data-d="s:-0.5">−0.5</button><button type="button" class="btn xs" data-d="s:-0.1">−0.1</button><button type="button" class="btn xs" data-d="s:0.1">＋0.1</button><button type="button" class="btn xs" data-d="s:0.5">＋0.5</button><button type="button" class="btn xs" id="sNow">今の位置</button></div><button type="button" class="btn sm" id="sPlay">▶︎ 開始から3秒聞く</button></div>
         <div class="st-segrow"><b>終了 ${fmt(en)}</b><div class="row"><button type="button" class="btn xs" data-d="e:-0.5">−0.5</button><button type="button" class="btn xs" data-d="e:-0.1">−0.1</button><button type="button" class="btn xs" data-d="e:0.1">＋0.1</button><button type="button" class="btn xs" data-d="e:0.5">＋0.5</button><button type="button" class="btn xs" id="eNow">今の位置</button></div><button type="button" class="btn sm" id="ePlay">▶︎ 終了の3秒前から聞く</button></div>
         <label class="chk"><input type="checkbox" id="tDrop" ${dropCutSetting() ? 'checked' : ''}> カットした部分は保存しない（元に戻せません）</label>

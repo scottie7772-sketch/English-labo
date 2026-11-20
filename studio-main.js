@@ -11,7 +11,7 @@ import { findCandidates, applySpans } from './studio-names.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.8.2';
+export const STUDIO_VERSION = '0.8.3';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -903,10 +903,10 @@ async function editorScreen(el, params) {
     const ids = [...new Set(targets.flatMap((b) => b.segments.map((g) => g.sourceId)))];
     if (ids.some((id) => !(srcs[id]?.stored ? srcs[id].blob : sessionFiles.get(id)))) return toast('動画・音声ファイルを選び直してから実行してください', 4000);
     const total = targets.reduce((a, b) => a + blockDur(b), 0);
-    const def = localStorage.getItem('st-asrq-redo') || 'high';
+    const def = QUALITY[localStorage.getItem('st-asrq-redo')] ? localStorage.getItem('st-asrq-redo') : 'high';
     if (!(await confirmDialog({ title: `${targets.length}行を起こし直す`, body: `<p>選んだ行（合計 ${fmtMin(total)}）の音声だけを、もう一度文字にします。結果は今の文と並べて表示し、行ごとに選んでから反映します。</p>
       ${total > 180 ? '<p class="warn-text small">行が多いと時間がかかります。気になる行だけを選ぶのがおすすめです。</p>' : ''}
-      <div class="stack">${Object.entries(QUALITY).map(([k, t]) => `<label class="chk"><input type="radio" name="rdq" value="${k}" ${def === k ? 'checked' : ''}> ${t}${k === 'best' ? '（試験的）' : ''}</label>`).join('')}</div>
+      <div class="stack">${Object.entries(QUALITY).map(([k, t]) => `<label class="chk"><input type="radio" name="rdq" value="${k}" ${def === k ? 'checked' : ''}> ${t}</label>`).join('')}</div>
       <p class="hint">初めて使う精度は、最初にモデルをダウンロードします（無料・Wi-Fi推奨）。</p>`, okLabel: '始める' }))) return;
     const quality = $('#dialog input[name=rdq]:checked')?.value || def;
     try { localStorage.setItem('st-asrq-redo', quality); } catch {}
@@ -980,7 +980,7 @@ async function editorScreen(el, params) {
     const total = targets.reduce((a, b) => a + blockDur(b), 0);
     const big = [...bySrc.keys()].map((id) => srcs[id]).filter((x) => x.kind === 'video' && x.size > 150 * 1024 * 1024);
     if (!(await confirmDialog({ title: '文字起こし（試験的）', body: `<p>${targets.length}項目（合計 ${fmtMin(total)}）を、この端末の中で英語の文字に起こします。</p>${big.length ? `<p class="warn-text small">大きな動画（${fmtSize(big[0].size)}）はメモリ不足で途中で止まることがあります。先に「⋯」→「容量を減らす」をすると安定します。</p>` : ''}
-      <div class="stack">${Object.entries(QUALITY).map(([k, t]) => `<label class="chk"><input type="radio" name="asrq" value="${k}" ${(localStorage.getItem('st-asrq2') || 'acc') === k ? 'checked' : ''}> ${t}</label>`).join('')}</div>
+      <div class="stack">${Object.entries(QUALITY).map(([k, t]) => `<label class="chk"><input type="radio" name="asrq" value="${k}" ${(QUALITY[localStorage.getItem('st-asrq2')] ? localStorage.getItem('st-asrq2') : 'acc') === k ? 'checked' : ''}> ${t}</label>`).join('')}</div>
       <p class="hint">・最初の1回だけモデルをダウンロードします（無料・Wi-Fi推奨）。音声は外部に送りません。<br>・無音の部分は飛ばし、話している部分を少しずつ処理して、終わった分から保存します。止まっても、もう一度実行すると続きから。<br>・画面は開いたままにしてください。結果は自動の下書きです。</p>`, okLabel: '始める' }))) return;
     const quality = $('#dialog input[name=asrq]:checked')?.value || 'acc';
     try { localStorage.setItem('st-asrq2', quality); } catch {}

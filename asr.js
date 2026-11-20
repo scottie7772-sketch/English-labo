@@ -4,7 +4,7 @@
 const TF_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1';
 const MODELS = { en: 'onnx-community/whisper-base.en', multi: 'onnx-community/whisper-base', enFast: 'onnx-community/whisper-tiny.en', multiFast: 'onnx-community/whisper-tiny', enBest: 'Xenova/whisper-small.en', multiBest: 'Xenova/whisper-small', enHigh: 'onnx-community/distil-small.en', multiHigh: 'onnx-community/whisper-small' };
 // quality: 'fast' (tiny ~40 MB) / 'acc' (base ~80 MB, default) / 'best' (small ~250 MB, slow, experimental)
-export const QUALITY = { fast: '速さ優先（約40MB・精度は低め）', acc: '標準（約80MB）', high: '高精度（約170MB・標準の1.5〜2倍の時間・最高精度より軽い）', best: '最高精度（約250MB・iPhoneでは途中で止まることがあります）' };
+export const QUALITY = { fast: '速さ優先（約40MB・精度は低め）', acc: '標準（約80MB）', high: '高精度（約170MB・時間は標準の2倍ほど・行の時刻がずれることがあります）' };  // whisper-small (about 250 MB) was dropped: it stops on the iPhone
 const modelFor = (lang, q) => { const k = q === 'fast' ? 'Fast' : q === 'best' ? 'Best' : q === 'high' ? 'High' : ''; return lang === 'en' ? MODELS['en' + k] : MODELS['multi' + k]; };
 const LANG_NAME = { es: 'spanish', 'zh-TW': 'chinese', 'zh-CN': 'chinese' };
 
@@ -52,7 +52,7 @@ export async function decodeTo16k(blob) {
   const buf = await blob.arrayBuffer();
   let decoded;
   try { decoded = await new Promise((res, rej) => { const no = (e) => rej(e instanceof Error ? e : new Error('音声を取り出せませんでした（音声が入っていないか、対応していない形式です）')); const p = ac.decodeAudioData(buf, res, no); if (p?.then) p.then(res, no); setTimeout(() => rej(new Error('音声の取り出しに時間がかかりすぎました')), 120000); }); }
-  finally { try { await ac.close?.(); } catch {} try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} }
+  finally { try { await Promise.race([ac.close?.(), new Promise((r) => setTimeout(r, 500))]); } catch {} try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} }
   const len = Math.max(1, Math.ceil(decoded.duration * 16000));
   const off = new OfflineAudioContext(1, len, 16000);
   const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();
@@ -235,7 +235,17 @@ export async function recognisePiece(tr, audio, ps, pe, { onRetry = () => {} } =
     return Object.assign(out, { raw: raw.join(' '), how: '時刻なし・短く区切って（時刻は推定）' });
   }
   let cues = await tr.run(cut(ps, pe)); const raw = [cues.raw || ''];
-  if (cues.tsFailed && cues.length && pe - ps > 10) { tr.noTime = true; return recognisePiece(tr, audio, ps, pe, { onRetry }); }
+  if (cues.tsFailed) {
+    // time stamps failed on this piece only: try shorter parts with time stamps (the text-only result stays as the fallback).
+    // Only after several failures in a row is the model treated as "no time stamps" for the rest of the run.
+    tr.tsFails = (tr.tsFails || 0) + 1; if (tr.tsFails >= 3) tr.noTime = true;
+    if (pe - ps > 10) {
+      onRetry('時刻が取れなかったので短く区切っています…');
+      const out = [], raw2 = [];
+      for (const [a, b] of pieceRanges(audio, ps, pe, 8)) { const c = await tr.run(cut(a, b), { timestamps: !tr.noTime }); raw2.push(c.raw || ''); out.push(...abs(c, a, b)); }
+      if (out.length) return Object.assign(out, { raw: raw2.join(' '), how: out.some((c) => c.est) ? '短く区切って（一部の時刻は推定）' : '短く区切って再試行' });
+    }
+  } else if (cues.length) tr.tsFails = 0;
   if (cues.length) return Object.assign(abs(cues, ps, pe), { raw: raw.join(' '), how: cues.noTime ? '時刻なし（時刻は推定）' : '通常' });
   if (pe - ps > 10) {
     onRetry('短く区切ってやり直しています…');

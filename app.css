@@ -433,7 +433,7 @@ p.small.muted.center, #pos { font-size: var(--fs-s); font-weight: 700; }
   --bg: #121418; --surface: #1c1f25; --surface2: #262a31; --text: #eef0f3; --muted: #a3aab5; --line: #323741;
   --accent: #5d8dff; --accent-text: #0b1020; --ok: #3cc98a; --ng: #ff6b70; --mid: #f0b440; --gray: #7d8592;
 }
-html, body { overflow-x: hidden; }
+html, body { overflow-x: hidden; overflow-x: clip; }   /* clip: no sideways scroll, and position: sticky keeps working */
 body { font-size: var(--fs-m); line-height: 1.6; }
 b, strong { font-weight: 600; }
 .ic { flex: 0 0 auto; vertical-align: -4px; }

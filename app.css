@@ -947,11 +947,54 @@ input, select, textarea { font-size: max(16px, 1em); }
 .vp-root .subbox { height: calc(var(--fsEn) * 1.45 * 3 + var(--fsJa) * 1.45 * 2 + 28px); min-height: 0; overflow: hidden; justify-content: flex-start; }
 .vp-root .subbox .sen { font-size: calc(var(--fsEn) * var(--fit, 1)); } .vp-root .subbox .sja { font-size: calc(var(--fsJa) * var(--fit, 1)); }
 .vp-root .subbox > :first-child { margin-top: auto; } .vp-root .subbox > :last-child { margin-bottom: auto; }
-.vp-root[data-mode="en"] .subbox { height: calc(var(--fsEn) * 1.45 * 3 + 24px); }
-.vp-root[data-mode="ja"] .subbox { height: calc(var(--fsJa) * 1.45 * 3 + 24px); }
+.vp-root[data-mode="en"] .subbox { height: calc(var(--fsEn) * 1.45 * 5 + 24px); }
+.vp-root[data-mode="ja"] .subbox { height: calc(var(--fsJa) * 1.45 * 5 + 24px); }
 .vp-root[data-mode="none"] .subbox { height: 52px; }
 /* player: play buttons at the bottom of the screen (thumb reach); the tab bar is hidden while a video/audio is open */
 .vbottom { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; background: var(--bg); border-top: 1px solid var(--line); padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); }
 .vbottom .vctl1 { max-width: 640px; margin: 0 auto; }
 body.focus .vp-root { padding-bottom: 80px; }
 body.vtyping .vbottom { display: none; }
+/* player bottom bar (1.8): thin seek bar + big play in the centre, steps beside it, skips outside, speed small */
+.vbottom { padding: 2px 12px calc(6px + env(safe-area-inset-bottom)); background: color-mix(in srgb, var(--bg) 94%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+.vbin { max-width: 640px; margin: 0 auto; }
+.vbottom .vseek { padding: 16px 0 12px; margin: -6px 0 -6px; }   /* thin bar, but the touch area is about 32px tall */
+.vbottom .vs-track { height: 4px; border-radius: 2px; overflow: visible; background: color-mix(in srgb, var(--text) 18%, transparent); }
+.vbottom .vs-played { background: var(--accent); border-radius: 2px; }
+.vbottom .vs-range { top: -3px; bottom: -3px; border-radius: 2px; }
+.vbottom .vs-head { top: 50%; bottom: auto; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+.vbottom .vs-info { padding: 0 2px 2px; font-size: 12px; }
+.vctl2b { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.vb { border: 0; background: transparent; color: var(--text); padding: 0; display: grid; place-items: center; border-radius: 50%; -webkit-tap-highlight-color: transparent; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+.vb:active { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.vb-play { width: 64px; height: 64px; font-size: 26px; background: var(--accent); color: #fff; }
+.vb-step { width: 54px; height: 54px; font-size: 18px; font-weight: 700; }
+.vb-skip { width: 42px; height: 42px; font-size: 16px; opacity: .8; }
+.vb-speed { width: 40px; height: 32px; font-size: 13px; border-radius: 8px; color: var(--muted); }
+.vb-spacer { display: block; }
+body.focus .vp-root { padding-bottom: 150px; }
+.vsteps { position: fixed; z-index: 80; display: flex; gap: 4px; padding: 6px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+.vsteps span { padding: 10px 14px; border-radius: 10px; font-weight: 700; font-size: 16px; }
+.vsteps span.on { color: var(--accent); }
+.vsteps span.hover { background: var(--accent); color: #fff; }
+
+/* ===== look 1.8: Claude-like — warm neutral colours, seamless (surfaces instead of hard borders), slightly rounded ===== */
+:root { --radius: 14px; --bg: #faf9f5; --surface: #ffffff; --surface2: #f0eee6; --text: #1f1e1d; --muted: #706d65; --line: #e8e5db; --accent: #c6613f; --accent-text: #fff; }
+[data-theme="dark"] { --bg: #1f1e1d; --surface: #2a2927; --surface2: #353431; --text: #f2f0ea; --muted: #a39f96; --line: #3a3936; --accent: #d97757; --accent-text: #fff; }
+.card, .stat, .tile, .wcard, .choice, .subbox:not(.vp-root .subbox) { border-color: transparent; }
+.btn { border-color: transparent; background: var(--surface2); border-radius: 12px; }
+.btn.primary { background: var(--accent); color: var(--accent-text); }
+.btn.ghost { background: transparent; }
+.btn.danger { border-color: transparent; background: color-mix(in srgb, var(--danger) 13%, transparent); }
+.chips button, .tagp, .tgl { border-color: transparent; background: var(--surface2); }
+.chips button.on, .tgl.on { background: var(--accent); color: var(--accent-text); }
+.field input, .field select, .field textarea, textarea, select { border-color: transparent; background: var(--surface2); }
+.card .field input, .card textarea, .card select { background: var(--bg); }
+.icon-btn, .vh-btn { color: var(--text); }
+dialog { border-radius: 16px; }
+.seg button.on { box-shadow: none; background: var(--surface); }
+.prow, .hrow, .vrow, .exrow { border-bottom-color: color-mix(in srgb, var(--line) 70%, transparent); }
+#tabs { border-top-color: transparent; }
+.kpi, .action, .mitem, .notice, .wrow, .vrow.card, .cue, .st-setrow { border-color: transparent; }
+.mitem svg, .action svg { opacity: .9; }
+.cbtn { border-color: transparent !important; background: var(--surface2) !important; }

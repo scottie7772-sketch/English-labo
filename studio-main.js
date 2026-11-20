@@ -12,7 +12,7 @@ import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.15.2';
+export const STUDIO_VERSION = '0.16.0';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -62,7 +62,7 @@ async function route() {
   cleanup?.(); cleanup = null;
   if (!inStudio()) return;
   const { path, params } = parseHash();
-  const screens = { sets: setsScreen, import: importScreen, set: editorScreen, versions: versionsScreen, lab: labScreen, io: ioScreen, words: wordsScreen, clean: cleanScreen };
+  const screens = { sets: setsScreen, import: importScreen, set: editorScreen, versions: versionsScreen, io: ioScreen, words: wordsScreen, clean: cleanScreen };
   try { await (screens[path] || setsScreen)(ROOT, params); }
   catch (e) { console.error(e); ROOT.innerHTML = `<div class="card warn">エラー：${esc((e?.message || String(e)))}</div><a class="btn" href="#${BASE}sets">一覧に戻る</a>`; }
   scrollTo(0, 0);
@@ -108,7 +108,7 @@ async function setsScreen(el) {
   const openF = new Set(JSON.parse(localStorage.getItem('st-openF') || '[]'));
   const folders = [...new Set(sets.map((s) => s.folder).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
   const draw = () => {
-    el.innerHTML = `${head('教材スタジオ', HOST ? '__exit' : null, `<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#${BASE}clean">容量</a><a class="btn sm" href="#${BASE}lab">技術検証</a>`)}
+    el.innerHTML = `${head('教材スタジオ', HOST ? '__exit' : null, `<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#${BASE}clean">容量</a>`)}
     <div class="row"><a class="btn primary grow" href="#${BASE}import">＋ 一括登録（動画・音声・字幕）</a><a class="btn" href="#${BASE}io">読み込み</a></div>
     ${est ? `<p class="small muted">端末の保存量：${fmtSize(est.usage || 0)}${est.quota ? ` / 目安の上限 ${fmtSize(est.quota)}` : ''}</p>` : ''}
     ${sets.length ? `<div class="row"><span class="grow small muted">${sets.length}セット・左にスワイプで削除</span><button class="btn sm" id="edit">${editing ? '完了' : '選ぶ（フォルダ・削除）'}</button></div>
@@ -1782,152 +1782,3 @@ async function importPack(z, manifest, material, mode) {
 }
 
 // ================= technical checks (P1 / P3 / P4) — uses its own database, does not touch real data =================
-async function labScreen(el) {
-  const log = [];
-  const out = (s) => { log.push(s); $('#lo', el).textContent = log.join('\n'); };
-  el.innerHTML = `${head('技術検証', 'sets')}
-    <p class="hint">iPhone（ホーム画面から開いた状態）で試し、結果をコピーして送ってください。ここで保存するデータは本番とは別の場所に入ります。</p>
-    <div class="card stack"><b>容量</b><button class="btn sm" id="q">保存できる容量を調べる</button></div>
-    <div class="card stack"><b>P1 大きな動画の保存・再生</b><span class="small">15分程度の動画を選ぶ（「ファイル」と「写真」の両方で試すと理想）</span>
-      <label class="btn sm" for="p1f">動画を選んで保存テスト</label><input type="file" id="p1f" hidden>
-      <button class="btn sm" id="p1r">保存済みを読み出して再生（アプリを閉じて開き直した後に）</button><button class="btn sm" id="p1d">テスト用データを削除</button></div>
-    <div class="card stack"><b>P2 同じファイルの照合</b><span class="small">同じ動画をもう一度選び、P1 の指紋と比べる</span>
-      <label class="btn sm" for="p2f">同じ動画を選ぶ</label><input type="file" id="p2f" hidden></div>
-    <div class="card stack"><b>P3 区間再生の途切れ</b><span class="small">選んだ動画の3か所を続けて再生し、切り替えにかかる時間を測る（2本目を選ぶと別ファイルをまたぐ測定も）</span>
-      <label class="btn sm" for="p3f">動画（1〜2本）を選ぶ</label><input type="file" id="p3f" multiple hidden>
-      <video id="p3v" playsinline muted style="width:100%;max-height:160px;background:#000"></video><video id="p3v2" playsinline muted hidden></video></div>
-    <div class="card stack"><b>P4 音声の展開（波形・無音検出用）</b><span class="small">5分・10分・15分の動画や音声で試す。落ちた場合は「落ちた」と伝えてください</span>
-      <label class="btn sm" for="p4f">動画・音声を選ぶ</label><input type="file" id="p4f" hidden></div>
-    <div class="card stack"><b>音声トラックの解析</b><span class="small">動画を選ぶと、音声トラックの数・形式を調べ、自動でどれを使うか判定し、取り出しと展開を試します（保存はしません）</span>
-      <label class="btn sm" for="trf">動画を選ぶ</label><input type="file" id="trf" hidden></div>
-    <div class="card stack"><b>保存した音声・動画の点検</b><span class="small">教材セットの音声・動画を1つずつ読み込んで1秒再生し、結果を下に書きます</span><button class="btn sm" id="chk">点検する</button></div>
-    <div class="card stack"><b>結果</b><pre id="lo" class="st-log"></pre><button class="btn sm" id="cp">結果をコピー</button></div>`;
-  $('#trf', el).onchange = async (ev) => {
-    const f = ev.target.files[0]; if (!f) return; ev.target.value = '';
-    out(`トラック解析: ${f.name} ${fmtSize(f.size)} ${f.type}`);
-    let t = performance.now(), info;
-    try { info = await probe(f); } catch (e) { return out(`  解析で失敗：${e?.message || e}`); }
-    out(`  解析 ${Math.round(performance.now() - t)}ms・形式 ${info.container}`);
-    info.tracks.forEach((x) => out(`  ・${x.kind}｜${x.codec}｜${x.lang}｜${x.name || '名前なし'}｜${fmt(x.duration)}${x.kind === 'audio' ? `｜${x.rate}Hz ${x.channels}ch｜取り出し${canExtract(x) ? '可' : '不可'}` : ''}`));
-    t = performance.now(); const r = await chooseTrack(f, info, decodeTo16k).catch((e) => ({ err: e }));
-    if (r.err) return out(`  判定で失敗：${r.err.message}`);
-    out(`  判定 ${Math.round(performance.now() - t)}ms：${r.chosen ? `音声${audioTracks(info).indexOf(r.chosen) + 1}` : 'なし'}・${r.auto ? '自動' : '利用者に確認'}（${r.reason}）`);
-    r.stats.forEach((x, i) => out(`    音声${i + 1}: ${x.ok ? `話し声 ${Math.round(x.speech * 100)}%・音量 ${(20 * Math.log10(x.level || 1e-6)).toFixed(0)}dB` : x.why}`));
-    if (r.chosen && canExtract(r.chosen)) {
-      t = performance.now(); try { const x = await extractTrack(f, r.chosen); out(`  取り出し ${Math.round(performance.now() - t)}ms・${fmtSize(x.blob.size)}`); t = performance.now(); const d = await decodeTo16k(x.blob); out(`  展開 ${Math.round(performance.now() - t)}ms・${fmt(d.duration)} ✓（文字起こしに使えます）`);
-        const a = new Audio(URL.createObjectURL(x.blob)); a.currentTime = Math.min(5, d.duration / 2); await a.play(); await new Promise((q) => setTimeout(q, 1200)); out(`  再生 ${a.currentTime > 0.3 ? '✓' : '進まない'}`); a.pause(); }
-      catch (e) { out(`  取り出し／展開／再生で失敗：${e?.message || e}`); }
-    }
-  };
-  $('#chk', el).onclick = async () => {
-    out(`バージョン ${STUDIO_VERSION}・audioSession: ${navigator.audioSession?.type ?? 'なし'}`);
-    if (errLog.length) out('最近のエラー:\n  ' + errLog.join('\n  '));
-    if (crumbs.length) out('最近の処理の記録:\n  ' + crumbs.slice(-15).join('\n  '));
-    const all = await sdb.all('sources');
-    if (!all.length) return out('保存した音声・動画がありません');
-    const v = $('#p3v', el); v.muted = false;
-    for (const x of all) {
-      const blob = x.stored ? x.blob : null;
-      let line = `・${x.name}｜${x.kind}｜${x.mime || '?'}｜${x.codec || '元のまま'}｜${blob ? fmtSize(blob.size) : '保存なし'}｜長さ${fmt(x.duration)}`;
-      if (!blob) { out(line); continue; }
-      if (x.audio) line += `｜音声${(x.audio.index ?? 0) + 1}/${x.audio.count}（${x.audio.method}）`;
-      if (x.audioError) line += `｜取り込み時の失敗：${x.audioError}`;
-      try { await blob.slice(0, 16).arrayBuffer(); } catch (e) { out(line + `→ 保存データを読めません（${e.name}）`); continue; }
-      const u = URL.createObjectURL(blob);
-      const r = await new Promise((res) => { let done = false; const fin = (t) => { if (!done) { done = true; res(t); } };
-        v.onloadedmetadata = () => fin(`読込OK 長さ${fmt(v.duration)}・音声トラック${v.audioTracks ? v.audioTracks.length : '?'}`); v.onerror = () => fin(`読込エラー コード${v.error?.code}`); setTimeout(() => fin('読込が終わらない'), 8000); v.src = u; });
-      line += `→ ${r}`;
-      if (r.startsWith('読込OK')) { try { v.currentTime = Math.min(5, (v.duration || 10) / 2); await v.play(); const t0 = v.currentTime; await new Promise((q) => setTimeout(q, 1200)); line += `・再生 ${v.currentTime > t0 + 0.3 ? 'OK' : '進まない'}`; v.pause(); } catch (e) { line += `・再生エラー ${e.name}`; } }
-      URL.revokeObjectURL(u); out(line);
-    }
-  };
-  const lab = (await import('./common-idb.js')).makeDB('ell-studio-lab', 1, { files: { keyPath: 'id' } });
-  out(`端末: ${navigator.userAgent}`); out(`表示: ${matchMedia('(display-mode: standalone)').matches ? 'ホーム画面アプリ' : 'ブラウザ'}`);
-  $('#q', el).onclick = async () => {
-    const e = await navigator.storage?.estimate?.(); const p = await navigator.storage?.persisted?.(); const r = await navigator.storage?.persist?.().catch(() => null);
-    out(`容量: 使用 ${fmtSize(e?.usage || 0)} / 上限の目安 ${e?.quota ? fmtSize(e.quota) : '不明'}・消されにくい保存: ${p ? '許可済み' : r ? '今許可された' : '未許可'}`);
-  };
-  $('#p1f', el).onchange = async (ev) => {
-    const f = ev.target.files[0]; if (!f) return; ev.target.value = '';
-    out(`P1: ${f.name} ${fmtSize(f.size)} ${f.type}`);
-    let t = performance.now(); const fp = await fingerprint(f); out(`  指紋 ${Math.round(performance.now() - t)}ms ${fp.id}`);
-    t = performance.now(); const meta = await readDuration(f); out(`  長さ ${fmt(meta.duration)}・再生可能 ${meta.playable}（${Math.round(performance.now() - t)}ms）`);
-    t = performance.now();
-    try { await lab.put('files', { id: 'p1', name: f.name, blob: f, fp: fp.id, size: f.size }); out(`  端末に保存 ${((performance.now() - t) / 1000).toFixed(1)}秒 ✓`); }
-    catch (e) { out(`  端末に保存 失敗：${e.name} ${(e?.message || String(e))}`); return; }
-    await playTest('p1');
-  };
-  async function playTest(id) {
-    const rec = await lab.get('files', id); if (!rec) return out('  保存済みデータがありません');
-    const v = $('#p3v', el); const u = URL.createObjectURL(rec.blob); let t = performance.now();
-    v.src = u; await new Promise((r) => { v.onloadedmetadata = r; v.onerror = r; setTimeout(r, 10000); });
-    out(`  読み出し→再生準備 ${Math.round(performance.now() - t)}ms・長さ ${fmt(v.duration)}`);
-    t = performance.now(); v.currentTime = (v.duration || 10) * 0.8; await new Promise((r) => { v.onseeked = r; setTimeout(r, 8000); });
-    out(`  80%地点へシーク ${Math.round(performance.now() - t)}ms`);
-    try { await v.play(); await new Promise((r) => setTimeout(r, 800)); v.pause(); out('  再生 ✓'); } catch (e) { out(`  再生 失敗：${(e?.message || String(e))}`); }
-  }
-  $('#p1r', el).onclick = () => { out('P1(再起動後):'); playTest('p1'); };
-  $('#p1d', el).onclick = async () => { await lab.del('files', 'p1'); out('テスト用データを削除しました'); };
-  $('#p2f', el).onchange = async (ev) => {
-    const f = ev.target.files[0]; if (!f) return; ev.target.value = '';
-    const fp = await fingerprint(f); const rec = await lab.get('files', 'p1');
-    out(`P2: ${f.name} ${fmtSize(f.size)} 指紋 ${fp.id} → ${rec ? (rec.fp === fp.id ? '一致 ✓' : `不一致（P1: ${rec.fp}）`) : 'P1 が未実施'}`);
-  };
-  $('#p3f', el).onchange = async (ev) => {
-    const fs = [...ev.target.files]; ev.target.value = ''; if (!fs.length) return;
-    const v = $('#p3v', el); v.muted = true;
-    const load = async (vv, f) => { vv.src = URL.createObjectURL(f); await new Promise((r) => { vv.onloadedmetadata = r; setTimeout(r, 8000); }); };
-    await load(v, fs[0]);
-    const D = v.duration || 60;
-    const segs = [[D * 0.1, D * 0.1 + 1.5], [D * 0.5, D * 0.5 + 1.5], [D * 0.3, D * 0.3 + 1.5]];
-    const gaps = [];
-    for (const [a, b] of segs) { gaps.push(await jumpPlay(v, a)); await until(v, b); v.pause(); }
-    out(`P3: 同じファイル内の区間切り替え ${gaps.join(' / ')} ms`);
-    if (fs[1]) {
-      const v2 = $('#p3v2', el); v2.muted = true; await load(v2, fs[1]);
-      out(`P3: 別ファイル（先読み済み）への切り替え ${await jumpPlay(v2, 1)} ms`); v2.pause();
-      const t1 = performance.now(); await load(v, fs[1]); const g = await jumpPlay(v, 1);
-      out(`P3: 別ファイル（先読みなし）への切り替え ${Math.round(performance.now() - t1 - g) + g} ms`); v.pause();
-    }
-  };
-  // time from "go to a" until the playhead actually moves (= the audible gap)
-  async function jumpPlay(v, a) {
-    const t0 = performance.now();
-    v.currentTime = a; await new Promise((r) => { if (!v.seeking) return r(); v.onseeked = r; setTimeout(r, 4000); });
-    v.play().catch(() => {});
-    const start = v.currentTime;
-    await new Promise((r) => { const iv = setInterval(() => { if (v.currentTime > start + 0.03) { clearInterval(iv); r(); } }, 10); setTimeout(() => { clearInterval(iv); r(); }, 4000); });
-    return Math.round(performance.now() - t0);
-  }
-  function until(v, b) { return new Promise((r) => { const iv = setInterval(() => { if (v.currentTime >= b || v.paused) { clearInterval(iv); r(); } }, 20); setTimeout(() => { clearInterval(iv); r(); }, 4000); }); }
-  $('#p4f', el).onchange = async (ev) => {
-    const f = ev.target.files[0]; if (!f) return; ev.target.value = '';
-    out(`P4: ${f.name} ${fmtSize(f.size)}`);
-    try {
-      let t = performance.now(); const buf = await f.arrayBuffer(); out(`  読み込み ${Math.round(performance.now() - t)}ms`);
-      const AC = window.AudioContext || window.webkitAudioContext; const ac = new AC();
-      t = performance.now();
-      const audio = await new Promise((res, rej) => { const p = ac.decodeAudioData(buf, res, rej); if (p?.then) p.then(res, rej); });
-      out(`  展開 ${((performance.now() - t) / 1000).toFixed(1)}秒・${audio.numberOfChannels}ch ${audio.sampleRate}Hz ${fmt(audio.duration)}・展開後 約${fmtSize(audio.length * audio.numberOfChannels * 4)}`);
-      ac.close?.();
-      t = performance.now();
-      const off = new OfflineAudioContext(1, Math.ceil(audio.duration * 16000), 16000);
-      const s = off.createBufferSource(); s.buffer = audio; s.connect(off.destination); s.start();
-      const r = await off.startRendering();
-      out(`  16kHzモノラルに変換 ${((performance.now() - t) / 1000).toFixed(1)}秒・約${fmtSize(r.length * 4)}`);
-      // simple silence detection (20 ms frames)
-      t = performance.now(); const d = r.getChannelData(0), F = 320; let sil = 0, runs = 0, inSil = false;
-      const rms = []; for (let i = 0; i + F <= d.length; i += F) { let x = 0; for (let k = 0; k < F; k++) x += d[i + k] * d[i + k]; rms.push(Math.sqrt(x / F)); }
-      const th = rms.slice().sort((a, b) => a - b)[Math.floor(rms.length * 0.2)] * 2.5 + 1e-4;
-      for (const v of rms) { if (v < th) { sil++; if (sil === 30 && !inSil) { runs++; inSil = true; } } else { sil = 0; inSil = false; } }
-      out(`  無音検出 ${Math.round(performance.now() - t)}ms・0.6秒以上の無音 ${runs}か所 ✓`);
-    } catch (e) { out(`  失敗：${e.name} ${(e?.message || String(e))}`); }
-  };
-  // one test at a time (overlapping runs on the same video gave false time-outs)
-  let busy = false;
-  for (const x of $$('button, input[type=file]', el)) for (const k of ['onclick', 'onchange']) {
-    const f = x[k]; if (!f || x.id === 'cp') continue;
-    x[k] = async (ev) => { if (busy) { ev.preventDefault?.(); return toast('前のテストが終わるまで待ってください'); } busy = true; el.classList.add('st-busy'); try { await f(ev); } finally { busy = false; el.classList.remove('st-busy'); } };
-  }
-  $('#cp', el).onclick = async () => { try { await navigator.clipboard.writeText(log.join('\n')); toast('コピーしました'); } catch { toast('コピーできませんでした。長押しで選択してください'); } };
-}

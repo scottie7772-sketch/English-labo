@@ -352,18 +352,18 @@ export async function videoPlay(el, params) {
     <div class="vwrap">${!url ? '<div class="card warn">動画ファイルがありません（バックアップから復元した場合は、動画をもう一度追加してください）</div>'
       : aurl ? `<video id="vpic" src="${url}" muted playsinline webkit-playsinline preload="metadata"></video><audio id="vid" src="${aurl}" preload="auto" playsinline></audio>`
       : `<video id="vid" src="${url}" playsinline webkit-playsinline preload="metadata"></video>`}</div>
-    <div class="vstick"><div class="vseek" id="seek"><div class="vs-track"><i class="vs-range" id="sRange"></i><i class="vs-played" id="sPlayed"></i><i class="vs-head" id="sHead"></i></div></div>
-    <div class="vs-info small"><span id="sTime">0:00.0</span><span id="sRangeTxt" class="grow center"></span><button class="link small" id="sClear" hidden>区間を解除</button></div>
-    </div>
-    <div class="vbottom"><div class="vctl1">
-      <button class="btn" id="prevCue" aria-label="前の文">⏮</button>
-      <button class="btn" id="back" aria-label="戻す">⟲3</button>
-      <button class="btn primary" id="play" aria-label="再生">▶︎</button>
-      <button class="btn" id="fwd" aria-label="送る">3⟳</button>
-      <button class="btn" id="nextCue" aria-label="次の文">⏭</button>
-      <button class="btn" id="again" aria-label="この文をもう一度">↺</button>
-      <button class="btn sm" id="stepSec" aria-label="戻す・送る秒数">3秒</button>
-      <button class="btn sm" id="speed" aria-label="速さ">1×</button>
+    <div class="vbottom"><div class="vbin">
+      <div class="vseek" id="seek"><div class="vs-track"><i class="vs-range" id="sRange"></i><i class="vs-played" id="sPlayed"></i><i class="vs-head" id="sHead"></i></div></div>
+      <div class="vs-info small"><span id="sTime">0:00.0</span><span id="sRangeTxt" class="grow center"></span><button class="link small" id="sClear" hidden>区間を解除</button></div>
+      <div class="vctl2b">
+        <button class="vb vb-speed" id="speed" aria-label="速さ">1×</button>
+        <button class="vb vb-skip" id="prevCue" aria-label="この文の頭へ・前の文">⏮</button>
+        <button class="vb vb-step" id="back" aria-label="戻す（長押しで秒数）">⟲3</button>
+        <button class="vb vb-play" id="play" aria-label="再生">▶︎</button>
+        <button class="vb vb-step" id="fwd" aria-label="送る（長押しで秒数）">3⟳</button>
+        <button class="vb vb-skip" id="nextCue" aria-label="次の文">⏭</button>
+        <span class="vb-speed vb-spacer"></span>
+      </div>
     </div></div>
     <div class="subbox" id="sub"></div>
     <div id="grade"></div>
@@ -489,8 +489,6 @@ export async function videoPlay(el, params) {
     });
   }
   // ---- trimming (non-destructive): playback and transcription stay inside [trim.start, trim.end] ----
-  const saveTrim = async () => { const cur = await db.get('videos', v.id); if (cur) { if (v.trim) cur.trim = v.trim; else delete cur.trim; await saveVideoMeta(cur); } drawTrim(); };
-  function drawTrim() { const t = $('#trimTxt', el); if (t) t.textContent = v.trim ? ` ${fmtT(v.trim.start)}〜${fmtT(v.trim.end)}${v.trim.why ? `（${v.trim.why}）` : ''}` : ' なし（全体）'; }
   function enableTrack() { const at = vid?.audioTracks; if (!at || at.length < 2 || v.audioTrack == null) return; for (let i = 0; i < at.length; i++) at[i].enabled = i === v.audioTrack; }
   {   // speech recognition quality (tap to choose)
     const QT = { fast: '速さ：約40MB・速いが聞き間違いが多い', acc: '標準：約80MB・おすすめ', best: '最高：約250MB・2〜3倍遅い・試験的（iPhoneのメモリによっては止まる）' };
@@ -716,9 +714,35 @@ export async function videoPlay(el, params) {
     vid?.addEventListener('loadedmetadata', drawSeek);
   }
   // ---- back / forward (seconds cycle 3 → 5 → 10), speed (1 → 0.7 → 0.5) ----
-  const drawSteps = () => { $('#back', el).textContent = `⟲${stepSec}`; $('#fwd', el).textContent = `${stepSec}⟳`; $('#stepSec', el).textContent = `${stepSec}秒`; };
+  const drawSteps = () => { $('#back', el).textContent = `⟲${stepSec}`; $('#fwd', el).textContent = `${stepSec}⟳`; };
   drawSteps();
-  $('#stepSec', el).onclick = async () => { stepSec = STEPS[(STEPS.indexOf(stepSec) + 1) % STEPS.length]; drawSteps(); await setSetting('video.stepSec', stepSec); };
+  // long press on ⟲ / ⟳: the seconds appear above the button; slide onto one and let go to choose
+  const pressSteps = (btn) => {
+    let timer = null, pop = null, pick = null, used = false;
+    const close = () => { pop?.remove(); pop = null; pick = null; };
+    btn.addEventListener('pointerdown', (e) => {
+      used = false; clearTimeout(timer);
+      timer = setTimeout(() => {
+        used = true; try { navigator.vibrate?.(10); } catch {}
+        const r = btn.getBoundingClientRect();
+        pop = document.createElement('div'); pop.className = 'vsteps';
+        pop.innerHTML = STEPS.map((n) => `<span data-n="${n}" class="${n === stepSec ? 'on' : ''}">${n}秒</span>`).join('');
+        document.body.appendChild(pop);
+        pop.style.left = `${Math.max(8, Math.min(innerWidth - pop.offsetWidth - 8, r.left + r.width / 2 - pop.offsetWidth / 2))}px`; pop.style.top = `${r.top - pop.offsetHeight - 10}px`;
+        try { btn.setPointerCapture(e.pointerId); } catch {}
+      }, 420);
+    });
+    btn.addEventListener('pointermove', (e) => {
+      if (!pop) return;
+      const o = document.elementFromPoint(e.clientX, e.clientY)?.closest('.vsteps span');
+      $$('span', pop).forEach((x) => x.classList.toggle('hover', x === o)); pick = o ? +o.dataset.n : null;
+    });
+    const up = async () => { clearTimeout(timer); if (pop) { const n = pick; close(); if (n) { stepSec = n; drawSteps(); toast(`戻す・送る：${n}秒`, 1200); await setSetting('video.stepSec', n); } } };
+    btn.addEventListener('pointerup', up); btn.addEventListener('pointercancel', () => { clearTimeout(timer); close(); });
+    btn.addEventListener('contextmenu', (e) => e.preventDefault());
+    btn.addEventListener('click', (e) => { if (used) { e.stopImmediatePropagation(); e.preventDefault(); used = false; } }, true);
+  };
+  pressSteps($('#back', el)); pressSteps($('#fwd', el));
   $('#back', el).onclick = () => { if (vid) vid.currentTime = Math.max(ab?.b != null ? ab.a : 0, vid.currentTime - stepSec); };
   $('#fwd', el).onclick = () => { if (vid) vid.currentTime = Math.min(ab?.b != null ? ab.b - 0.05 : vid.duration || 1e9, vid.currentTime + stepSec); };
   // ---- range from the subtitle text: tap the first word, then the last word ----
@@ -829,20 +853,6 @@ export async function videoPlay(el, params) {
   }
   $('#qShadow', el).onclick = () => { shadowOn = !shadowOn; clearTimeout(shadowT); shadow.waiting = false; if (shadowOn) { dictOn = false; view.test = false; ab = null; loop = null; } applyView(); drawDict(); drawShadow(); drawSeek(); };
 
-  drawTrim();
-  if ($('#trAuto', el)) $('#trAuto', el).onclick = async () => {
-    if (!vid?.paused) vid?.pause();   // analysis uses Web Audio: not while playing
-    toast('前後の音を調べています…', 6000);
-    try { const { findEdgesBlob } = await import('./media-audio.js'); const r = await findEdgesBlob(fileBlob, { name: v.name + ((v.mime || '').includes('quicktime') ? '.mov' : '.mp4'), trackIndex: v.audioTrack ?? null, duration: vid?.duration || v.duration });
-      if (r.start > 0.05 || r.end < r.duration - 0.05) { v.trim = { start: r.start, end: r.end, why: [r.whyStart, r.whyEnd].filter(Boolean).join('・') }; await saveTrim(); toast(`${fmtT(r.start)}〜${fmtT(r.end)} にしました`); } else toast('カットする音は見つかりませんでした');
-    } catch (e) { toast('調べられませんでした：' + (e?.message || e)); }
-  };
-  if ($('#trS', el)) $('#trS', el).onclick = () => { if (!vid) return; v.trim = { start: +vid.currentTime.toFixed(2), end: v.trim?.end ?? vid.duration, why: '手動' }; saveTrim(); };
-  if ($('#trE', el)) $('#trE', el).onclick = () => { if (!vid) return; v.trim = { start: v.trim?.start ?? 0, end: +vid.currentTime.toFixed(2), why: '手動' }; saveTrim(); };
-  if ($('#trX', el)) $('#trX', el).onclick = () => { delete v.trim; saveTrim(); };
-  $$('[data-tr]', el).forEach((b) => (b.onclick = () => { if (!vid) return; const [k, d] = b.dataset.tr.split(':'); v.trim = v.trim || { start: 0, end: vid.duration }; if (k === 's') v.trim.start = Math.max(0, Math.min(v.trim.end - 0.3, +(v.trim.start + +d).toFixed(2))); else v.trim.end = Math.min(vid.duration || 1e9, Math.max(v.trim.start + 0.3, +(v.trim.end + +d).toFixed(2))); v.trim.why = '手動'; saveTrim(); }));
-  if (params.get('auto') === 'asr' && !cues.some((c) => c.en)) { history.replaceState(null, '', location.hash.replace('&auto=asr', '')); setTimeout(() => runASR(), 400); }
-
   // ---- controls ----
   const jump = (dir) => {
     if (!vid || !cues.length) return;
@@ -850,14 +860,20 @@ export async function videoPlay(el, params) {
     const c = dir < 0 ? [...cues].reverse().find((x) => x.start < (i >= 0 ? cues[i].start : t) - 0.05) || cues[0] : cues.find((x) => x.start > t + 0.05);
     playFrom(c);
   };
-  $('#prevCue', el).onclick = () => jump(-1);
+  // ⏮: back to the start of the sentence being heard; pressed again near its start → the previous sentence
+  $('#prevCue', el).onclick = () => {
+    if (!vid || !cues.length) return;
+    const t = vid.currentTime, c = cueAt(t);
+    if (c && t - c.start > 1.2) return playFrom(c);
+    jump(-1);
+  };
   $('#nextCue', el).onclick = () => jump(1);
-  $('#again', el).onclick = () => {   // the phrase being heard, or the one just before if we're between phrases / at its start
+  $('#again', el)?.addEventListener('click', () => {   // the phrase being heard, or the one just before if we're between phrases / at its start
     if (!vid || !cues.length) return;
     const t = vid.currentTime;
     const c = cueAt(t) && t - cueAt(t).start > 0.4 ? cueAt(t) : [...cues].reverse().find((x) => x.start < t - 0.05) || cues[0];
     playFrom(c);
-  };
+  });
   $('#play', el).onclick = () => vid && (vid.paused ? vid.play() : vid.pause());
   $('#speed', el).onclick = async () => {
     const cur = vid?.playbackRate || 1;
@@ -911,43 +927,12 @@ export async function videoPlay(el, params) {
     try { await navigator.clipboard.writeText(text); toast('依頼文をコピーしました。Claudeのチャットに貼り付けて送り、返ってきた字幕を「返ってきた日本語訳を貼り付け」で取り込んでください', 6000); }
     catch { confirmDialog({ title: '依頼文', body: `<p class="hint">全選択してコピーしてください</p><textarea rows="10" readonly style="width:100%">${esc(text)}</textarea>`, okLabel: '閉じる', cancelLabel: null }); }
   };
-  $('#asr', el)?.addEventListener('click', () => runASR());
   $('#make', el).addEventListener('click', (e) => { const p = e.target.closest('[data-paste]'); if (p) pasteDialog(p.dataset.paste); });
   $('#fEn', el).onchange = (e) => importFile(e, 'en');
   $('#fJa', el).onchange = (e) => importFile(e, 'ja');
   $('#addCue', el).onclick = () => editCue(null);
   $('#menu', el).onclick = menu;
 
-  // ---- on-device transcription (experimental) ----
-  async function runASR() {
-    if (!fileBlob) return toast('動画ファイルがありません');
-    if (cues.some((c) => c.en) && !(await confirmDialog({ title: `${TL}字幕を作り直しますか？`, body: '<p>今の字幕（と穴埋め）は置き換わります。日本語訳は時間の重なる行に付け直します。</p>', okLabel: '作る' }))) return;
-    const dlg = $('#dialog');
-    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>字幕を作成中</h3><p id="asrMsg" class="small">準備しています…</p><div class="progress"><i id="asrBar" style="width:2%"></i></div><p class="hint">画面を閉じたりアプリを切り替えたりすると止まることがあります。</p><button class="btn ghost" value="cancel">中止</button></form>`;
-    let cancelled = false;
-    dlg.onclose = () => { cancelled = true; };
-    dlg.showModal();
-    const say = (msg, p) => { if (cancelled) return; const m = $('#asrMsg', dlg); if (m) m.textContent = msg; const b = $('#asrBar', dlg); if (b && p != null) b.style.width = Math.max(2, p * 100) + '%'; };
-    try {
-      const { audio16kFromBlob, transcribeAudio } = await import('./media-audio.js');
-      const a = await audio16kFromBlob(fileBlob, { name: v.name + '.' + ((v.mime || '').includes('quicktime') ? 'mov' : 'mp4'), trackIndex: v.audioTrack ?? null, onStep: (m) => say(m, 0.05) });
-      if (a.track && a.track.count > 1 && v.audioTrack == null) { v.audioTrack = a.track.index; await saveVideoMeta(v); }   // remember the chosen sound track (also used for playback)
-      const quality = await getSetting('video.asrQ', 'acc');
-      const out = await transcribeAudio(a.audio, { lang: vlang, quality, from: v.trim?.start ?? 0, to: v.trim?.end ?? null, onProgress: (m, p) => say(m, p == null ? null : 0.1 + p * 0.9), isCancelled: () => cancelled });
-      if (cancelled) return;
-      dlg.close();
-      const jaOld = cues.filter((c) => c.ja).map((c) => ({ start: c.start, end: c.end, text: c.ja }));
-      cues = mergeJa(out.map((x) => ({ id: uid('c_'), videoId: v.id, start: x.start, end: x.end, en: x.text, ja: '', auto: true })), jaOld, v.id);
-      await replaceCues(v.id, cues);
-      toast(`${out.length}行の字幕を作りました。誤りは ✎ で直せます`);
-      videoPlay(el, params);
-    } catch (err) {
-      if (dlg.open) dlg.close();
-      const lost = err?.stage === '保存データの読み込み';
-      const ok = await confirmDialog({ title: '字幕を作れませんでした', body: `<p class="small">${esc(err?.message || String(err))}</p><p class="hint">${lost ? '字幕・穴埋め・学習記録はそのまま残ります。同じ動画を選び直すと、続けて使えます。' : /文字起こし：.*(fetch|network|load|ダウンロード|Failed)/i.test(err?.message || '') ? '音声認識モデルのダウンロードに失敗した可能性があります（初回・精度を変えた時はネット接続が必要）。' : '段階：' + esc(err?.stage || '不明') + '。字幕ファイル（SRT）があれば、その読み込みが確実です。'}</p>`, okLabel: lost ? '動画を選び直す' : '閉じる', cancelLabel: lost ? '閉じる' : null });
-      if (ok && lost) relinkVideo();
-    }
-  }
   // put the video file back (same subtitles and records) when the saved data became unreadable
   function relinkVideo() {
     const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'video/*';

@@ -12,7 +12,7 @@ import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.15.0';
+export const STUDIO_VERSION = '0.15.1';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -675,9 +675,9 @@ async function editorScreen(el, params) {
   el.innerHTML = `${head(set.title, 'sets', `<button class="icon-btn" id="undoB" aria-label="元に戻す">${icon('undo')}</button><button class="icon-btn" id="redoB" aria-label="やり直す">${icon('redo')}</button><button class="icon-btn" id="moreB" aria-label="メニュー">${icon('more')}</button>`)}
     <div id="relink"></div>${(() => { const x = srcs[set.sourceId]; return x?.audioError ? `<div class="notice warn small">取り込み時の音声処理で失敗したため、元のまま保存しています：${esc(x.audioError)}</div>` : ''; })()}
     <div class="st-player"><div class="st-vwrap"><video id="vid" playsinline webkit-playsinline preload="metadata"></video></div>
-      <div class="row st-seekrow"><input type="range" id="seek" class="st-seek" min="0" max="1" step="0.05" value="0" aria-label="再生位置"><span class="small muted" id="tdur"></span></div>
       <div class="st-sub" id="sub"></div></div>
-      <div class="row st-ctl"><button class="btn sm" id="back3">⟲3</button><button class="btn sm primary" id="pp">${icon('play')}</button><button class="btn sm" id="fwd3">3⟳</button><span class="small muted" id="tnow">0:00.0</span><span class="grow"></span><button class="btn sm" id="arrB">結合・移動</button><button class="btn sm" id="selB">選択</button></div>
+      <div class="st-stick"><div class="row st-seekrow"><input type="range" id="seek" class="st-seek" min="0" max="1" step="0.05" value="0" aria-label="再生位置"><span class="small muted" id="tdur"></span></div>
+      <div class="row st-ctl"><button class="btn sm" id="back3">⟲3</button><button class="btn sm primary" id="pp">${icon('play')}</button><button class="btn sm" id="fwd3">3⟳</button><span class="small muted" id="tnow">0:00.0</span><span class="grow"></span><button class="btn sm" id="arrB">結合・移動</button><button class="btn sm" id="selB">選択</button></div></div>
     <div id="info" class="small muted"></div><div id="alignNote"></div>
     <div id="list" class="st-list"></div>
     <div id="bar" class="st-bar" hidden></div>`;
@@ -770,7 +770,7 @@ async function editorScreen(el, params) {
     if (!row) return;
     row.classList.add('cur');
     if (!vid.paused && !selectMode) {   // keep the current line visible below the (sticky) player
-      const ph = el.querySelector('.st-ctl')?.getBoundingClientRect().bottom || 0, r = row.getBoundingClientRect();
+      const ph = el.querySelector('.st-stick')?.getBoundingClientRect().bottom || 0, r = row.getBoundingClientRect();
       if (r.top < ph || r.bottom > innerHeight) { row.style.scrollMarginTop = `${ph + 8}px`; row.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
     }
   }
@@ -873,7 +873,7 @@ async function editorScreen(el, params) {
     document.body.appendChild(ghost); row.classList.add('dragging');
     drag = { id: row.dataset.id, row, ghost, dy: e.clientY - r.top, x: r.left + r.width / 2, target: null, mode: null, y: e.clientY };
     try { g.setPointerCapture(e.pointerId); } catch {}
-    const auto = () => { if (!drag) return; const top = (el.querySelector('.st-ctl')?.getBoundingClientRect().bottom || 0) + 40;
+    const auto = () => { if (!drag) return; const top = (el.querySelector('.st-stick')?.getBoundingClientRect().bottom || 0) + 40;
       if (drag.y < top) scroller.scrollBy(0, -10); else if (drag.y > innerHeight - 70) scroller.scrollBy(0, 10); drag.raf = requestAnimationFrame(auto); };
     drag.raf = requestAnimationFrame(auto);
   });

@@ -10,7 +10,7 @@ import { extractPhrases, extractWords } from './studio-words.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.7.2';
+export const STUDIO_VERSION = '0.7.3';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -547,16 +547,9 @@ async function editorScreen(el, params) {
   const src = srcs[set.sourceId];
   el.innerHTML = `${head(set.title, 'sets', `<button class="icon-btn" id="undoB" aria-label="元に戻す">${icon('undo')}</button><button class="icon-btn" id="redoB" aria-label="やり直す">${icon('redo')}</button><button class="icon-btn" id="moreB" aria-label="メニュー">${icon('more')}</button>`)}
     <div id="relink"></div>${(() => { const x = srcs[set.sourceId]; return x?.audioError ? `<div class="notice warn small">取り込み時の音声処理で失敗したため、元のまま保存しています：${esc(x.audioError)}</div>` : ''; })()}
-    <div class="st-player"><div class="st-vwrap"><video id="vid" playsinline webkit-playsinline preload="metadata"></video><div class="st-ov" id="ov"></div></div>
+    <div class="st-player"><div class="st-vwrap"><video id="vid" playsinline webkit-playsinline preload="metadata"></video></div>
       <div class="st-sub" id="sub"></div>
       <div class="row st-ctl"><button class="btn sm" id="back3">⟲3</button><button class="btn sm primary" id="pp">${icon('play')}</button><button class="btn sm" id="fwd3">3⟳</button><span class="small muted" id="tnow">0:00.0</span><span class="grow"></span><button class="btn sm" id="selB">選択</button></div></div>
-    <details class="card details"><summary>字幕の表示</summary>
-      <div class="fgrp"><span>表示</span><div class="seg" id="dShow"><button data-v="both">英＋日</button><button data-v="en">英</button><button data-v="ja">日</button><button data-v="none">なし</button></div></div>
-      <div class="fgrp"><span>位置</span><div class="seg" id="dPos"><button data-v="below">動画の下</button><button data-v="ovb">動画の上・下端</button><button data-v="ovt">動画の上・上端</button></div></div>
-      <div class="fgrp"><span>英語の透明度</span><div class="seg" id="dOpEn">${[1, 0.7, 0.4, 0.2].map((o) => `<button data-v="${o}">${o * 100}%</button>`).join('')}</div></div>
-      <div class="fgrp"><span>日本語の透明度</span><div class="seg" id="dOpJa">${[1, 0.7, 0.4, 0.2].map((o) => `<button data-v="${o}">${o * 100}%</button>`).join('')}</div></div>
-      <div class="fgrp"><span>順番</span><div class="seg" id="dOrd"><button data-v="en">英が上</button><button data-v="ja">日が上</button></div></div>
-    </details>
     <div id="info" class="small muted"></div>
     <div id="list" class="st-list"></div>
     <div id="bar" class="st-bar" hidden></div>`;
@@ -589,15 +582,23 @@ async function editorScreen(el, params) {
     }));
   }
   // play a block: its segments in order (may switch files)
-  function playBlock(b, loop = false) {
+  // cont: keep going to the next items in order (subtitles follow line by line)
+  function playBlock(b, loop = false, cont = false, from = null) {
     if (!b.segments.length) return toast('この項目には音声区間がありません');
-    playing = { b, i: 0, loop }; curBlock = b;
-    startSeg();
+    let i = 0;
+    if (from != null) { const k = b.segments.findIndex((x) => x.sourceId === vid.dataset.src && from >= x.start && from < x.end - 0.05); if (k >= 0) i = k; else from = null; }
+    playing = { b, i, loop, cont }; curBlock = b;
+    startSeg(from);
   }
-  function startSeg() {
+  function nextPlayable(b) {
+    const ids = set.order.filter((id) => byId[id]); let k = ids.indexOf(b.id);
+    while (++k < ids.length) { const n = byId[ids[k]]; if (n?.segments.length) return n; }
+    return null;
+  }
+  function startSeg(from = null) {
     const p = playing; if (!p) return;
     const s = p.b.segments[p.i];
-    if (!attach(s.sourceId, s.start)) { playing = null; return toast('ファイルを選んでください'); }
+    if (!attach(s.sourceId, from ?? s.start)) { playing = null; return toast('ファイルを選んでください'); }
     try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
     vid.play().catch((e) => { if (e.name === 'NotAllowedError') toast('もう一度タップしてください'); });
   }
@@ -608,6 +609,12 @@ async function editorScreen(el, params) {
       if (vid.currentTime >= s.end - 0.02) {
         if (playing.i + 1 < playing.b.segments.length) { playing.i++; startSeg(); }
         else if (playing.loop) { playing.i = 0; startSeg(); }
+        else if (playing.cont) {
+          const n = nextPlayable(playing.b), s1 = n?.segments[0];
+          if (!n) { vid.pause(); playing = null; }
+          else if (s1.sourceId === s.sourceId && Math.abs(s1.start - vid.currentTime) < 0.3) { playing = { b: n, i: 0, loop: false, cont: true }; curBlock = n; }   // already there: no seek, no gap
+          else { playing = { b: n, i: 0, loop: false, cont: true }; curBlock = n; startSeg(); }
+        }
         else { vid.pause(); playing = null; }
       }
     }
@@ -626,24 +633,17 @@ async function editorScreen(el, params) {
   function drawSub() {
     const b = blockAtTime(); const id = b ? b.id + '@' + b.rev : null;
     if (id === lastSubId) return; lastSubId = id;
-    const d = set.display;
-    const en = b && (d.show !== 'ja' && d.show !== 'none') && b.text ? `<div class="st-en" style="opacity:${d.opEn}">${esc(b.text)}</div>` : '';
-    const ja = b && (d.show !== 'en' && d.show !== 'none') && b.ja ? `<div class="st-ja" style="opacity:${d.opJa}">${esc(b.ja)}</div>` : '';
-    const html = d.order === 'ja' ? ja + en : en + ja;
-    const over = d.pos !== 'below';
-    $('#ov', el).className = `st-ov ${d.pos}`; $('#ov', el).innerHTML = over ? html : '';
-    $('#sub', el).innerHTML = over ? '' : html || '<span class="muted small">（字幕）</span>';
+    const html = (b?.text ? `<div class="st-en">${esc(b.text)}</div>` : '') + (b?.ja ? `<div class="st-ja">${esc(b.ja)}</div>` : '');
+    $('#sub', el).innerHTML = html || '<span class="muted small">（字幕）</span>';
     $$('.st-row.cur', list).forEach((r) => r.classList.remove('cur'));
-    if (b) list.querySelector(`[data-id="${b.id}"]`)?.classList.add('cur');
+    const row = b && list.querySelector(`[data-id="${b.id}"]`);
+    if (!row) return;
+    row.classList.add('cur');
+    if (!vid.paused && !selectMode) {   // keep the current line visible below the (sticky) player
+      const ph = el.querySelector('.st-player')?.getBoundingClientRect().bottom || 0, r = row.getBoundingClientRect();
+      if (r.top < ph || r.bottom > innerHeight) { row.style.scrollMarginTop = `${ph + 8}px`; row.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+    }
   }
-  function drawDisplay() {
-    const d = set.display; d.show ||= 'both';
-    const on = (id, v) => $$(`#${id} button`, el).forEach((x) => x.classList.toggle('on', x.dataset.v === String(v)));
-    on('dShow', d.show); on('dPos', d.pos); on('dOpEn', d.opEn); on('dOpJa', d.opJa); on('dOrd', d.order);
-    lastSubId = null; drawSub();
-  }
-  const segBind = (id, key, num) => ($('#' + id, el).onclick = async (e) => { const v = e.target.dataset.v; if (v == null) return; set.display[key] = num ? +v : v; await sdb.put('sets', set); drawDisplay(); });
-  segBind('dShow', 'show'); segBind('dPos', 'pos'); segBind('dOpEn', 'opEn', true); segBind('dOpJa', 'opJa', true); segBind('dOrd', 'order');
 
   // ---------- list ----------
   const holeHTML = (b) => { const t = tokensOf(b.text); return t.map((w, i) => (b.holes || []).some((h) => i >= h.s && i <= h.e) ? `<u class="st-hole">${esc(w)}</u>` : esc(w)).join(' '); };
@@ -718,7 +718,7 @@ async function editorScreen(el, params) {
     const ed = e.target.closest('[data-edit]'); if (ed) return editBlock(byId[ed.dataset.edit]);
     const row = e.target.closest('.st-row'); if (!row) return;
     if (selectMode) return tapRow(row.dataset.id);
-    playBlock(byId[row.dataset.id]);
+    playBlock(byId[row.dataset.id], false, true);
   });
 
   // ---------- actions (each = one undoable operation) ----------
@@ -1036,10 +1036,20 @@ async function editorScreen(el, params) {
   $('#undoB', el).onclick = async () => { const op = await undo(set); if (op) { await reload(); drawList(); toast(`元に戻しました：${op.label}`, 1500); } };
   $('#redoB', el).onclick = async () => { const op = await redo(set); if (op) { await reload(); drawList(); toast(`やり直しました：${op.label}`, 1500); } };
   $('#selB', el).onclick = () => { selectMode = !selectMode; if (!selectMode) { sel.clear(); onlySel = false; } drawList(); };
-  $('#pp', el).onclick = () => { if (vid.paused) { if (!vid.dataset.src && set.sourceId) attach(set.sourceId); playing = null; vid.play().catch(() => {}); } else vid.pause(); };
+  $('#pp', el).onclick = () => {
+    if (!vid.paused) return vid.pause();
+    if (playing) { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} return vid.play().catch(() => {}); }   // resume where it stopped
+    const b = (vid.dataset.src && blockAtTime()) || blocks.find((x) => x.segments.length);
+    if (b) return playBlock(b, false, true, vid.dataset.src ? vid.currentTime : null);
+    if (!vid.dataset.src && set.sourceId) attach(set.sourceId); vid.play().catch(() => {});
+  };
   vid.onplay = () => ($('#pp', el).textContent = icon('pause')); vid.onpause = () => ($('#pp', el).textContent = icon('play'));
-  $('#back3', el).onclick = () => { vid.currentTime = Math.max(0, vid.currentTime - 3); };
-  $('#fwd3', el).onclick = () => { vid.currentTime += 3; };
+  const jump = (d) => {
+    const t = Math.max(0, vid.currentTime + d); vid.currentTime = t;
+    if (playing?.cont) { const sid = vid.dataset.src; const b = blocks.find((x) => x.segments.some((g) => g.sourceId === sid && t >= g.start && t < g.end)); if (b) { const i = b.segments.findIndex((g) => g.sourceId === sid && t >= g.start && t < g.end); playing = { b, i, loop: false, cont: true }; curBlock = b; } }
+  };
+  $('#back3', el).onclick = () => jump(-3);
+  $('#fwd3', el).onclick = () => jump(3);
   $('#moreB', el).onclick = async () => {
     const dlg = $('#dialog');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(set.title)}</h3>
@@ -1074,7 +1084,7 @@ async function editorScreen(el, params) {
     dlg.showModal();
   };
   if (set.sourceId) attach(set.sourceId);
-  drawRelink(); drawDisplay(); drawList();
+  drawRelink(); drawList(); drawSub();
 }
 
 async function deleteSet(set) {

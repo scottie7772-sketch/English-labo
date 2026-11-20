@@ -11,7 +11,7 @@ import { findCandidates, applySpans } from './studio-names.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.8.1';
+export const STUDIO_VERSION = '0.8.2';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -325,6 +325,7 @@ async function hardTrim(srcId, a, b, say = () => {}) {
     blob = small.file; start = a; Object.assign(src, { kind: 'audio', derived: 'audio16k', codec: small.codec });
   }
   const m = await readDuration(blob);
+  if (!m.playable) throw new Error('カット後のファイルが再生できなかったため、元のまま残しました');   // never replace a good file with a broken one
   Object.assign(src, { blob, mime: blob.type, origSize: src.origSize || src.size, size: blob.size, duration: m.duration || b - start, trimmed: { from: start, to: b, at: Date.now() } });
   delete src.audio; probeCache.delete(src.id); URL.revokeObjectURL(urlCache.get(src.id) || ''); urlCache.delete(src.id);
   await sdb.put('sources', src);
@@ -482,7 +483,14 @@ async function copyBlob(file, say = () => {}) {
   return new File(parts, file.name, { type: file.type });
 }
 async function putSource(media, mode, say = () => {}) {
-  const exist = await sdb.get('sources', media.fp.id);
+  let exist = await sdb.get('sources', media.fp.id);
+  // the same file was saved before: reuse it only if a set uses it and it still reads and plays.
+  // Files left over from an import that stopped (app closed / crashed) can be broken: they are made again from the new file.
+  if (exist?.stored) {
+    let ok = (await sdb.all('blocks')).some((b) => !b.deleted && b.segments?.some((g) => g.sourceId === exist.id));
+    if (ok) try { const B = exist.blob; await B.slice(0, 1024).arrayBuffer(); await B.slice(Math.max(0, B.size - 65536)).arrayBuffer(); ok = (await readDuration(B)).playable; } catch { ok = false; }
+    if (!ok) { crumb(`保存済みの${exist.name}を作り直します`); probeCache.delete(exist.id); urlCache.delete(exist.id); exist = null; }
+  }
   const src = exist || { id: media.fp.id, kind: media.kind, name: media.name.split('/').pop(), size: media.file.size, mime: media.file.type, duration: media.duration, playable: media.playable, head: media.fp.head, tail: media.fp.tail, addedAt: Date.now(), stored: false };
   if (!src.audio && media.kind !== 'audio' || (!src.audio && isContainer(src, media.file))) { try { src.audio = await decideTrack(src, media.file, say); } catch (e) { src.audioError = e.message; } }
   let a16 = null;

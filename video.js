@@ -57,6 +57,71 @@ async function replaceCues(videoId, cues) {
   const old = await db.byIndex('cues', 'videoId', videoId);
   await db.tx(['cues'], 'readwrite', (t) => { const os = t.objectStore('cues'); old.forEach((c) => os.delete(c.id)); cues.forEach((c) => os.put(c)); });
 }
+// a studio material (from a pack file, or sent directly by the studio inside this app) → video lab.
+// The same material again: subtitles are replaced in place, learning records kept. getFile(m) → Blob of a media file or null.
+export async function importMaterial(manifest, mat, getFile, { askUpdate = true } = {}) {
+  const { copyBlob } = await import('./media-audio.js');
+  // same material imported before (same studio set): update it in place, keeping the learning records
+  const all = (await db.all('videos')).map(({ blob, ...x }) => x);
+  const mine = all.filter((x) => x.from?.material && x.from.material === manifest.materialId);
+  const findOld = (m) => mine.find((x) => x.from.media === m.id) || mine.find((x) => !x.from.media && (x.name === manifest.title || x.name === `${manifest.title}（${m.name}）`));
+  const withText = (m) => mat.items.some((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja));
+  const plan = mat.media.filter(withText).map((m) => ({ m, old: findOld(m) }));
+  let update = false;
+  if (plan.some((p) => p.old)) {
+    update = !askUpdate || await confirmDialog({ title: 'すでにある教材です', body: `<p>「${esc(manifest.title)}」は前に取り込んでいます。字幕を新しい内容に入れ替えますか？</p><p class="hint">入れ替えても、単語帳の「元の動画」へのリンク・再生位置・固有名詞・変わっていない行のディクテーション記録は残ります。</p>`, okLabel: '入れ替える', cancelLabel: '別の教材として追加' });
+    if (!update) plan.forEach((p) => (p.old = null));
+  }
+  const missing = plan.filter((p) => !p.old && !p.m.included);
+  if (!plan.some((p) => p.old || p.m.included)) throw new Error('このパックには動画・音声が入っていません。スタジオで「動画・音声も含める」を選んで書き出し直してください');
+  let first = null, nUpd = 0, nNew = 0;
+  for (const { m, old } of plan) {
+    if (!old && !m.included) continue;
+    toast('取り込み中…', 10000);
+    let v, freshBlob = null;
+    if (old) {
+      v = await db.get('videos', old.id);
+      if (m.included && m.size && v.from?.mediaSize && m.size !== v.from.mediaSize) {   // the sound itself changed in the studio: replace it
+        const raw = await getFile(m); const { saveVideoCopy } = await import('./media-audio.js');
+        const sv = m.kind === 'video' ? await saveVideoCopy(new File([raw], m.name, { type: m.mime || 'video/mp4' }), { onStep: (x) => toast(x, 10000) }) : { blob: await copyBlob(raw, () => {}, { name: m.name, type: m.mime || 'audio/mp4' }) };
+        freshBlob = sv.blob; Object.assign(v, { size: sv.blob.size, mime: m.mime || v.mime, duration: m.duration || v.duration, audioChecked: true, audioFixed: true }); if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
+      }
+      v.from = { ...v.from, pack: manifest.packId, media: m.id, mediaSize: m.size || v.from?.mediaSize, updatedAt: Date.now() };
+      nUpd++;
+    } else {
+      const raw = await getFile(m);
+      const { saveVideoCopy } = await import('./media-audio.js');
+      const sv = m.kind === 'video' ? await saveVideoCopy(new File([raw], m.name, { type: m.mime || 'video/mp4' }), { onStep: (x) => toast(x, 10000) }) : { blob: await copyBlob(raw, (r) => toast(`取り込み中… ${Math.round(r * 100)}%`, 10000), { name: m.name, type: m.mime || 'audio/mp4' }) };
+      const blob = sv.blob; freshBlob = blob;
+      v = { id: uid('v_'), lang: manifest.lang || curLang(), name: mat.media.filter(withText).length > 1 ? `${manifest.title}（${m.name}）` : manifest.title, mime: m.mime || 'video/mp4', size: blob.size, duration: m.duration || 0, lastTime: 0, createdAt: Date.now(), from: { pack: manifest.packId, material: manifest.materialId, media: m.id, mediaSize: m.size } };
+      Object.assign(v, { audioChecked: true, audioFixed: true }); if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
+      nNew++;
+    }
+    // the studio's cut (start/end) = the range covered by the items: playback stays inside it
+    const segs = mat.items.flatMap((it) => (it.segments || []).filter((g) => g.media === m.id));
+    delete v.trim;
+    if (segs.length) { const a0 = Math.min(...segs.map((g) => g.start)), a1 = Math.max(...segs.map((g) => g.end)); if (a0 > 0.05 || (m.duration && a1 < m.duration - 0.05)) v.trim = { start: a0, end: a1, why: 'スタジオのカット' }; }
+    if (freshBlob) await putVideoBlob(v.id, freshBlob);
+    await saveVideoMeta(v);
+    const fresh = mat.items.filter((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja))
+      .map((it) => ({ id: uid('c_'), videoId: v.id, itemId: it.id, start: it.segments[0].start, end: it.segments.at(-1).media === m.id ? it.segments.at(-1).end : it.segments[0].end, en: it.text || '', ja: it.ja || '', ...(it.holes?.length ? { holes: it.holes } : {}) }))
+      .sort((a, b) => a.start - b.start);
+    if (old) {   // keep cue ids (word links) and records of lines that still exist
+      const prev = await db.byIndex('cues', 'videoId', v.id); const used = new Set();
+      for (const c of fresh) {
+        const o = prev.find((x) => !used.has(x.id) && x.itemId && x.itemId === c.itemId) || prev.find((x) => !used.has(x.id) && !x.itemId && x.en && x.en === c.en);
+        if (!o) continue; used.add(o.id);
+        c.id = o.id; if (o.dict) c.dict = o.dict;
+        if (o.en === c.en && o.holes?.length) c.holes = o.holes;   // same sentence: keep the cloze holes and their results
+      }
+    }
+    await replaceCues(v.id, fresh);
+    first ||= v;
+  }
+  if (missing.length) toast(`音声が入っていない部分（${missing.length}件）は取り込めませんでした。スタジオで音声を含めて書き出してください`, 5000);
+  if (!missing.length) toast(`${nUpd ? `更新しました` : '取り込みました'}（字幕 ${mat.items.filter((it) => it.segments?.length && (it.text || it.ja)).length}行）`);
+  return first;
+}
 // ---- media files live in their own store ('vblobs') and are written once ----
 // (iPhone: putting a file that was read from the database back into it — e.g. with the play position — made it unreadable after reopening)
 export async function videoBlob(v) { if (!v) return null; return (await db.get('vblobs', v.id))?.blob || v.blob || null; }
@@ -96,7 +161,8 @@ export async function videoList(el) {
   for (const c of await db.all('cues')) cueCount[c.videoId] = (cueCount[c.videoId] || 0) + 1;
   el.innerHTML = `
     <header class="top"><a href="#home" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>🎬 Video Lab</h1></header>
-    <label class="btn primary" for="vpack">📦 教材スタジオの教材を追加（.elpack.zip）</label>
+    <a class="btn primary" href="#studio/sets">🛠 教材スタジオを開く（教材を作って送る）</a>
+    <label class="btn" for="vpack">📦 教材パック（.elpack.zip）を読み込む</label>
     <input type="file" id="vpack" hidden>
     <p class="hint" style="margin-top:6px">取り込み・カット・文字起こし・字幕づくりは<b>教材スタジオ</b>で行い、ここでは再生と学習（速度・区間リピート・ディクテーション・シャドーイング・穴埋め）を行います。スタジオで「⋯」→「教材パックとして書き出す」→「含める」で作ったファイルを選んでください。</p>
     <label class="btn sm" for="vfile" style="margin-top:4px">動画をそのまま追加（字幕ファイルがある場合など）</label>
@@ -124,66 +190,8 @@ export async function videoList(el) {
       const z = await zipRead(f);
       const manifest = JSON.parse(await z.text('manifest.json')), mat = JSON.parse(await z.text('material.json'));
       if (manifest.format !== 'elpack') throw new Error('教材スタジオのパックではありません');
-      // same material imported before (same studio set): update it in place, keeping the learning records
-      const all = (await db.all('videos')).map(({ blob, ...x }) => x);
-      const mine = all.filter((x) => x.from?.material && x.from.material === manifest.materialId);
-      const findOld = (m) => mine.find((x) => x.from.media === m.id) || mine.find((x) => !x.from.media && (x.name === manifest.title || x.name === `${manifest.title}（${m.name}）`));
-      const withText = (m) => mat.items.some((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja));
-      const plan = mat.media.filter(withText).map((m) => ({ m, old: findOld(m) }));
-      let update = false;
-      if (plan.some((p) => p.old)) {
-        update = await confirmDialog({ title: 'すでにある教材です', body: `<p>「${esc(manifest.title)}」は前に取り込んでいます。字幕を新しい内容に入れ替えますか？</p><p class="hint">入れ替えても、単語帳の「元の動画」へのリンク・再生位置・固有名詞・変わっていない行のディクテーション記録は残ります。</p>`, okLabel: '入れ替える', cancelLabel: '別の教材として追加' });
-        if (!update) plan.forEach((p) => (p.old = null));
-      }
-      const missing = plan.filter((p) => !p.old && !p.m.included);
-      if (!plan.some((p) => p.old || p.m.included)) throw new Error('このパックには動画・音声が入っていません。スタジオで「動画・音声も含める」を選んで書き出し直してください');
-      let first = null, nUpd = 0, nNew = 0;
-      for (const { m, old } of plan) {
-        if (!old && !m.included) continue;
-        toast('取り込み中…', 10000);
-        let v, freshBlob = null;
-        if (old) {
-          v = await db.get('videos', old.id);
-          if (m.included && m.size && v.from?.mediaSize && m.size !== v.from.mediaSize) {   // the sound itself changed in the studio: replace it
-            const raw = await z.file(m.path); const { saveVideoCopy, copyBlob } = await import('./media-audio.js');
-            const sv = m.kind === 'video' ? await saveVideoCopy(new File([raw], m.name, { type: m.mime || 'video/mp4' }), { onStep: (x) => toast(x, 10000) }) : { blob: await copyBlob(raw, () => {}, { name: m.name, type: m.mime || 'audio/mp4' }) };
-            freshBlob = sv.blob; Object.assign(v, { size: sv.blob.size, mime: m.mime || v.mime, duration: m.duration || v.duration, audioChecked: true, audioFixed: true }); if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
-          }
-          v.from = { ...v.from, pack: manifest.packId, media: m.id, mediaSize: m.size || v.from?.mediaSize, updatedAt: Date.now() };
-          nUpd++;
-        } else {
-          const raw = await z.file(m.path);
-          const { saveVideoCopy } = await import('./media-audio.js');
-          const sv = m.kind === 'video' ? await saveVideoCopy(new File([raw], m.name, { type: m.mime || 'video/mp4' }), { onStep: (x) => toast(x, 10000) }) : { blob: await copyBlob(raw, (r) => toast(`取り込み中… ${Math.round(r * 100)}%`, 10000), { name: m.name, type: m.mime || 'audio/mp4' }) };
-          const blob = sv.blob; freshBlob = blob;
-          v = { id: uid('v_'), lang: manifest.lang || curLang(), name: mat.media.filter(withText).length > 1 ? `${manifest.title}（${m.name}）` : manifest.title, mime: m.mime || 'video/mp4', size: blob.size, duration: m.duration || 0, lastTime: 0, createdAt: Date.now(), from: { pack: manifest.packId, material: manifest.materialId, media: m.id, mediaSize: m.size } };
-          Object.assign(v, { audioChecked: true, audioFixed: true }); if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
-          nNew++;
-        }
-        // the studio's cut (start/end) = the range covered by the items: playback stays inside it
-        const segs = mat.items.flatMap((it) => (it.segments || []).filter((g) => g.media === m.id));
-        delete v.trim;
-        if (segs.length) { const a0 = Math.min(...segs.map((g) => g.start)), a1 = Math.max(...segs.map((g) => g.end)); if (a0 > 0.05 || (m.duration && a1 < m.duration - 0.05)) v.trim = { start: a0, end: a1, why: 'スタジオのカット' }; }
-        if (freshBlob) await putVideoBlob(v.id, freshBlob);
-        await saveVideoMeta(v);
-        const fresh = mat.items.filter((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja))
-          .map((it) => ({ id: uid('c_'), videoId: v.id, itemId: it.id, start: it.segments[0].start, end: it.segments.at(-1).media === m.id ? it.segments.at(-1).end : it.segments[0].end, en: it.text || '', ja: it.ja || '', ...(it.holes?.length ? { holes: it.holes } : {}) }))
-          .sort((a, b) => a.start - b.start);
-        if (old) {   // keep cue ids (word links) and records of lines that still exist
-          const prev = await db.byIndex('cues', 'videoId', v.id); const used = new Set();
-          for (const c of fresh) {
-            const o = prev.find((x) => !used.has(x.id) && x.itemId && x.itemId === c.itemId) || prev.find((x) => !used.has(x.id) && !x.itemId && x.en && x.en === c.en);
-            if (!o) continue; used.add(o.id);
-            c.id = o.id; if (o.dict) c.dict = o.dict;
-            if (o.en === c.en && o.holes?.length) c.holes = o.holes;   // same sentence: keep the cloze holes and their results
-          }
-        }
-        await replaceCues(v.id, fresh);
-        first ||= v;
-      }
-      if (missing.length) toast(`音声が入っていない部分（${missing.length}件）は取り込めませんでした。スタジオで音声を含めて書き出してください`, 5000);
-      if (!missing.length) toast(`${nUpd ? `更新しました` : '取り込みました'}（字幕 ${mat.items.filter((it) => it.segments?.length && (it.text || it.ja)).length}行）`);
-      go(`#video-play?id=${first.id}`);
+      const first = await importMaterial(manifest, mat, async (m) => (m.included ? z.file(m.path) : null));
+      if (first) go(`#video-play?id=${first.id}`);
     } catch (err) { toast('取り込めませんでした：' + (err?.message || err), 5000); }
   };
   $('#vfile', el).onchange = async (e) => {

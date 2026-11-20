@@ -96,10 +96,10 @@ export async function homeScreen(el) {
     <nav class="menu">
       ${item('#study', 'cards', '単語テスト', '4択・カード・タイピング')}
       ${item('#quick', 'bolt', '単語帳（カード）', 'スワイプで確認・リピート')}
-      ${item('#listening', 'headphones', 'リスニング', '短文・会話の聞き取り')}
       ${item('#speaking', 'mic', '瞬間作文', `日本語から${L().name}`)}
       ${item('#games', 'puzzle', 'ゲーム', 'パズル・Verb Swipe・前置詞の図解')}
       ${item('#video', 'video', 'Video Lab', '動画と字幕')}
+      ${item('#studio/sets', 'lesson', '教材スタジオ', '音声・動画から字幕つき教材を作る')}
       ${item('#grammar', 'grammar', '文法', '単元一覧', true)}
     </nav>
     <h2 class="sec">単語・復習</h2>

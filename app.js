@@ -18,7 +18,7 @@ import { storageScreen } from './storage.js';
 import { courseScreen, courseUnit, coursePuzzle } from './course.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.4.4';
+export const APP_VERSION = '1.5.0';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -110,6 +110,7 @@ screens.settings = async (el) => {
       <a class="btn" href="#datacheck">データ点検（列のずれ・重複の確認）</a>
       <a class="btn" href="#storage">容量の整理（キャッシュ・動画の削除）</a>
       <button class="btn" id="sample">テスト用サンプル単語を追加</button>
+      <button class="btn danger" id="wipeMedia">動画・音声・リスニングを一括削除（単語は残す）</button>
       <button class="btn danger" id="wipe">すべてのデータを削除</button>
     </div>
 
@@ -152,6 +153,20 @@ screens.settings = async (el) => {
     render();
   });
   $('#sample', el).onclick = async () => { await addSampleWords(); toast('サンプル単語を追加しました'); render(); };
+  $('#wipeMedia', el).onclick = async () => {
+    const ok = await confirmDialog({ title: '動画・音声・リスニングを削除', body: '<p>動画ラボの動画・音声・字幕・穴埋めと、リスニングの問題の記録を消します。<b>単語・習得度・復習予定・ゲームは残ります</b>（動画から登録した単語も残り、動画へのリンクだけ外れます）。元に戻せません。</p>', okLabel: '削除', danger: true, requireText: '削除' });
+    if (!ok) return;
+    const wordIds = new Set((await db.all('words')).map((w) => w.id));
+    const notWord = (id) => !wordIds.has(id);
+    await db.clear('cues'); await db.clear('vblobs'); await db.clear('videos'); await db.clear('listening');
+    const atts = (await db.all('attempts')).filter((a) => (a.mode === 'listening' || a.mode === 'video') && notWord(a.wordId));
+    for (const a of atts) await db.delete('attempts', a.id);
+    const gone = new Set(atts.map((a) => a.wordId));
+    for (const m of await db.all('mastery')) if (notWord(m.wordId) && (gone.has(m.wordId) || String(m.wordId).startsWith('cz_'))) await db.delete('mastery', m.id);
+    for (const r of await db.all('reviews')) if (notWord(r.id) && (r.kind === 'listening' || gone.has(r.id) || String(r.id).startsWith('cz_'))) await db.delete('reviews', r.id);
+    for (const w of await db.all('words')) if (w.videoRefs?.length) { w.videoRefs = []; await db.put('words', w); }
+    toast('削除しました'); render();
+  };
   $('#wipe', el).onclick = async () => {
     const ok = await confirmDialog({ title: 'すべてのデータを削除', body: '<p>単語・学習記録・動画などすべて消えます。元に戻せません。</p>', okLabel: '削除', danger: true, requireText: '削除' });
     if (!ok) return;
@@ -178,15 +193,24 @@ async function addSampleWords() {
 }
 
 // ---------- Router ----------
-function currentRoute() { return (location.hash.slice(1) || 'home').split('?')[0]; }
+function currentRoute() { const r = (location.hash.slice(1) || 'home').split('?')[0]; return r.startsWith('studio') ? 'studio' : r; }
 function currentParams() { return new URLSearchParams(location.hash.split('?')[1] || ''); }
 
+let studioMod = null;
+// 教材スタジオ inside the app: loaded only when opened (no weight for the other screens)
+screens.studio = async (el) => {
+  if (!document.querySelector('link[data-studio]')) { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = 'studio.css'; l.dataset.studio = '1'; document.head.appendChild(l); }
+  studioMod ||= await import('./studio-main.js');
+  const { importMaterial } = await import('./video.js');
+  studioMod.mount(el, { base: 'studio/', host: { exitHref: '#home', sendToLab: (manifest, mat, getFile) => importMaterial(manifest, mat, getFile, { askUpdate: false }).then((v) => v?.id) } });
+};
 async function render() {
   const route = screens[currentRoute()] ? currentRoute() : 'home';
+  if (route !== 'studio') studioMod?.unmount();
   const main = $('#main');
   try { await screens[route](main, currentParams()); }
   catch (e) { main.innerHTML = `<div class="card warn">エラー: ${esc(e.message)}</div>`; console.error(e); }
-  document.body.classList.toggle('focus', ['session', 'quick-run', 'speaking-run', 'listening-run', 'lesson-run', 'game', 'course-puzzle'].includes(route));
+  document.body.classList.toggle('focus', ['session', 'quick-run', 'speaking-run', 'listening-run', 'lesson-run', 'game', 'course-puzzle', 'studio'].includes(route));
   // language switch in the header of screens that depend on the learning language
   if (['home', 'vocab', 'study', 'quick', 'review', 'lesson', 'speaking', 'listening', 'games', 'course'].includes(route)) {
     const h = main.querySelector('header.top');

@@ -12,9 +12,9 @@ import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.11.0';
+export const STUDIO_VERSION = '0.12.0';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
-let ROOT = null, BASE = '';
+let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
 const urlCache = new Map();
 const nav = (path) => { location.hash = '#' + BASE + path; };
@@ -28,12 +28,17 @@ const crumbs = (() => { try { return JSON.parse(localStorage.getItem('st-crumbs'
 function crumb(msg) { crumbs.push(`${new Date().toLocaleTimeString('ja-JP')} ${msg}`); while (crumbs.length > 40) crumbs.shift(); try { localStorage.setItem('st-crumbs', JSON.stringify(crumbs)); } catch {} }
 function running(what) { try { what ? localStorage.setItem('st-running', what) : localStorage.removeItem('st-running'); } catch {} if (what) crumb('開始：' + what); }
 const errLog = [];
-function logErr(msg) { errLog.push(`${new Date().toLocaleTimeString('ja-JP')} ${msg}`); if (errLog.length > 50) errLog.shift(); toast('エラー：' + msg, 5000); }
-export function mount(el, { base = '' } = {}) {
-  ROOT = el; BASE = base;
+const inStudio = () => !BASE || location.hash.slice(1).startsWith(BASE);
+function logErr(msg) { errLog.push(`${new Date().toLocaleTimeString('ja-JP')} ${msg}`); if (errLog.length > 50) errLog.shift(); if (inStudio()) toast('エラー：' + msg, 5000); }
+let mounted = false;
+// host (English Labo): { exitHref, sendToLab(manifest, material, getFile) } — the host's router calls mount() for every studio screen
+export function mount(el, { base = '', host = null } = {}) {
+  ROOT = el; BASE = base; HOST = host;
+  if (mounted && host) { route(); return; }
+  mounted = true;
   addEventListener('error', (e) => logErr(`${e.message} (${(e.filename || '').split('/').pop()}:${e.lineno})`));
   addEventListener('unhandledrejection', (e) => logErr(String(e.reason?.message || e.reason)));
-  addEventListener('hashchange', route);
+  if (!host) addEventListener('hashchange', route);
   let crashed = null; try { crashed = localStorage.getItem('st-running'); } catch {}
   if (crashed) {
     running(null);
@@ -52,8 +57,10 @@ function parseHash() {
   return { path: path || 'sets', params: new URLSearchParams(q || '') };
 }
 let cleanup = null;
+export function unmount() { cleanup?.(); cleanup = null; }
 async function route() {
   cleanup?.(); cleanup = null;
+  if (!inStudio()) return;
   const { path, params } = parseHash();
   const screens = { sets: setsScreen, import: importScreen, set: editorScreen, versions: versionsScreen, lab: labScreen, io: ioScreen, words: wordsScreen, clean: cleanScreen };
   try { await (screens[path] || setsScreen)(ROOT, params); }
@@ -62,7 +69,7 @@ async function route() {
 }
 const head = (title, backPath = null, right = '') => `
   <div class="st-band">制作・教材スタジオ <small>v${STUDIO_VERSION}</small></div>
-  <header class="top">${backPath != null ? `<a class="back" href="#${BASE}${backPath}" aria-label="戻る">${icon('back')}</a>` : ''}<h1 title="${esc(title)}">${esc(title)}</h1><span class="grow"></span>${right}</header>`;
+  <header class="top">${backPath != null ? `<a class="back" href="${backPath === '__exit' ? HOST?.exitHref || '#home' : `#${BASE}${backPath}`}" aria-label="戻る">${icon('back')}</a>` : ''}<h1 title="${esc(title)}">${esc(title)}</h1><span class="grow"></span>${right}</header>`;
 
 function mediaURL(src) {
   if (!src) return null;
@@ -101,7 +108,7 @@ async function setsScreen(el) {
   const openF = new Set(JSON.parse(localStorage.getItem('st-openF') || '[]'));
   const folders = [...new Set(sets.map((s) => s.folder).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
   const draw = () => {
-    el.innerHTML = `${head('教材セット', null, `<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#${BASE}clean">容量</a><a class="btn sm" href="#${BASE}lab">技術検証</a>`)}
+    el.innerHTML = `${head('教材スタジオ', HOST ? '__exit' : null, `<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#${BASE}clean">容量</a><a class="btn sm" href="#${BASE}lab">技術検証</a>`)}
     <div class="row"><a class="btn primary grow" href="#${BASE}import">＋ 一括登録（動画・音声・字幕）</a><a class="btn" href="#${BASE}io">読み込み</a></div>
     ${est ? `<p class="small muted">端末の保存量：${fmtSize(est.usage || 0)}${est.quota ? ` / 目安の上限 ${fmtSize(est.quota)}` : ''}</p>` : ''}
     ${sets.length ? `<div class="row"><span class="grow small muted">${sets.length}セット</span><button class="btn sm" id="edit">${editing ? '完了' : '選ぶ（フォルダ・削除）'}</button></div>
@@ -109,7 +116,7 @@ async function setsScreen(el) {
     ${[...folders, ''].map((f) => { const inF = sets.filter((s) => (s.folder || '') === f); if (!inF.length) return '';
       const rows = inF.map(rowHTML).join('');
       return f ? `<details class="card st-fold" data-f="${esc(f)}" ${openF.has(f) || editing ? 'open' : ''}><summary>📁 ${esc(f)} <small class="muted">${inF.length}</small></summary><div class="list">${rows}</div></details>` : `<div class="card list">${rows}</div>`; }).join('')}` : '<p class="empty">まだ教材セットがありません。「一括登録」から動画・音声と字幕を選んでください。</p>'}
-    <p class="hint">このスタジオは単体で動く試作版です（データはこのアプリの中だけに保存）。後で English Labo の中に組み込み、ここで作った教材は「書き出し」→ English Labo で読み込みで移せます。</p>`;
+    <p class="hint">${HOST ? 'ここで作った教材は、教材を開いて「⋯」→「英語ラボに送る」で動画ラボに入ります。' : 'このスタジオは単体版です。教材は「⋯」→「書き出す」→ 英語ラボで読み込みで移せます。'}</p>`;
     $$('.st-fold', el).forEach((d) => d.addEventListener('toggle', () => { if (editing) return; d.open ? openF.add(d.dataset.f) : openF.delete(d.dataset.f); try { localStorage.setItem('st-openF', JSON.stringify([...openF])); } catch {} }));
     $('#eFold', el)?.addEventListener('click', () => toFolder(sets.filter((x) => chosen.has(x.id))));
     bind();
@@ -1414,7 +1421,8 @@ async function editorScreen(el, params) {
     const dlg = $('#dialog');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(set.title)}</h3>
       <button class="btn" value="ver">版（保存・復元）</button>
-      <button class="btn" value="exp">教材パックとして書き出す</button>
+      ${HOST ? '<button class="btn primary" value="send">英語ラボに送る</button>' : ''}
+      <button class="btn" value="exp">教材パックとして書き出す${HOST ? '（ファイル）' : ''}</button>
       <button class="btn" value="autotrim">前後の画面収録音を自動カット</button>
       <button class="btn" value="trim">前後をカット（手動で調整）</button>
       <button class="btn" value="asr">文字起こし（端末内・試験的）</button>
@@ -1435,6 +1443,7 @@ async function editorScreen(el, params) {
       await new Promise((r) => setTimeout(r, 60));   // Safari: let the menu finish closing before the next dialog opens
       if (v === 'ver') nav(`versions?id=${set.id}`);
       if (v === 'exp') exportSet(set);
+      if (v === 'send') sendToLab(set);
       if (v === 'asr') runAsr();
       if (v === 'words') nav(`words?id=${set.id}`);
       if (v === 'names') fixNames();
@@ -1608,6 +1617,31 @@ async function versionsScreen(el, params) {
 }
 
 // ================= export / import (material pack) =================
+// inside English Labo: put the material straight into the video lab (no file in between)
+async function buildMaterial(set) {
+  const blocks = await liveBlocks(set), srcs = await sourcesMap(), tracks = await sdb.byIndex('tracks', 'setId', set.id);
+  const media = [...new Set(blocks.flatMap((b) => b.segments.map((s) => s.sourceId)))].map((id) => srcs[id]).filter(Boolean);
+  const manifest = { format: 'elpack', formatVersion: 2, packId: newId('pk_'), materialId: set.id, title: set.title, lang: 'en', source: { app: 'Englabo Studio', appVersion: STUDIO_VERSION }, createdAt: new Date().toISOString() };
+  const material = { set: { id: set.id, title: set.title },
+    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, holes: b.holes, label: b.label })),
+    media: media.map((m) => ({ id: m.id, kind: m.kind, name: m.name, size: m.size, mime: m.mime, duration: m.duration, included: !!(m.stored ? m.blob : sessionFiles.get(m.id)) })) };
+  return { manifest, material, media, blocks, tracks };
+}
+async function sendToLab(set) {
+  if (!HOST?.sendToLab) return;
+  const { manifest, material, media, blocks } = await buildMaterial(set);
+  const n = blocks.filter((b) => b.segments.length && (b.text || b.ja)).length;
+  if (!n) return toast('音声の付いた英文の行がありません（文字起こし・照合をしてから送ってください）', 4000);
+  if (media.some((m) => !(m.stored ? m.blob : sessionFiles.get(m.id)))) return toast('動画・音声ファイルを選び直してから送ってください', 4000);
+  const wait = blocks.filter((b) => !b.segments.length && b.text).length;
+  if (!(await confirmDialog({ title: '英語ラボに送る', body: `<p>音声の付いた ${n}行を、英語ラボの動画ラボに入れます。${wait ? `（音声のないスクリプト ${wait}行は、照合が済んでから送ると入ります）` : ''}</p><p class="hint">前に送った教材なら、字幕だけ入れ替わります（学習記録は残ります）。</p>`, okLabel: '送る' }))) return;
+  try {
+    toast('送っています…', 10000);
+    const byId = Object.fromEntries(media.map((m) => [m.id, m]));
+    const id = await HOST.sendToLab(manifest, material, async (m) => { const s = byId[m.id]; return s ? (s.stored ? s.blob : sessionFiles.get(s.id)) : null; });
+    if (id) location.hash = `#video-play?id=${id}`;
+  } catch (e) { toast('送れませんでした：' + (e?.message || e), 5000); }
+}
 async function exportSet(set) {
   const blocks = await liveBlocks(set), srcs = await sourcesMap(), tracks = await sdb.byIndex('tracks', 'setId', set.id);
   const media = [...new Set(blocks.flatMap((b) => b.segments.map((s) => s.sourceId)))].map((id) => srcs[id]).filter(Boolean);

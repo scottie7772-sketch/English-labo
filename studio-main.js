@@ -12,7 +12,7 @@ import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.12.1';
+export const STUDIO_VERSION = '0.13.0';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -115,10 +115,11 @@ async function setsScreen(el) {
     ${editing ? `<div class="row wrap"><button class="btn sm" id="eAll">すべて選ぶ</button><button class="btn sm danger" id="eDel" ${chosen.size ? '' : 'disabled'}>削除（${chosen.size}）</button><button class="btn sm" id="eNone">解除</button><button class="btn sm grow" id="eFold" ${chosen.size ? '' : 'disabled'}>📁 フォルダへ</button></div>` : ''}
     ${[...folders, ''].map((f) => { const inF = sets.filter((s) => (s.folder || '') === f); if (!inF.length) return '';
       const rows = inF.map(rowHTML).join('');
-      return f ? `<details class="card st-fold" data-f="${esc(f)}" ${openF.has(f) || editing ? 'open' : ''}><summary>📁 ${esc(f)} <small class="muted">${inF.length}</small></summary><div class="list">${rows}</div></details>` : `<div class="card list">${rows}</div>`; }).join('')}` : '<p class="empty">まだ教材セットがありません。「一括登録」から動画・音声と字幕を選んでください。</p>'}
+      return f ? `<details class="card st-fold" data-f="${esc(f)}" ${openF.has(f) || editing ? 'open' : ''}><summary>📁 ${esc(f)} <small class="muted">${inF.length}</small></summary>${!editing && inF.length > 1 ? `<button class="btn sm st-fmerge" data-fmerge="${esc(f)}">🔗 このフォルダをまとめて照合（スクリプトに音声を入れる）</button>` : ''}<div class="list">${rows}</div></details>` : `<div class="card list">${rows}</div>`; }).join('')}` : '<p class="empty">まだ教材セットがありません。「一括登録」から動画・音声と字幕を選んでください。</p>'}
     <p class="hint">${HOST ? 'ここで作った教材は、教材を開いて「⋯」→「英語ラボに送る」で動画ラボに入ります。' : 'このスタジオは単体版です。教材は「⋯」→「書き出す」→ 英語ラボで読み込みで移せます。'}</p>`;
     $$('.st-fold', el).forEach((d) => d.addEventListener('toggle', () => { if (editing) return; d.open ? openF.add(d.dataset.f) : openF.delete(d.dataset.f); try { localStorage.setItem('st-openF', JSON.stringify([...openF])); } catch {} }));
     $('#eFold', el)?.addEventListener('click', () => toFolder(sets.filter((x) => chosen.has(x.id))));
+    $$('[data-fmerge]', el).forEach((b) => (b.onclick = () => mergeFolder(b.dataset.fmerge)));
     bind();
   };
   const rowHTML = (s) => {
@@ -126,6 +127,30 @@ async function setsScreen(el) {
       const info = `<span class="grow"><b>${esc(s.title)}</b> ${cutInfo[s.id] || ''}<small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${src.stored ? (src.derived === 'audio16k' ? `節約保存（${src.codec === 'wav' ? '非圧縮' : '圧縮'}・${fmtSize(src.blob?.size || 0)}）` : '端末に保存') : '保存しない'}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
       return editing ? `<label class="st-setrow"><input type="checkbox" class="st-cb" data-id="${s.id}" ${chosen.has(s.id) ? 'checked' : ''}>${info}</label>` : `<a class="st-setrow" href="#${BASE}set?id=${s.id}">${info}›</a>`;
   };
+  // folder = one material: the script (lines without sound) is the parent; the sound of the other sets goes into it and is aligned
+  async function mergeFolder(f) {
+    const inF = sets.filter((s) => (s.folder || '') === f);
+    const info = await Promise.all(inF.map(async (s) => { const bl = await liveBlocks(s); return { s, bl, script: bl.filter((b) => !b.segments.length && b.text.trim()).length + bl.filter((b) => b.aligned).length, audio: bl.filter((b) => b.segments.length && !b.aligned).length }; }));
+    const parent = info.filter((x) => x.script > 0).sort((a, b) => b.script - a.script)[0];
+    if (!parent) return toast('このフォルダに、スクリプト（音声のない英文）の教材がありません。先にスクリプトのテキストを取り込んでください', 5000);
+    const kids = info.filter((x) => x !== parent && x.audio > 0);
+    if (!kids.length) return toast('まとめる音声の教材がありません', 3000);
+    const dlg = $('#dialog');
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>📁 ${esc(f)} をまとめて照合</h3>
+      <p class="small">親（スクリプト）：<b>${esc(parent.s.title)}</b></p>
+      <p class="small">入れる音声：<br>${kids.map((k) => `・${esc(k.s.title)}（${k.audio}行）`).join('<br>')}</p>
+      <label class="chk"><input type="checkbox" id="fmDel" checked> まとめた音声の教材は一覧から消す（音声は親の教材に残ります）</label>
+      <p class="hint">まとめたあと、親の教材を開いて「文字起こし→照合」を続けて行います。文字起こし済みの音声はそのまま照合します。</p>
+      <div class="row end"><button class="btn ghost" value="cancel">やめる</button><button class="btn primary" value="ok">まとめる</button></div></form>`;
+    dlg.returnValue = ''; dlg.showModal(); await new Promise((q) => (dlg.onclose = q));
+    if (dlg.returnValue !== 'ok') return;
+    const del = $('#fmDel', dlg)?.checked;
+    const P = await sdb.get('sets', parent.s.id);
+    const copies = kids.flatMap((k) => k.bl.map((b) => { const { id, rev, setId, deleted, ...rest } = b; return newBlock(P.id, { ...structuredClone(rest), lineage: { op: 'copy', from: [`${b.id}@${b.rev}`], at: Date.now() } }); }));
+    await commit(P, `📁${f} の音声をまとめる`, { blocks: copies, order: [...P.order, ...copies.map((c) => c.id)] });
+    if (del) for (const k of kids) await deleteSet(await sdb.get('sets', k.s.id));
+    nav(`set?id=${P.id}&align=1`);
+  }
   async function toFolder(list) {
     const dlg = $('#dialog');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${list.length}セットをフォルダへ</h3>
@@ -314,6 +339,7 @@ async function importScreen(el, params) {
       catch (e) { results.push({ s, err: (e?.message || String(e)) }); }
     }
     lock?.release?.(); running(null);
+    files.media = []; files.subs = []; sets = null; listFiles();   // the next files start from empty (not mixed with these)
     prog.innerHTML = `<div class="card stack"><b>登録 ${results.filter((r) => r.id).length}セット・失敗 ${results.filter((r) => r.err).length}</b>
       ${results.map((r) => `<div class="small">${r.id ? `✓ <a class="link" href="#${BASE}set?id=${r.id}">${esc(r.s.title)}</a>` : `✕ ${esc(r.s.title)}：${esc(r.err)}`}</div>`).join('')}
       <a class="btn" href="#${BASE}sets">一覧へ</a></div>`;
@@ -1467,6 +1493,7 @@ async function editorScreen(el, params) {
   };
   if (set.sourceId) attach(set.sourceId);
   drawRelink(); drawList(); drawSub();
+  if (params.get('align') === '1') { history.replaceState(null, '', `#${BASE}set?id=${set.id}`); setTimeout(() => runAlign(), 300); }   // from 「このフォルダをまとめて照合」
 }
 
 async function deleteSet(set) {

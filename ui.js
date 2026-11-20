@@ -75,7 +75,7 @@ export function swipeToDelete(rows, onDelete, { width = 88 } = {}) {
     row.before(wrap); wrap.appendChild(row);
     const del = document.createElement('button'); del.type = 'button'; del.className = 'swdel'; del.textContent = '削除'; wrap.appendChild(del);
     let x0 = 0, y0 = 0, dx = 0, on = false, moved = false, open = false;
-    const set = (x, anim) => { row.style.transition = anim ? 'transform .18s' : 'none'; row.style.transform = x ? `translateX(${x}px)` : ''; };
+    const set = (x, anim) => { row.style.transition = anim ? 'transform .18s' : 'none'; row.style.transform = x ? `translateX(${x}px)` : ''; wrap.classList.toggle('swiping', !!x); };
     row.addEventListener('touchstart', (e) => { const t = e.touches[0]; x0 = t.clientX; y0 = t.clientY; dx = 0; on = null; moved = false; }, { passive: true });
     row.addEventListener('touchmove', (e) => {
       const t = e.touches[0], mx = t.clientX - x0, my = t.clientY - y0;

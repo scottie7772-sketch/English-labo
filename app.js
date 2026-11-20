@@ -18,7 +18,7 @@ import { storageScreen } from './storage.js';
 import { courseScreen, courseUnit, coursePuzzle } from './course.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.7.3';
+export const APP_VERSION = '1.7.4';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -208,10 +208,11 @@ screens.studio = async (el) => {
 async function render() {
   const route = screens[currentRoute()] ? currentRoute() : 'home';
   if (route !== 'studio') studioMod?.unmount();
+  document.body.classList.remove('vtyping');
   const main = $('#main');
   try { await screens[route](main, currentParams()); }
   catch (e) { main.innerHTML = `<div class="card warn">エラー: ${esc(e.message)}</div>`; console.error(e); }
-  document.body.classList.toggle('focus', ['session', 'quick-run', 'speaking-run', 'listening-run', 'lesson-run', 'game', 'course-puzzle', 'studio'].includes(route));
+  document.body.classList.toggle('focus', ['session', 'quick-run', 'speaking-run', 'listening-run', 'lesson-run', 'game', 'course-puzzle', 'studio', 'video-play'].includes(route));
   // language switch in the header of screens that depend on the learning language
   if (['home', 'vocab', 'study', 'quick', 'review', 'lesson', 'speaking', 'listening', 'games', 'course'].includes(route)) {
     const h = main.querySelector('header.top');

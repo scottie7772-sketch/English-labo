@@ -354,7 +354,8 @@ export async function videoPlay(el, params) {
       : `<video id="vid" src="${url}" playsinline webkit-playsinline preload="metadata"></video>`}</div>
     <div class="vstick"><div class="vseek" id="seek"><div class="vs-track"><i class="vs-range" id="sRange"></i><i class="vs-played" id="sPlayed"></i><i class="vs-head" id="sHead"></i></div></div>
     <div class="vs-info small"><span id="sTime">0:00.0</span><span id="sRangeTxt" class="grow center"></span><button class="link small" id="sClear" hidden>区間を解除</button></div>
-    <div class="vctl1">
+    </div>
+    <div class="vbottom"><div class="vctl1">
       <button class="btn" id="prevCue" aria-label="前の文">⏮</button>
       <button class="btn" id="back" aria-label="戻す">⟲3</button>
       <button class="btn primary" id="play" aria-label="再生">▶︎</button>
@@ -429,6 +430,9 @@ export async function videoPlay(el, params) {
     followBtn.onclick = () => { followOff = 0; followCue(cl.querySelector('.cue.cur'), true); };
   }
   const vid = parts && $('#vid', el) ? multiMedia($('#vid', el), parts) : $('#vid', el);
+  // while typing (dictation) the keyboard is up: hide the bottom buttons so they do not cover the input
+  root?.addEventListener('focusin', (e) => { if (e.target.matches('textarea, input[type=text], input:not([type])')) document.body.classList.add('vtyping'); });
+  root?.addEventListener('focusout', () => setTimeout(() => { if (!root.contains(document.activeElement) || !document.activeElement.matches('textarea, input')) document.body.classList.remove('vtyping'); }, 50));
   if (missingPart) toast('この教材の音声の一部が見つかりません（元の音声の教材が削除された可能性）', 5000);
   // every play: ask iOS for the "playback" sound session inside the tap (it can drop back after the app is reopened → no sound)
   if (vid) { const _play = vid.play.bind(vid); vid.play = () => { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} return _play(); }; }
@@ -502,6 +506,8 @@ export async function videoPlay(el, params) {
     root.style.setProperty('--fsEn', view.fsEn + 'px'); root.style.setProperty('--fsJa', view.fsJa + 'px');
     root.style.setProperty('--opEn', view.opEn); root.style.setProperty('--opJa', view.opJa);
     root.classList.toggle('jatop', view.order === 'ja');
+    root.dataset.mode = view.mode;   // the subtitle box keeps one height per mode (the screen below does not jump)
+    if (sub) requestAnimationFrame(fitSub);
     const segOn = (id, val) => $$(`#${id} button`, el).forEach((b) => b.classList.toggle('on', String(b.dataset.v) === String(val)));
     segOn('order', view.order); segOn('opEn', view.opEn); segOn('opJa', view.opJa); segOn('fsEn', view.fsEn); segOn('fsJa', view.fsJa);
     segOn('loopMax', view.loopMax); segOn('clozeUnit', view.clozeUnit); segOn('clozeAuto', view.clozeAuto ? 1 : 0);
@@ -529,6 +535,12 @@ export async function videoPlay(el, params) {
     const c = cues.find((x) => x.id === curId);
     sub.innerHTML = c ? textHTML(c, 'sub') + (view.test && revealedCue !== c.id ? '<span class="subhint">タップで字幕を表示</span>' : '') : '';
     sub.classList.toggle('empty', !sub.innerHTML);
+    fitSub();
+  }
+  // the box keeps its height; a long sentence gets smaller letters instead of scrolling
+  function fitSub() {
+    let f = 1; sub.style.setProperty('--fit', 1);
+    while (sub.scrollHeight > sub.clientHeight + 1 && f > 0.55) { f -= 0.07; sub.style.setProperty('--fit', f.toFixed(2)); }
   }
   function drawList() {
     if (!cues.length) { cl.innerHTML = `<div class="card stack"><p class="small muted">字幕がまだありません。上の「字幕を作る・読み込む」から作成・読み込みできます。</p></div>`; return; }

@@ -245,6 +245,14 @@ export async function videoPlay(el, params) {
   const root = $('#vroot', el), vid = $('#vid', el), sub = $('#sub', el), cl = $('#cl', el);
   const pic = $('#vpic', el);
   if (vid && pic) {   // picture follows the sound
+    vid.addEventListener('error', async () => {
+      const { readable } = await import('./media-audio.js');
+      if (await readable(v.audioBlob)) return;
+      const cur = await db.get('videos', v.id); if (!cur) return;
+      delete cur.audioBlob; cur.audioChecked = false; await db.put('videos', cur);
+      if (await readable(cur.blob)) { toast('音声を作り直しています…', 3000); videoPlay(el, params); }
+      else if (await confirmDialog({ title: '動画データが読めません', body: '<p>保存していた動画データが読めなくなっています。字幕・穴埋め・学習記録はそのまま残っています。</p>', okLabel: '動画を選び直す', cancelLabel: '閉じる' })) relinkVideo();
+    });
     vid.addEventListener('play', () => pic.play().catch(() => {}));
     vid.addEventListener('pause', () => pic.pause());
     vid.addEventListener('ratechange', () => (pic.playbackRate = vid.playbackRate));

@@ -9,7 +9,7 @@ import { decodeTo16k, openTranscriber, speechPieces, captureTo16k } from './asr.
 import { extractPhrases, extractWords } from './studio-words.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 
-export const STUDIO_VERSION = '0.6.3';
+export const STUDIO_VERSION = '0.6.4';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -330,7 +330,7 @@ async function hardTrim(srcId, a, b, say = () => {}) {
   const at = info ? audioTracks(info) : [];
   const t = at.find((x) => x.id === src.audio?.trackId) || at[src.audio?.index ?? 0];
   if (t && canExtract(t) && (src.kind === 'audio' || src.derived === 'audio16k')) {   // sound file: cut without re-encoding
-    say('カット部分を削っています…'); const x = await extractTrack(src.blob, t, a, b); blob = new File([x.blob], src.name.replace(/\.[^.]+$/, '') + '.m4a', { type: 'audio/mp4' }); start = x.start;
+    say('カット部分を削っています…'); const x = await extractTrack(src.blob, t, a, b); blob = new File([await x.blob.arrayBuffer()], src.name.replace(/\.[^.]+$/, '') + '.m4a', { type: 'audio/mp4' }); start = x.start;
   } else {   // video or other format: keep only the sound of [a, b] (same as the data saver)
     say('音声だけにして削っています…');
     const full = await sourceAudio16k(src, src.blob, { say });
@@ -476,7 +476,7 @@ async function shrinkAudio({ audio, duration }, name, isVideo, say = () => {}) {
   say('小さくしています…');
   const a = localStorage.getItem('st-noaac2') ? null : await withTimeout(aac16(audio).catch(() => null), 15000 + duration * 300);
   if (!a && typeof AudioEncoder !== 'undefined') try { localStorage.setItem('st-noaac2', '1'); } catch {}   // do not try again on this device
-  if (a) { const f = new File([a], name.replace(/\.[^.]+$/, '') + '.m4a', { type: 'audio/mp4' }); const m = await readDuration(f); if (m.playable && m.duration && Math.abs(m.duration - duration) < Math.max(2, duration * 0.03)) return { file: f, duration, codec: 'm4a' }; }
+  if (a) { const f = new File([await a.arrayBuffer()], name.replace(/\.[^.]+$/, '') + '.m4a', { type: 'audio/mp4' }); const m = await readDuration(f); if (m.playable && m.duration && Math.abs(m.duration - duration) < Math.max(2, duration * 0.03)) return { file: f, duration, codec: 'm4a' }; }
   if (isVideo) return { file: new File([wav16(audio)], name.replace(/\.[^.]+$/, '') + '.wav', { type: 'audio/wav' }), duration, codec: 'wav' };
   return null;
 }

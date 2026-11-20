@@ -23,7 +23,8 @@ export async function separateSpeechTrack(blob, name = '', onStep = () => {}) {
   const t = r.chosen || at[0]; if (!canExtract(t)) return null;
   onStep('選んだ音声を取り出しています…');
   const x = await extractTrack(blob, t);
-  return { file: new File([x.blob], (name || 'audio').replace(/\.[^.]+$/, '') + '.m4a', { type: 'audio/mp4' }), index: at.indexOf(t), count: at.length, reason: r.reason, auto: r.auto };
+  // stored as one plain byte array (not a Blob built from other blobs/views), the form that stays readable after reopening
+  return { file: new File([await x.blob.arrayBuffer()], (name || 'audio').replace(/\.[^.]+$/, '') + '.m4a', { type: 'audio/mp4' }), index: at.indexOf(t), count: at.length, reason: r.reason, auto: r.auto };
 }
 export async function readable(blob) {
   if (!blob) return false;

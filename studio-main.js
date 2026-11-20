@@ -5,12 +5,12 @@ import { sdb, newId, commit, undo, redo, saveVersion, restoreVersion, liveBlocks
 import { parseScript, SUB_EXT, isJa, langFromName, autoPair, alignJa } from './studio-subs.js';
 import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
-import { decodeTo16k, openTranscriber, speechPieces, captureTo16k, QUALITY } from './asr.js';
+import { decodeTo16k, openTranscriber, speechPieces, captureTo16k, QUALITY, recognisePiece } from './asr.js';
 import { extractPhrases, extractWords } from './studio-words.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.6.9';
+export const STUDIO_VERSION = '0.7.2';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -841,7 +841,7 @@ async function editorScreen(el, params) {
       <p class="hint">・最初の1回だけモデルをダウンロードします（無料・Wi-Fi推奨）。音声は外部に送りません。<br>・無音の部分は飛ばし、話している部分を少しずつ処理して、終わった分から保存します。止まっても、もう一度実行すると続きから。<br>・画面は開いたままにしてください。結果は自動の下書きです。</p>`, okLabel: '始める' }))) return;
     const quality = $('#dialog input[name=asrq]:checked')?.value || 'acc';
     try { localStorage.setItem('st-asrq2', quality); } catch {}
-    let cancelled = false, done = 0, lines = 0, speed = 0; const speedSamples = [], noSpeech = [], rawAll = [];
+    let cancelled = false, done = 0, lines = 0, speed = 0; const speedSamples = [], noSpeech = [], rawAll = []; let emptyPieces = 0;
     const dlg = $('#dialog');
     await new Promise((r) => setTimeout(r, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>文字起こし中</h3><p class="small" id="asrMsg">準備しています…</p><div class="st-meter"><i id="asrBar" style="width:0%"></i><span id="asrPct">0%</span></div><p class="small muted" id="asrDone"></p><div id="asrCap"></div><button class="btn ghost" value="cancel">中止（ここまでは保存済み）</button></form>`;
@@ -849,7 +849,7 @@ async function editorScreen(el, params) {
     const msg = (t) => { const m = $('#asrMsg', dlg); if (m) m.textContent = t; };
     const bar = () => { const pr = total ? done / total : 0; const b = $('#asrBar', dlg); if (b) { b.style.width = `${pr * 100}%`; $('#asrPct', dlg).textContent = `${Math.round(pr * 100)}%`; } };
     const lock = await navigator.wakeLock?.request?.('screen').catch(() => null);
-    let tr = null; running(`文字起こし（${set.title}）`);
+    let tr = null; running(`文字起こし（${set.title}）`); crumb(`精度：${quality}`);
     try {
       tr = openTranscriber('en', msg, { quality });
       for (const [sid, ids] of bySrc) {
@@ -862,7 +862,7 @@ async function editorScreen(el, params) {
         highPass(audio);   // low rumble / hum makes recognition worse
         for (const bid of ids) {
           const b0 = byId[bid]; const sg = b0.segments[0];
-          const pieces = speechPieces(audio, sg.start, sg.end, { len: 45 });
+          const pieces = speechPieces(audio, sg.start, sg.end, { len: 25 });   // ≤ one 30 s recognition window: longer pieces lost their tail
           const skipped = (sg.end - sg.start) - pieces.reduce((a, [x, y]) => a + y - x, 0);
           if (!pieces.length) { done += sg.end - sg.start; bar(); noSpeech.push(src.name); continue; }
           for (let pi = 0; pi < pieces.length; pi++) {
@@ -872,22 +872,23 @@ async function editorScreen(el, params) {
             const t0 = Date.now(), lbl = `${src.name}：${fmt(ps0)}〜${fmt(pe0)}`;
             msg(`${lbl} を文字起こし中…`); crumb(`文字起こし ${lbl}`);
             const tick = setInterval(() => msg(`${lbl} を文字起こし中…（${Math.round((Date.now() - t0) / 1000)}秒）${speed ? `・残り目安 ${fmtMin(Math.max(0, (total - done) / speed))}` : ''}`), 1000);
-            const piece = audio.slice(Math.floor(ps0 * 16000), Math.floor(pe0 * 16000));
-            let cues; try { cues = await tr.run(piece); } finally { clearInterval(tick); }
-            crumb(`認識結果（${cues.length}行・${Math.round((Date.now() - t0) / 1000)}秒）：${(cues.raw || '').slice(0, 80) || '（空）'}`); rawAll.push(cues.raw || '');
+            let cues; try { cues = await recognisePiece(tr, audio, ps0, pe0, { onRetry: (m) => { msg(`${lbl}：${m}`); crumb(m); } }); } finally { clearInterval(tick); }
+            crumb(`認識結果（${cues.length}行・${Math.round((Date.now() - t0) / 1000)}秒・${cues.how}）：${(cues.raw || '').slice(0, 80) || '（空）'}`); rawAll.push(cues.raw || '');
             speedSamples.push([pe - ps, (Date.now() - t0) / 1000]); speed = speedSamples.reduce((a, x) => a + x[0], 0) / speedSamples.reduce((a, x) => a + x[1], 0);
             if (cancelled) break;
             const b = byId[bid];   // latest revision (its start moves forward)
-            const parts = cues.map((c) => ({ s: ps0 + c.start, e: Math.min(pe0, ps0 + c.end), text: c.text })).filter((c) => c.e - c.s > 0.05)
-              .map((c, i) => newBlock(set.id, { segments: [{ sourceId: sid, start: +c.s.toFixed(2), end: +c.e.toFixed(2) }], text: c.text, ja: '', sync: 'auto', asr: true,
+            const parts = cues.map((c) => ({ s: c.start, e: c.end, text: c.text, est: c.est }))
+              .map((c, i) => newBlock(set.id, { segments: [{ sourceId: sid, start: +c.s.toFixed(2), end: +c.e.toFixed(2) }], text: c.text, ja: '', sync: c.est ? 'estimated' : 'auto', asr: true,
                 ...(i === 0 && b.label && b.segments[0].start === sg.start ? { label: b.label } : {}), lineage: { op: 'split', from: [`${b.id}@${b.rev}`], at: Date.now() },
                 align: tokensOf(c.text).length ? [{ s: 0, e: tokensOf(c.text).length - 1, v0: 0, v1: +(c.e - c.s).toFixed(2) }] : [] }));
+            // nothing recognised in this piece: keep it as an empty item (visible, and re-run picks it up again)
+            if (!parts.length) { parts.push(newBlock(set.id, { segments: [{ sourceId: sid, start: +ps0.toFixed(2), end: +pe0.toFixed(2) }], text: '', ja: '', label: '（文字にできなかった部分・もう一度実行できます）', sync: 'auto', lineage: { op: 'split', from: [`${b.id}@${b.rev}`], at: Date.now() } })); emptyPieces++; }
             const rest = pe < sg.end - 0.5 ? { ...b, segments: [{ ...b.segments[0], start: +pe.toFixed(2) }], align: [] } : { ...b, deleted: true };
             const order = set.order.slice(); const at = order.indexOf(b.id);
             order.splice(at, rest.deleted ? 1 : 0, ...parts.map((x) => x.id));
             await commit(set, `文字起こし ${fmt(ps)}〜${fmt(pe)}`, { blocks: [...parts, rest], order }, srcs);
             await reload(); drawList();
-            done += pe - ps; lines += parts.length; bar();
+            done += pe - ps; lines += parts.filter((x) => x.text).length; bar();
             const dd = $('#asrDone', dlg); if (dd) dd.textContent = `保存済み：${lines}行`;
           }
           if (cancelled) break;
@@ -900,7 +901,7 @@ async function editorScreen(el, params) {
     running(null); lock?.release?.(); tr?.close(); const wasCancelled = cancelled; if (dlg.open) { dlg.onclose = null; dlg.close(); }
     if (!lines) return wasCancelled ? toast('中止しました') : confirmDialog({ title: '文字にできませんでした', body: noSpeech.length ? `<p class="small">${noSpeech.map(esc).join('<br>')}</p><p>音声が見つかりませんでした（無音のまま取り出された可能性）。編集した動画は音声を取り出せないことがあります。写真アプリで「ビデオを複製」または「ファイルに保存」で書き出したものを取り込み直してください。</p>` : `<p>音声認識は動きましたが、文字にできる英語がありませんでした。</p><p class="small">認識された内容：${esc(rawAll.join(' ').trim().slice(0, 200) || '（何も認識されませんでした）')}</p><p class="hint">［Music］のような表示だけなら、音楽や効果音と判定されています。何も認識されない場合は、音声が英語として聞き取れていません。</p>`, okLabel: '閉じる', cancelLabel: null });
     const ok = await confirmDialog({ title: wasCancelled ? `${lines}行で中止しました` : `文字起こしが終わりました（${lines}行）`,
-      body: `<p>結果は、この画面の一覧（動画の下）に「自動起こし」の印つきで並んでいます。行をタップすると、その部分を再生します。✎で直せます。</p>${wasCancelled ? '<p class="hint">もう一度実行すると続きから始まります。</p>' : ''}<p class="hint">テキストだけ使いたいときは「⋯」→「テキストを書き出す」。単語帳に入れるときは「⋯」→「単語リストを作る」。</p>`,
+      body: `<p>結果は、この画面の一覧（動画の下）に「自動起こし」の印つきで並んでいます。行をタップすると、その部分を再生します。✎で直せます。</p>${wasCancelled ? '<p class="hint">もう一度実行すると続きから始まります。</p>' : ''}${emptyPieces ? `<p class="warn-text small">${emptyPieces}か所は文字にできませんでした（一覧に「文字にできなかった部分」として残しています）。「標準」「最高」の精度で、もう一度「文字起こし」を実行すると、その部分だけやり直します。</p>` : ''}<p class="hint">テキストだけ使いたいときは「⋯」→「テキストを書き出す」。単語帳に入れるときは「⋯」→「単語リストを作る」。</p>`,
       okLabel: '英文をコピー', cancelLabel: '閉じる' });
     if (ok) { try { await navigator.clipboard.writeText(blocks.map((b) => b.text).filter(Boolean).join('\n')); toast('コピーしました'); } catch { toast('コピーできませんでした'); } }
   }

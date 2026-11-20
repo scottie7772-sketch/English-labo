@@ -2,10 +2,10 @@
 // Whisper runs in the browser through Transformers.js (loaded from a public CDN; the model is downloaded once and cached).
 // Audio never leaves the device. No API key, no server.
 const TF_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1';
-const MODELS = { en: 'onnx-community/whisper-base.en', multi: 'onnx-community/whisper-base', enFast: 'onnx-community/whisper-tiny.en', multiFast: 'onnx-community/whisper-tiny', enBest: 'Xenova/whisper-small.en', multiBest: 'Xenova/whisper-small' };
+const MODELS = { en: 'onnx-community/whisper-base.en', multi: 'onnx-community/whisper-base', enFast: 'onnx-community/whisper-tiny.en', multiFast: 'onnx-community/whisper-tiny', enBest: 'Xenova/whisper-small.en', multiBest: 'Xenova/whisper-small', enHigh: 'onnx-community/distil-small.en', multiHigh: 'onnx-community/whisper-small' };
 // quality: 'fast' (tiny ~40 MB) / 'acc' (base ~80 MB, default) / 'best' (small ~250 MB, slow, experimental)
-export const QUALITY = { fast: '速さ優先（約40MB・精度は低め）', acc: '標準（約80MB）', best: '最高精度（約250MB・2〜3倍遅い・試験的）' };
-const modelFor = (lang, q) => { const k = q === 'fast' ? 'Fast' : q === 'best' ? 'Best' : ''; return lang === 'en' ? MODELS['en' + k] : MODELS['multi' + k]; };
+export const QUALITY = { fast: '速さ優先（約40MB・精度は低め）', acc: '標準（約80MB）', high: '高精度（約170MB・標準の1.5〜2倍の時間・最高精度より軽い）', best: '最高精度（約250MB・iPhoneでは途中で止まることがあります）' };
+const modelFor = (lang, q) => { const k = q === 'fast' ? 'Fast' : q === 'best' ? 'Best' : q === 'high' ? 'High' : ''; return lang === 'en' ? MODELS['en' + k] : MODELS['multi' + k]; };
 const LANG_NAME = { es: 'spanish', 'zh-TW': 'chinese', 'zh-CN': 'chinese' };
 
 const WORKER_SRC = `
@@ -13,7 +13,7 @@ import { pipeline, env } from '${TF_URL}';
 env.allowLocalModels = false;
 let asr = null, asrModel = null;
 self.onmessage = async (e) => {
-  const { audio, model, language } = e.data;
+  const { audio, model, language, ts = true } = e.data;
   let lastErr = null;
   if (asr && asrModel !== model) asr = null;
   if (!asr) for (const device of e.data.devices) {
@@ -29,7 +29,7 @@ self.onmessage = async (e) => {
   if (!asr) { self.postMessage({ type: 'error', message: String(lastErr?.message || lastErr) }); return; }
   try {
     self.postMessage({ type: 'run' });
-    const out = await asr(audio, { chunk_length_s: 30, stride_length_s: 5, return_timestamps: true, ...(language ? { language, task: 'transcribe' } : {}) });
+    const out = await asr(audio, { chunk_length_s: 30, stride_length_s: 5, return_timestamps: ts, ...(language && !/\.en$/.test(model) ? { language, task: 'transcribe' } : {}) });
     self.postMessage({ type: 'done', chunks: out.chunks || [], text: out.text || '' });
   } catch (err) { self.postMessage({ type: 'error', message: String(err?.message || err) }); }
 };`;
@@ -129,9 +129,9 @@ export function openTranscriber(lang = 'en', onProgress = () => {}, { fast, qual
     else if (m.type === 'error') { pending?.reject(new Error(m.message)); pending = null; }
   };
   return {
-    run(audio) {
+    run(audio, { timestamps = true } = {}) {
       const duration = audio.length / 16000;
-      return new Promise((resolve, reject) => { pending = { resolve, reject, duration }; worker.postMessage({ audio, model, language: LANG_NAME[lang] || null, devices }, [audio.buffer]); });
+      return new Promise((resolve, reject) => { pending = { resolve, reject, duration }; worker.postMessage({ audio, model, language: LANG_NAME[lang] || null, devices, ts: timestamps }, [audio.buffer]); });
     },
     close() { worker.terminate(); pending?.resolve([]); pending = null; },
   };
@@ -139,7 +139,7 @@ export function openTranscriber(lang = 'en', onProgress = () => {}, { fast, qual
 // split [a, b] seconds of 16 kHz audio into pieces of about `len` seconds, cutting at the quietest point near each boundary
 export function pieceRanges(audio, a, b, len = 120) {
   const out = []; let s = a;
-  while (b - s > len * 1.3) {
+  while (b - s > Math.min(len * 1.3, 29)) {
     const target = s + len, F = 320, w = Math.min(6, len * 0.25); let best = target, bestE = Infinity;
     for (let t = target - w; t <= target + w; t += 0.02) {
       const i0 = Math.floor(t * 16000); if (i0 < 0 || i0 + F > audio.length) continue;
@@ -153,12 +153,12 @@ export function pieceRanges(audio, a, b, len = 120) {
 }
 
 // speech parts of [a, b]: long silences (> gap s) are skipped, parts are grouped into pieces of at most `len` s
-export function speechPieces(audio, a, b, { len = 60, gap = 1.2 } = {}) {
+export function speechPieces(audio, a, b, { len = 25, gap = 1.6 } = {}) {
   const F = 320, i0 = Math.floor(a * 16000), i1 = Math.min(audio.length, Math.floor(b * 16000));
   const rms = []; for (let i = i0; i + F <= i1; i += F) { let x = 0; for (let k = 0; k < F; k++) x += audio[i + k] * audio[i + k]; rms.push(Math.sqrt(x / F)); }
   if (!rms.length) return [[a, b]];
   const sorted = rms.slice().sort((x, y) => x - y);
-  const th = Math.max(sorted[Math.floor(sorted.length * 0.1)] * 3, sorted[Math.floor(sorted.length * 0.9)] * 0.08, 0.004);
+  const th = Math.max(Math.min(sorted[Math.floor(sorted.length * 0.1)] * 3, sorted[Math.floor(sorted.length * 0.9)] * 0.2), sorted[Math.floor(sorted.length * 0.9)] * 0.04, 0.002);   // conservative: quiet speech must not be skipped
   const regs = []; let st = -1, last = -1;
   rms.forEach((v, k) => { if (v >= th) { if (st < 0) st = k; last = k; } else if (st >= 0 && (k - last) * 0.02 > gap) { regs.push([st, last]); st = -1; } });
   if (st >= 0) regs.push([st, last]);
@@ -168,7 +168,7 @@ export function speechPieces(audio, a, b, { len = 60, gap = 1.2 } = {}) {
     let s = Math.max(a, t(s0) - 0.3); const e = Math.min(b, t(e0 + 1) + 0.3);
     const prev = out[out.length - 1];
     if (prev && e - prev[0] <= len && s - prev[1] < gap) { prev[1] = e; continue; }
-    if (e - s > len * 1.3) out.push(...pieceRanges(audio, s, e, len));   // long speech without pauses: cut at the quietest points
+    if (e - s > Math.min(len * 1.3, 29)) out.push(...pieceRanges(audio, s, e, len));   // keep every piece inside one 30 s window   // long speech without pauses: cut at the quietest points
     else out.push([s, e]);
   }
   return out.length ? out : [];
@@ -212,4 +212,27 @@ export function captureTo16k(blob, { rate = 2, onProgress = () => {}, trackIndex
     ac.resume?.(); v.play().catch((e) => fail('再生を始められませんでした：' + (e?.name || e)));
   }
   return { startNow, done };
+}
+
+// Whisper sometimes returns nothing for a piece that starts in the middle of narration over music.
+// Retry: (1) ~8 s sub-pieces cut at quiet points, (2) the whole piece without time stamps (time spread by length).
+export async function recognisePiece(tr, audio, ps, pe, { onRetry = () => {} } = {}) {
+  const cut = (a, b) => audio.slice(Math.floor(a * 16000), Math.floor(b * 16000));
+  const abs = (cues, a, b) => cues.map((c) => ({ start: +(a + c.start).toFixed(2), end: +Math.min(b, a + c.end).toFixed(2), text: c.text })).filter((c) => c.end - c.start > 0.05);
+  let cues = await tr.run(cut(ps, pe)); const raw = [cues.raw || ''];
+  if (cues.length) return Object.assign(abs(cues, ps, pe), { raw: raw.join(' '), how: '通常' });
+  if (pe - ps > 10) {
+    onRetry('短く区切ってやり直しています…');
+    const out = [];
+    for (const [a, b] of pieceRanges(audio, ps, pe, 8)) { const c = await tr.run(cut(a, b)); raw.push(c.raw || ''); out.push(...abs(c, a, b)); }
+    if (out.length) return Object.assign(out, { raw: raw.join(' '), how: '短く区切って再試行' });
+  }
+  onRetry('時刻なしでやり直しています…');
+  const c2 = await tr.run(cut(ps, pe), { timestamps: false }); raw.push(c2.raw || '');
+  const text = (c2.raw || c2.map((x) => x.text).join(' ')).trim();
+  if (!text) return Object.assign([], { raw: raw.join(' ').trim(), how: '空' });
+  const parts = text.match(/[^.!?]+[.!?]+["”’)]?|[^.!?]+$/g)?.map((x) => x.trim()).filter(Boolean) || [text];
+  const total = parts.reduce((a, b) => a + b.length, 0); let t = ps; const out = [];
+  for (const p of parts) { const d = ((pe - ps) * p.length) / total; out.push({ start: +t.toFixed(2), end: +(t + d).toFixed(2), text: p, est: true }); t += d; }
+  return Object.assign(out, { raw: raw.join(' '), how: '時刻なしで再試行（時刻は推定）' });
 }

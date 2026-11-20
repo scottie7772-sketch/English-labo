@@ -1,6 +1,6 @@
 // Phase 6: Video Lab (local videos + SRT/VTT subtitles + word registration linked to video position)
 import { db, uid, getSetting, setSetting } from './db.js';
-import { $, $$, esc, toast, confirmDialog, go } from './ui.js';
+import { $, $$, esc, toast, confirmDialog, go, swipeToDelete } from './ui.js';
 import { icon } from './icons.js';
 import { L, curLang, langAttr } from './langs.js';
 import { pickWordsDialog } from './pick.js';
@@ -168,8 +168,10 @@ export async function videoList(el) {
     <label class="btn sm" for="vfile" style="margin-top:4px">動画をそのまま追加（字幕ファイルがある場合など）</label>
     <input type="file" id="vfile" accept="video/*" hidden>
     <p class="hint" style="margin-top:6px">30秒〜5分程度の動画向け。動画はこのiPhoneの中だけに保存され、外部には送信されません。JSONバックアップに動画本体は含まれません（字幕は含まれます）。</p>
+    <div id="vlbar"></div>
     <div id="vl">${vids.map((v) => `
-      <a class="card vrow" href="#video-play?id=${v.id}">
+      <a class="card vrow" href="#video-play?id=${v.id}" data-id="${v.id}">
+        <span class="vsel" hidden><input type="checkbox" data-pick="${v.id}"></span>
         <span class="vic">${icon('video', 26)}</span>
         <span class="grow"><b>${esc(v.name)}</b><span class="tagp">${esc(L(v.lang || 'en').short)}</span><span class="small muted block">${v.duration ? fmtT(v.duration).replace(/\.\d$/, '') : ''}・${fmtSize(v.size || 0)}・字幕 ${cueCount[v.id] || 0}行${v.hasBlob ? '' : '・<span class="danger-text">動画ファイルなし</span>'}</span></span>
         <span class="muted">›</span>
@@ -182,6 +184,37 @@ export async function videoList(el) {
         <p><b>別途費用が必要</b>：翻訳をボタン一つで全自動にする場合（API料金）。このアプリでは使っていません。</p>
         <p>字幕付きの教材なら、その字幕ファイル（.srt / .vtt）を使うのが一番確実です。</p>
       </div></details>`;
+  // delete: swipe a row to the left, or 選ぶ → すべて選ぶ / 削除
+  let picking = false; const picked = new Set();
+  const drawBar = () => {
+    const bar = $('#vlbar', el); if (!vids.length) { bar.innerHTML = ''; return; }
+    bar.innerHTML = picking
+      ? `<div class="row" style="margin:10px 0 6px"><button class="btn sm" id="vAll">${picked.size === vids.length ? 'すべて外す' : 'すべて選ぶ'}</button><button class="btn sm danger" id="vDel" ${picked.size ? '' : 'disabled'}>削除（${picked.size}）</button><span class="grow"></span><button class="btn sm" id="vDone">完了</button></div>`
+      : `<div class="row" style="margin:10px 0 6px"><span class="grow small muted">${vids.length}本・左にスワイプで削除</span><button class="btn sm" id="vPick">選ぶ</button></div>`;
+    $('#vPick', bar)?.addEventListener('click', () => { picking = true; drawRows(); });
+    $('#vDone', bar)?.addEventListener('click', () => { picking = false; picked.clear(); drawRows(); });
+    $('#vAll', bar)?.addEventListener('click', () => { if (picked.size === vids.length) picked.clear(); else vids.forEach((v) => picked.add(v.id)); drawRows(); });
+    $('#vDel', bar)?.addEventListener('click', async () => { if (await removeVideos([...picked])) videoList(el); });
+  };
+  const drawRows = () => {
+    $$('#vl .vrow', el).forEach((a) => { a.querySelector('.vsel').hidden = !picking; const cb = a.querySelector('[data-pick]'); cb.checked = picked.has(a.dataset.id); });
+    drawBar();
+  };
+  async function removeVideos(ids) {
+    if (!ids.length) return false;
+    const names = vids.filter((v) => ids.includes(v.id)).map((v) => v.name);
+    if (!(await confirmDialog({ title: `${ids.length}件を削除`, body: `<p>${names.slice(0, 8).map(esc).join('<br>')}${names.length > 8 ? `<br>ほか${names.length - 8}件` : ''}</p><p class="hint">動画・音声と字幕・穴埋めを消します（元に戻せません）。この動画から登録した単語は残ります。</p>`, okLabel: '削除', danger: true }))) return false;
+    const cues = (await db.all('cues')).filter((c) => ids.includes(c.videoId));
+    await db.tx(['videos', 'vblobs', 'cues'], 'readwrite', (t) => { for (const id of ids) { t.objectStore('videos').delete(id); t.objectStore('vblobs').delete(id); } cues.forEach((c) => t.objectStore('cues').delete(c.id)); });
+    toast(`${ids.length}件を削除しました`); return true;
+  }
+  $('#vl', el).addEventListener('click', (e) => {
+    if (!picking) return;
+    const a = e.target.closest('.vrow'); if (!a) return;
+    e.preventDefault(); const id = a.dataset.id; picked.has(id) ? picked.delete(id) : picked.add(id); drawRows();
+  });
+  swipeToDelete($$('#vl .vrow', el), async (row) => { if (picking) return false; const ok = await removeVideos([row.dataset.id]); if (ok) videoList(el); return ok; });
+  drawBar();
   // material pack from the studio: its sound/video + subtitles (EN/JA) + hidden words become a video lab entry
   $('#vpack', el).onchange = async (e) => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;

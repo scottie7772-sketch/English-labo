@@ -923,3 +923,11 @@ input, select, textarea { font-size: max(16px, 1em); }
 .vp-root .subbox { background: #000; border-color: #000; color: #fff; }
 .vp-root .subbox .sja { color: rgba(255, 255, 255, .78); }
 .vp-root .subbox.empty, .vp-root .subbox .muted { color: rgba(255, 255, 255, .5); }
+/* swipe to delete */
+.swrap { position: relative; overflow: hidden; border-radius: 14px; }
+.swrap > :first-child { position: relative; z-index: 1; background: var(--surface); }
+.swdel { position: absolute; top: 0; right: 0; bottom: 0; width: 88px; border: 0; background: #d64545; color: #fff; font-weight: 700; font-size: 15px; border-radius: 0 14px 14px 0; }
+.swrap + .swrap { margin-top: 8px; }
+.swrap > .card { margin: 0; }
+.vsel { display: flex; align-items: center; gap: 10px; }
+.vsel input { width: 22px; height: 22px; flex: 0 0 auto; }

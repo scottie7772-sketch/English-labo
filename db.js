@@ -1,6 +1,6 @@
 // IndexedDB wrapper + schema migrations
 export const DB_NAME = 'ell-db';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 // store name -> { keyPath, autoIncrement, indexes: [[name, keyPath, opts]] }
 export const STORES = {
@@ -15,6 +15,7 @@ export const STORES = {
   listening:      { keyPath: 'id' },
   speaking:       { keyPath: 'id' },
   videos:         { keyPath: 'id' },
+  vblobs:         { keyPath: 'id' },   // video/audio files, one record per video, written once (v2)
   cues:           { keyPath: 'id', indexes: [['videoId', 'videoId']] },
   imports:        { keyPath: 'id' },
   settings:       { keyPath: 'key' },
@@ -30,6 +31,9 @@ const MIGRATIONS = {
       for (const [iname, kp, opts] of def.indexes || []) os.createIndex(iname, kp, opts || {});
     }
   },
+  // v2: media files get their own store. On iPhone, putting a file that was read from the database back into it
+  // (e.g. saving the play position together with the video) can make it unreadable after the app is reopened.
+  2: (db) => { if (!db.objectStoreNames.contains('vblobs')) db.createObjectStore('vblobs', { keyPath: 'id' }); },
 };
 
 let dbPromise = null;

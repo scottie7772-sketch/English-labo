@@ -3,10 +3,11 @@ import { effLevel } from './mastery.js';
 
 export const APP_ID = 'english-learning-lab';
 const EXCLUDE_FIELDS = { videos: ['blob', 'audioBlob'] }; // video files are too large for JSON
+const SKIP_STORES = new Set(['vblobs']);   // media files: not in the JSON, and never cleared by a restore
 
 export async function buildBackup() {
   const data = {};
-  for (const name of Object.keys(STORES)) {
+  for (const name of Object.keys(STORES).filter((n) => !SKIP_STORES.has(n))) {
     let rows = await db.all(name);
     const ex = EXCLUDE_FIELDS[name];
     if (ex) rows = rows.map((r) => { const c = { ...r }; ex.forEach((f) => delete c[f]); return c; });
@@ -42,7 +43,7 @@ function upgradeBackup(b) { return b; }
 
 export async function restoreBackup(backup) {
   const b = upgradeBackup(backup);
-  const names = Object.keys(STORES);
+  const names = Object.keys(STORES).filter((n) => !SKIP_STORES.has(n));
   // keep existing video blobs if the same id exists (JSON has no blobs)
   const existingVideos = new Map((await db.all('videos')).map((v) => [v.id, v]));
   await db.tx(names, 'readwrite', (t) => {
@@ -50,7 +51,7 @@ export async function restoreBackup(backup) {
       const os = t.objectStore(name);
       os.clear();
       for (const row of b.data[name] || []) {
-        if (name === 'videos' && existingVideos.has(row.id)) { const old = existingVideos.get(row.id); row.blob = old.blob; if (old.audioBlob) row.audioBlob = old.audioBlob; }
+        if (name === 'videos' && existingVideos.has(row.id)) { const old = existingVideos.get(row.id); if (old.blob) row.blob = old.blob; if (old.audioBlob) row.audioBlob = old.audioBlob; }   // (older records only; files are in 'vblobs')
         os.put(row);
       }
     }

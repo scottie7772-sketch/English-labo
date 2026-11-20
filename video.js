@@ -57,9 +57,30 @@ async function replaceCues(videoId, cues) {
   const old = await db.byIndex('cues', 'videoId', videoId);
   await db.tx(['cues'], 'readwrite', (t) => { const os = t.objectStore('cues'); old.forEach((c) => os.delete(c.id)); cues.forEach((c) => os.put(c)); });
 }
+// ---- media files live in their own store ('vblobs') and are written once ----
+// (iPhone: putting a file that was read from the database back into it — e.g. with the play position — made it unreadable after reopening)
+export async function videoBlob(v) { if (!v) return null; return (await db.get('vblobs', v.id))?.blob || v.blob || null; }
+async function putVideoBlob(id, blob) { await db.put('vblobs', { id, blob, size: blob.size, at: Date.now() }); }
+// save the video record without its file (never puts a file read from the database back)
+async function saveVideoMeta(rec) {
+  const { blob, audioBlob, ...m } = rec;
+  if (blob && !(await db.get('vblobs', rec.id))) m.blob = blob;   // older record not moved yet: left as it was
+  await db.put('videos', m);
+}
+// older records: move the file into its own store once (only while it is still readable)
+async function migrateBlob(v) {
+  if (!v?.blob) return v;
+  const { blob, audioBlob, ...m } = v;
+  if (await db.get('vblobs', v.id)) { await db.put('videos', m); return m; }
+  const { readable, copyBlob } = await import('./media-audio.js');
+  if (!(await readable(blob))) return v;   // already unreadable: the "choose again" dialog handles it
+  const fresh = await copyBlob(blob, () => {}, { name: v.name, type: v.mime || blob.type });
+  await putVideoBlob(v.id, fresh); await db.put('videos', m); return m;
+}
 // lightweight video list without loading blobs into the page
 async function videoMetas() {
-  return (await db.all('videos')).map(({ blob, ...m }) => ({ ...m, hasBlob: !!blob })).sort((a, b) => b.createdAt - a.createdAt);
+  const files = new Set((await db.all('vblobs')).map((x) => x.id));
+  return (await db.all('videos')).map(({ blob, ...m }) => ({ ...m, hasBlob: !!blob || files.has(m.id) })).sort((a, b) => b.createdAt - a.createdAt);
 }
 export async function videoNames() { return Object.fromEntries((await videoMetas()).map((v) => [v.id, v])); }
 
@@ -120,13 +141,13 @@ export async function videoList(el) {
       for (const { m, old } of plan) {
         if (!old && !m.included) continue;
         toast('取り込み中…', 10000);
-        let v;
+        let v, freshBlob = null;
         if (old) {
           v = await db.get('videos', old.id);
           if (m.included && m.size && v.from?.mediaSize && m.size !== v.from.mediaSize) {   // the sound itself changed in the studio: replace it
             const raw = await z.file(m.path); const { saveVideoCopy, copyBlob } = await import('./media-audio.js');
             const sv = m.kind === 'video' ? await saveVideoCopy(new File([raw], m.name, { type: m.mime || 'video/mp4' }), { onStep: (x) => toast(x, 10000) }) : { blob: await copyBlob(raw, () => {}, { name: m.name, type: m.mime || 'audio/mp4' }) };
-            Object.assign(v, { blob: sv.blob, size: sv.blob.size, mime: m.mime || v.mime, duration: m.duration || v.duration, audioChecked: true, audioFixed: true }); if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
+            freshBlob = sv.blob; Object.assign(v, { size: sv.blob.size, mime: m.mime || v.mime, duration: m.duration || v.duration, audioChecked: true, audioFixed: true }); if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
           }
           v.from = { ...v.from, pack: manifest.packId, media: m.id, mediaSize: m.size || v.from?.mediaSize, updatedAt: Date.now() };
           nUpd++;
@@ -134,8 +155,8 @@ export async function videoList(el) {
           const raw = await z.file(m.path);
           const { saveVideoCopy } = await import('./media-audio.js');
           const sv = m.kind === 'video' ? await saveVideoCopy(new File([raw], m.name, { type: m.mime || 'video/mp4' }), { onStep: (x) => toast(x, 10000) }) : { blob: await copyBlob(raw, (r) => toast(`取り込み中… ${Math.round(r * 100)}%`, 10000), { name: m.name, type: m.mime || 'audio/mp4' }) };
-          const blob = sv.blob;
-          v = { id: uid('v_'), lang: manifest.lang || curLang(), name: mat.media.filter(withText).length > 1 ? `${manifest.title}（${m.name}）` : manifest.title, blob, mime: m.mime || 'video/mp4', size: blob.size, duration: m.duration || 0, lastTime: 0, createdAt: Date.now(), from: { pack: manifest.packId, material: manifest.materialId, media: m.id, mediaSize: m.size } };
+          const blob = sv.blob; freshBlob = blob;
+          v = { id: uid('v_'), lang: manifest.lang || curLang(), name: mat.media.filter(withText).length > 1 ? `${manifest.title}（${m.name}）` : manifest.title, mime: m.mime || 'video/mp4', size: blob.size, duration: m.duration || 0, lastTime: 0, createdAt: Date.now(), from: { pack: manifest.packId, material: manifest.materialId, media: m.id, mediaSize: m.size } };
           Object.assign(v, { audioChecked: true, audioFixed: true }); if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
           nNew++;
         }
@@ -143,7 +164,8 @@ export async function videoList(el) {
         const segs = mat.items.flatMap((it) => (it.segments || []).filter((g) => g.media === m.id));
         delete v.trim;
         if (segs.length) { const a0 = Math.min(...segs.map((g) => g.start)), a1 = Math.max(...segs.map((g) => g.end)); if (a0 > 0.05 || (m.duration && a1 < m.duration - 0.05)) v.trim = { start: a0, end: a1, why: 'スタジオのカット' }; }
-        await db.put('videos', v);
+        if (freshBlob) await putVideoBlob(v.id, freshBlob);
+        await saveVideoMeta(v);
         const fresh = mat.items.filter((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja))
           .map((it) => ({ id: uid('c_'), videoId: v.id, itemId: it.id, start: it.segments[0].start, end: it.segments.at(-1).media === m.id ? it.segments.at(-1).end : it.segments[0].end, en: it.text || '', ja: it.ja || '', ...(it.holes?.length ? { holes: it.holes } : {}) }))
           .sort((a, b) => a.start - b.start);
@@ -176,9 +198,9 @@ export async function videoList(el) {
       const { saveVideoCopy } = await import('./media-audio.js');
       const sv = f.size <= 600 * 1048576 ? await saveVideoCopy(f, { onStep: (m) => toast(m, 10000) }) : { blob: f, info: null };
       const blob = sv.blob;
-      const v = { id: uid('v_'), lang: curLang(), name: f.name.replace(/\.[^.]+$/, '') || '動画', blob, mime: f.type || 'video/mp4', size: blob.size, duration, lastTime: 0, createdAt: Date.now(), audioChecked: true, audioFixed: true };
+      const v = { id: uid('v_'), lang: curLang(), name: f.name.replace(/\.[^.]+$/, '') || '動画', mime: f.type || 'video/mp4', size: blob.size, duration, lastTime: 0, createdAt: Date.now(), audioChecked: true, audioFixed: true };
       if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
-      await db.put('videos', v);
+      await putVideoBlob(v.id, blob); await saveVideoMeta(v);
       toast('動画を追加しました。字幕はファイルで読み込むか、教材スタジオで作ってください', 3500);
       go(`#video-play?id=${v.id}`);
     } catch (err) { toast('保存できませんでした: ' + (err?.message || err)); }
@@ -209,7 +231,9 @@ async function loadView() {
 
 export async function videoPlay(el, params) {
   setCleanup(null);
-  const v = await db.get('videos', params.get('id'));
+  let v = await db.get('videos', params.get('id'));
+  if (v) v = await migrateBlob(v);
+  const fileBlob = await videoBlob(v);
   if (!v) { el.innerHTML = `<header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>動画が見つかりません</h1></header><div class="card muted">削除された可能性があります。</div>`; return; }
   const vlang = v.lang || 'en';
   const TL = L(vlang).name;
@@ -218,7 +242,7 @@ export async function videoPlay(el, params) {
   const saveView = () => setSetting('video.view', view);
   let loop = null, ab = null, curId = null, rafId = 0, saveT = 0, loopN = 0, stepCue = null, revealedCue = null, editing = false;
   const revealed = new Map();   // cueId -> Set(hole index)
-  const url = v.blob ? URL.createObjectURL(v.blob) : '';
+  const url = fileBlob ? URL.createObjectURL(fileBlob) : '';
   const aurl = '';   // (1.3.1–1.3.2 used a separate sound file; now the chosen track of the video itself is played)
   const MLABEL = (m) => MODES.find((x) => x[0] === m)[1].replace('英', L(vlang).ch);
 
@@ -296,26 +320,26 @@ export async function videoPlay(el, params) {
   $('#openMake', el).onclick = () => sheet('#shMake', true);
   $$('.vsheet', el).forEach((x) => x.addEventListener('click', (e) => { if (e.target === x || e.target.closest('[data-shclose]')) x.hidden = true; }));
   const pic = null;
-  if (v.audioBlob) { (async () => { const cur = await db.get('videos', v.id); if (cur?.audioBlob) { delete cur.audioBlob; await db.put('videos', cur); } })(); }   // free the old separate sound file
+  if (v.audioBlob) { (async () => { const cur = await db.get('videos', v.id); if (cur?.audioBlob) await saveVideoMeta(cur); })(); }   // free the old separate sound file
   // videos saved before: decide the speech track once — only while paused (Web Audio during playback can stop the sound on iPhone)
-  if (vid && v.blob && !v.audioFixed) {
+  if (vid && fileBlob && !v.audioFixed) {
     const check = async () => {
       if (!vid.paused) return setTimeout(check, 3000);
       try {
         const { speechTrackIndex, readable } = await import('./media-audio.js');
-        if (!(await readable(v.blob))) return;
+        if (!(await readable(fileBlob))) return;
         const fname = v.name + ((v.mime || '').includes('quicktime') ? '.mov' : '.mp4');
-        const sp = await speechTrackIndex(v.blob, fname);
+        const sp = await speechTrackIndex(fileBlob, fname);
         const cur = await db.get('videos', v.id); if (!cur) return;
         cur.audioChecked = true; cur.audioFixed = true;
         if (sp) {
           const { keepOneAudioTrack } = await import('./media-probe.js');
           toast('音声を直しています（話し声の方だけ残します）…', 8000);
-          const f2 = await keepOneAudioTrack(cur.blob, sp.id, { name: fname, type: v.mime || 'video/mp4' }).catch(() => null);
-          if (f2) { cur.blob = f2; cur.size = f2.size; delete cur.audioTrack; cur.audioInfo = { count: sp.count, kept: sp.index, reason: sp.reason, auto: sp.auto }; }
+          const f2 = await keepOneAudioTrack(fileBlob, sp.id, { name: fname, type: v.mime || 'video/mp4' }).catch(() => null);
+          if (f2) { const { copyBlob } = await import('./media-audio.js'); await putVideoBlob(v.id, await copyBlob(f2, () => {}, { name: fname, type: v.mime || 'video/mp4' })); cur.size = f2.size; delete cur.audioTrack; cur.audioInfo = { count: sp.count, kept: sp.index, reason: sp.reason, auto: sp.auto }; }
           else { cur.audioTrack = sp.index; }
         }
-        await db.put('videos', cur);
+        await saveVideoMeta(cur);
         if (sp && location.hash.includes(v.id)) { toast(`音声が${sp.count}本あったので、話し声の方（音声${sp.index + 1}）だけにしました`, 3500); videoPlay(el, params); }
       } catch {}
     };
@@ -326,11 +350,11 @@ export async function videoPlay(el, params) {
     vid.addEventListener('loadedmetadata', enableTrack);
     vid.addEventListener('error', async () => {
       const { readable } = await import('./media-audio.js');
-      if (!(await readable(v.blob)) && (await confirmDialog({ title: '動画データが読めません', body: '<p>保存していた動画データが読めなくなっています（iPhoneが一時ファイルを消した可能性）。字幕・穴埋め・学習記録はそのまま残っています。</p>', okLabel: '動画を選び直す', cancelLabel: '閉じる' }))) relinkVideo();
+      if (!(await readable(fileBlob)) && (await confirmDialog({ title: '動画データが読めません', body: '<p>保存していた動画データが読めなくなっています（iPhoneが一時ファイルを消した可能性）。字幕・穴埋め・学習記録はそのまま残っています。</p>', okLabel: '動画を選び直す', cancelLabel: '閉じる' }))) relinkVideo();
     });
   }
   // ---- trimming (non-destructive): playback and transcription stay inside [trim.start, trim.end] ----
-  const saveTrim = async () => { const cur = await db.get('videos', v.id); if (cur) { if (v.trim) cur.trim = v.trim; else delete cur.trim; await db.put('videos', cur); } drawTrim(); };
+  const saveTrim = async () => { const cur = await db.get('videos', v.id); if (cur) { if (v.trim) cur.trim = v.trim; else delete cur.trim; await saveVideoMeta(cur); } drawTrim(); };
   function drawTrim() { const t = $('#trimTxt', el); if (t) t.textContent = v.trim ? ` ${fmtT(v.trim.start)}〜${fmtT(v.trim.end)}${v.trim.why ? `（${v.trim.why}）` : ''}` : ' なし（全体）'; }
   function enableTrack() { const at = vid?.audioTracks; if (!at || at.length < 2 || v.audioTrack == null) return; for (let i = 0; i < at.length; i++) at[i].enabled = i === v.audioTrack; }
   {   // speech recognition quality (tap to choose)
@@ -421,7 +445,7 @@ export async function videoPlay(el, params) {
     if (Date.now() - saveT > 3000) { saveT = Date.now(); savePos(); }
     rafId = requestAnimationFrame(tick);
   }
-  async function savePos() { if (!vid) return; const cur = await db.get('videos', v.id); if (cur) { cur.lastTime = vid.currentTime; await db.put('videos', cur); } }
+  async function savePos() { if (!vid) return; const cur = await db.get('videos', v.id); if (cur) { cur.lastTime = vid.currentTime; await saveVideoMeta(cur); } }
   const playFrom = (c) => { if (!vid || !c) return; vid.currentTime = c.start + 0.01; stepCue = c; revealedCue = null; if (loop) { loop = { start: c.start, end: c.end }; loopN = 0; } vid.play(); };
 
   // ---- cloze grading ----
@@ -615,7 +639,7 @@ export async function videoPlay(el, params) {
       const cur = (v.properNouns || []).join(', ');
       const ans = prompt('この動画の固有名詞（人名・地名など）をカンマ区切りで\n例：Maria, Cleveland, Burns and Associates', cur); if (ans == null) return;
       v.properNouns = [...new Set(ans.split(/[,、，\n]/).map((x) => x.trim()).filter(Boolean))];
-      const dbv = await db.get('videos', v.id); if (dbv) { dbv.properNouns = v.properNouns; await db.put('videos', dbv); }
+      const dbv = await db.get('videos', v.id); if (dbv) { dbv.properNouns = v.properNouns; await saveVideoMeta(dbv); }
       drawDict();
     };
     $('#dPlay', el).onclick = () => {
@@ -666,7 +690,7 @@ export async function videoPlay(el, params) {
   if ($('#trAuto', el)) $('#trAuto', el).onclick = async () => {
     if (!vid?.paused) vid?.pause();   // analysis uses Web Audio: not while playing
     toast('前後の音を調べています…', 6000);
-    try { const { findEdgesBlob } = await import('./media-audio.js'); const r = await findEdgesBlob(v.blob, { name: v.name + ((v.mime || '').includes('quicktime') ? '.mov' : '.mp4'), trackIndex: v.audioTrack ?? null, duration: vid?.duration || v.duration });
+    try { const { findEdgesBlob } = await import('./media-audio.js'); const r = await findEdgesBlob(fileBlob, { name: v.name + ((v.mime || '').includes('quicktime') ? '.mov' : '.mp4'), trackIndex: v.audioTrack ?? null, duration: vid?.duration || v.duration });
       if (r.start > 0.05 || r.end < r.duration - 0.05) { v.trim = { start: r.start, end: r.end, why: [r.whyStart, r.whyEnd].filter(Boolean).join('・') }; await saveTrim(); toast(`${fmtT(r.start)}〜${fmtT(r.end)} にしました`); } else toast('カットする音は見つかりませんでした');
     } catch (e) { toast('調べられませんでした：' + (e?.message || e)); }
   };
@@ -753,7 +777,7 @@ export async function videoPlay(el, params) {
 
   // ---- on-device transcription (experimental) ----
   async function runASR() {
-    if (!v.blob) return toast('動画ファイルがありません');
+    if (!fileBlob) return toast('動画ファイルがありません');
     if (cues.some((c) => c.en) && !(await confirmDialog({ title: `${TL}字幕を作り直しますか？`, body: '<p>今の字幕（と穴埋め）は置き換わります。日本語訳は時間の重なる行に付け直します。</p>', okLabel: '作る' }))) return;
     const dlg = $('#dialog');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>字幕を作成中</h3><p id="asrMsg" class="small">準備しています…</p><div class="progress"><i id="asrBar" style="width:2%"></i></div><p class="hint">画面を閉じたりアプリを切り替えたりすると止まることがあります。</p><button class="btn ghost" value="cancel">中止</button></form>`;
@@ -763,8 +787,8 @@ export async function videoPlay(el, params) {
     const say = (msg, p) => { if (cancelled) return; const m = $('#asrMsg', dlg); if (m) m.textContent = msg; const b = $('#asrBar', dlg); if (b && p != null) b.style.width = Math.max(2, p * 100) + '%'; };
     try {
       const { audio16kFromBlob, transcribeAudio } = await import('./media-audio.js');
-      const a = await audio16kFromBlob(v.blob, { name: v.name + '.' + ((v.mime || '').includes('quicktime') ? 'mov' : 'mp4'), trackIndex: v.audioTrack ?? null, onStep: (m) => say(m, 0.05) });
-      if (a.track && a.track.count > 1 && v.audioTrack == null) { v.audioTrack = a.track.index; await db.put('videos', v); }   // remember the chosen sound track (also used for playback)
+      const a = await audio16kFromBlob(fileBlob, { name: v.name + '.' + ((v.mime || '').includes('quicktime') ? 'mov' : 'mp4'), trackIndex: v.audioTrack ?? null, onStep: (m) => say(m, 0.05) });
+      if (a.track && a.track.count > 1 && v.audioTrack == null) { v.audioTrack = a.track.index; await saveVideoMeta(v); }   // remember the chosen sound track (also used for playback)
       const quality = await getSetting('video.asrQ', 'acc');
       const out = await transcribeAudio(a.audio, { lang: vlang, quality, from: v.trim?.start ?? 0, to: v.trim?.end ?? null, onProgress: (m, p) => say(m, p == null ? null : 0.1 + p * 0.9), isCancelled: () => cancelled });
       if (cancelled) return;
@@ -790,8 +814,9 @@ export async function videoPlay(el, params) {
       toast('保存中…', 10000);
       try {
         const { saveVideoCopy } = await import('./media-audio.js'); const sv = await saveVideoCopy(f, { onStep: (m) => toast(m, 10000) });
-        v.blob = sv.blob; v.size = sv.blob.size; delete v.audioTrack; delete v.audioBlob; v.audioChecked = true; v.audioFixed = true; if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
-        await db.put('videos', v); toast('動画を選び直しました'); videoPlay(el, params);
+        await putVideoBlob(v.id, sv.blob);
+        delete v.blob; v.size = sv.blob.size; delete v.audioTrack; delete v.audioBlob; v.audioChecked = true; v.audioFixed = true; if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
+        await saveVideoMeta(v); toast('動画を選び直しました'); videoPlay(el, params);
       }
       catch (e) { toast('保存できませんでした: ' + (e?.message || e)); }
     };
@@ -928,11 +953,11 @@ export async function videoPlay(el, params) {
         catch { pasteShow(srt); }
       } else if (r === 'rename') {
         const name = prompt('動画の名前', v.name);
-        if (name?.trim()) { const cur = await db.get('videos', v.id); cur.name = name.trim(); await db.put('videos', cur); videoPlay(el, params); }
+        if (name?.trim()) { const cur = await db.get('videos', v.id); cur.name = name.trim(); await saveVideoMeta(cur); videoPlay(el, params); }
       } else if (r === 'del') {
         if (!(await confirmDialog({ title: '動画を削除', body: '<p>動画と字幕を削除します。この動画から登録した単語は残りますが、動画へのリンクは使えなくなります。</p>', okLabel: '削除', danger: true }))) return;
         const old = await db.byIndex('cues', 'videoId', v.id);
-        await db.tx(['videos', 'cues'], 'readwrite', (t) => { t.objectStore('videos').delete(v.id); old.forEach((c) => t.objectStore('cues').delete(c.id)); });
+        await db.tx(['videos', 'cues', 'vblobs'], 'readwrite', (t) => { t.objectStore('videos').delete(v.id); t.objectStore('vblobs').delete(v.id); old.forEach((c) => t.objectStore('cues').delete(c.id)); });
         toast('削除しました'); go('#video');
       }
     };

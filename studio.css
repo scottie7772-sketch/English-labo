@@ -68,3 +68,5 @@ body.studio main { padding-bottom: 20px; }
 .st-wd { border: 1px solid var(--line); background: transparent; color: inherit; border-radius: 8px; padding: 6px 8px; font-size: 16px; }
 .st-wd.cut { background: var(--accent, #4a7bd0); color: #fff; box-shadow: -4px 0 0 #e5534b; }
 .st-wd:disabled { opacity: 0.5; }
+.st-fold > summary { padding: 6px 2px; font-weight: 600; cursor: pointer; }
+.st-fold .list { margin-top: 4px; }

@@ -12,7 +12,7 @@ import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.10.0';
+export const STUDIO_VERSION = '0.10.1';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '';
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -98,18 +98,44 @@ async function setsScreen(el) {
   }
   const est = await navigator.storage?.estimate?.().catch(() => null);
   let editing = false; const chosen = new Set();
+  const openF = new Set(JSON.parse(localStorage.getItem('st-openF') || '[]'));
+  const folders = [...new Set(sets.map((s) => s.folder).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
   const draw = () => {
     el.innerHTML = `${head('教材セット', null, `<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#${BASE}clean">容量</a><a class="btn sm" href="#${BASE}lab">技術検証</a>`)}
     <div class="row"><a class="btn primary grow" href="#${BASE}import">＋ 一括登録（動画・音声・字幕）</a><a class="btn" href="#${BASE}io">読み込み</a></div>
     ${est ? `<p class="small muted">端末の保存量：${fmtSize(est.usage || 0)}${est.quota ? ` / 目安の上限 ${fmtSize(est.quota)}` : ''}</p>` : ''}
-    ${sets.length ? `<div class="row"><span class="grow small muted">${sets.length}セット</span><button class="btn sm" id="edit">${editing ? '完了' : '選んで削除'}</button></div>
-    ${editing ? `<div class="row"><button class="btn sm" id="eAll">すべて選ぶ</button><button class="btn sm" id="eNone">解除</button><button class="btn sm danger grow" id="eDel" ${chosen.size ? '' : 'disabled'}>${chosen.size}セットを削除</button></div>` : ''}
-    <div class="card list">${sets.map((s) => {
+    ${sets.length ? `<div class="row"><span class="grow small muted">${sets.length}セット</span><button class="btn sm" id="edit">${editing ? '完了' : '選ぶ（フォルダ・削除）'}</button></div>
+    ${editing ? `<div class="row wrap"><button class="btn sm" id="eAll">すべて選ぶ</button><button class="btn sm" id="eNone">解除</button><button class="btn sm grow" id="eFold" ${chosen.size ? '' : 'disabled'}>📁 フォルダへ</button><button class="btn sm danger grow" id="eDel" ${chosen.size ? '' : 'disabled'}>${chosen.size}セットを削除</button></div>` : ''}
+    ${[...folders, ''].map((f) => { const inF = sets.filter((s) => (s.folder || '') === f); if (!inF.length) return '';
+      const rows = inF.map(rowHTML).join('');
+      return f ? `<details class="card st-fold" data-f="${esc(f)}" ${openF.has(f) || editing ? 'open' : ''}><summary>📁 ${esc(f)} <small class="muted">${inF.length}</small></summary><div class="list">${rows}</div></details>` : `<div class="card list">${rows}</div>`; }).join('')}` : '<p class="empty">まだ教材セットがありません。「一括登録」から動画・音声と字幕を選んでください。</p>'}
+    <p class="hint">このスタジオは単体で動く試作版です（データはこのアプリの中だけに保存）。後で English Labo の中に組み込み、ここで作った教材は「書き出し」→ English Labo で読み込みで移せます。</p>`;
+    $$('.st-fold', el).forEach((d) => d.addEventListener('toggle', () => { if (editing) return; d.open ? openF.add(d.dataset.f) : openF.delete(d.dataset.f); try { localStorage.setItem('st-openF', JSON.stringify([...openF])); } catch {} }));
+    $('#eFold', el)?.addEventListener('click', () => toFolder(sets.filter((x) => chosen.has(x.id))));
+    bind();
+  };
+  const rowHTML = (s) => {
       const src = srcs[s.sourceId];
       const info = `<span class="grow"><b>${esc(s.title)}</b> ${cutInfo[s.id] || ''}<small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${src.stored ? (src.derived === 'audio16k' ? `節約保存（${src.codec === 'wav' ? '非圧縮' : '圧縮'}・${fmtSize(src.blob?.size || 0)}）` : '端末に保存') : '保存しない'}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
       return editing ? `<label class="st-setrow"><input type="checkbox" class="st-cb" data-id="${s.id}" ${chosen.has(s.id) ? 'checked' : ''}>${info}</label>` : `<a class="st-setrow" href="#${BASE}set?id=${s.id}">${info}›</a>`;
-    }).join('')}</div>` : '<p class="empty">まだ教材セットがありません。「一括登録」から動画・音声と字幕を選んでください。</p>'}
-    <p class="hint">このスタジオは単体で動く試作版です（データはこのアプリの中だけに保存）。後で English Labo の中に組み込み、ここで作った教材は「書き出し」→ English Labo で読み込みで移せます。</p>`;
+  };
+  async function toFolder(list) {
+    const dlg = $('#dialog');
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${list.length}セットをフォルダへ</h3>
+      ${folders.length ? `<div class="stack">${folders.map((f, i) => `<label class="chk"><input type="radio" name="fd" value="${i}"> 📁 ${esc(f)}</label>`).join('')}</div>` : ''}
+      <label class="field"><span>新しいフォルダ</span><input id="fdNew" autocomplete="off" placeholder="例：MA"></label>
+      <div class="row end"><button class="btn ghost" value="out">フォルダから出す</button><button class="btn ghost" value="cancel">やめる</button><button class="btn primary" value="ok">入れる</button></div></form>`;
+    $('#fdNew', dlg).oninput = () => $$('input[name=fd]', dlg).forEach((r) => (r.checked = false));
+    dlg.returnValue = ''; dlg.showModal(); await new Promise((q) => (dlg.onclose = q));
+    let f;
+    if (dlg.returnValue === 'out') f = '';
+    else if (dlg.returnValue === 'ok') { const r = $('input[name=fd]:checked', dlg); f = $('#fdNew', dlg).value.trim() || (r ? folders[+r.value] : null); if (f == null) return toast('フォルダを選ぶか、名前を入れてください'); }
+    else return;
+    for (const x of list) { const cur = await sdb.get('sets', x.id); if (!cur) continue; if (f) cur.folder = f; else delete cur.folder; await sdb.put('sets', cur); }   // folder only: does not change updatedAt or the content
+    if (f) { openF.add(f); try { localStorage.setItem('st-openF', JSON.stringify([...openF])); } catch {} }
+    toast(f ? `「${f}」に入れました` : 'フォルダから出しました'); route();
+  }
+  const bind = () => {
     $('#upd', el).onclick = checkUpdate;
     $('#edit', el)?.addEventListener('click', () => { editing = !editing; chosen.clear(); draw(); });
     $('#eAll', el)?.addEventListener('click', () => { sets.forEach((x) => chosen.add(x.id)); draw(); });
@@ -211,7 +237,8 @@ async function importScreen(el, params) {
     const needBytes = storeMode === 'store' ? sets.filter((s) => s.include && s.media).reduce((a, s) => a + s.media.file.size, 0) : 0;
     $('#pairs', el).innerHTML = `
       <div class="card stack"><span class="small">まとめ方</span>
-        <div class="seg" id="gm"><button data-v="file" class="${groupMode === 'file' ? 'on' : ''}">ファイルごとに1セット</button><button data-v="folder" class="${groupMode === 'folder' ? 'on' : ''}">フォルダごとに1セット</button></div>
+        <div class="seg" id="gm"><button data-v="file" class="${groupMode === 'file' ? 'on' : ''}">1ファイル＝1教材</button><button data-v="folder" class="${groupMode === 'folder' ? 'on' : ''}">1フォルダ＝1教材</button></div>
+        <small class="muted">${groupMode === 'file' ? '音声（動画）1つと、その字幕・スクリプトで1つの教材にします。ZIPの中のフォルダ名は、一覧の「フォルダ」として使います（Unitごとの整理など）。' : 'ZIPの中の同じフォルダにあるファイルを、名前順につないで1つの教材にします（分割された音声を1本の教材にしたいとき）。'}</small>
         ${groupMode === 'folder' ? `<small class="muted">${groupsOf(sets.filter((s) => s.include)).map((g) => `📁 ${esc(g.title)}（${g.items.length}件）`).join('<br>')}</small>` : ''}</div>
       <h2 class="sec">組み合わせ（${sets.length}件）</h2>
       <div class="row"><button class="btn sm" id="incAll">すべて入れる</button><button class="btn sm" id="incNone">すべて外す</button></div>
@@ -252,7 +279,7 @@ async function importScreen(el, params) {
     $('#gm', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { groupMode = v; draw(); } };
     $('#incAll', el).onclick = () => { sets.forEach((s) => (s.include = true)); draw(); };
     $('#incNone', el).onclick = () => { sets.forEach((s) => (s.include = false)); draw(); };
-    $('#go', el).onclick = () => { const inc = sets.filter((s) => s.include); if (toSet) return runAppend(inc, storeMode === 'store' && videoQ === 'audio' ? 'store-audio' : storeMode); runImport(groupMode === 'folder' ? groupsOf(inc) : inc.map((s) => ({ title: s.title, items: [s] })), storeMode === 'store' && videoQ === 'audio' ? 'store-audio' : storeMode); };
+    $('#go', el).onclick = () => { const inc = sets.filter((s) => s.include); if (toSet) return runAppend(inc, storeMode === 'store' && videoQ === 'audio' ? 'store-audio' : storeMode); runImport(groupMode === 'folder' ? groupsOf(inc) : inc.map((s) => ({ title: s.title, items: [s], folder: groupsOf([s])[0]?.title || '' })), storeMode === 'store' && videoQ === 'audio' ? 'store-audio' : storeMode); };
   }
   async function runAppend(list, mode) {
     const prog = $('#prog', el); $('#go', el).disabled = true; running('追加');
@@ -516,7 +543,7 @@ async function putSource(media, mode, say = () => {}) {
 async function createSet(group, mode, trimEdges = false, onStep = () => {}) {
   const setId = newId('set_');
   const { blocks, tracks, firstSrc } = await buildItems(setId, group, mode, trimEdges, onStep);
-  const set = { id: setId, title: group.title || firstSrc?.name || '無題', sourceId: firstSrc?.id || null, order: [], undo: [], redo: [],
+  const set = { id: setId, title: group.title || firstSrc?.name || '無題', ...(group.folder && group.folder !== 'まとめ' ? { folder: group.folder } : {}), sourceId: firstSrc?.id || null, order: [], undo: [], redo: [],
     display: { show: 'both', opEn: 1, opJa: 0.8, pos: 'below', order: 'en' }, createdAt: Date.now(), updatedAt: Date.now() };
   await sdb.tx(['sets', 'tracks'], 'readwrite', (t) => { t.objectStore('sets').put(set); tracks.forEach((x) => t.objectStore('tracks').put(x)); });
   await commit(set, '取り込み', { blocks, order: blocks.map((b) => b.id) });
@@ -551,6 +578,8 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
     if (en) {
       let enCues = en.cues;
       if (!s.en.parsed.timed) {
+        tracks.splice(tracks.indexOf(en), 1);   // the raw copy is not needed: keeps the data small
+        if (ja && !s.ja.parsed.timed) tracks.splice(tracks.indexOf(ja), 1);
         // a script without times: lines without sound for now ("文字起こし→照合" gives them their times);
         // the audio stays as one item to transcribe
         const lines = scriptToLines(enCues.map((c) => c.text).join('\n'));

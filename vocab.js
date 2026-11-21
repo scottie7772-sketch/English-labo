@@ -14,7 +14,16 @@ const POS_OPTIONS = ['', 'noun', 'verb', 'adjective', 'adverb', 'phrasal verb', 
 const posJa = (p) => POS_JA[p] || p || '';
 const SOURCE_JA = { manual: '手動', bulk: '一括登録', csv: 'CSV', ocr: 'OCR', video: '動画字幕', mistake: '学習中の誤答', paste: '英文から選択', seed: '初期データ' };
 
-const DEFAULT_FILTER = { q: '', bm: 'all', kind: 'all', levels: [], skill: 'overall', tag: '', deck: '', sort: 'new', st: 'all' };
+// 1.18.5: the speaker buttons play the original recording when the word is in a matched material (setting on), else TTS
+async function sayOrig(text, tts = () => speak(text)) {
+  let on = true; try { on = localStorage.getItem('fc-orig') !== '0'; } catch {}
+  if (on) { try { const m = await import('./word-audio.js'); await m.prepare(); if (await m.play(text)) return; } catch {} }
+  tts();
+}
+const DEFAULT_FILTER = { q: '', bm: 'all', kind: 'all', levels: [], skill: 'overall', tag: '', deck: '', sort: 'new', st: 'all', src: '', au: 'all' };
+// 1.18.5: where a word came from (registration route + the list / material name) and whether its original recording exists
+const srcKey = (w) => `${w.source?.type || 'manual'}|${w.source?.note || ''}`;
+const srcText = (k) => { const [t, n] = k.split('|'); return (SOURCE_JA[t] || t) + (n ? `・${n}` : ''); };
 let filter = null;
 async function getFilter() { if (!filter) filter = { ...DEFAULT_FILTER, ...(await getSetting('vocabFilter', {})), q: '' }; return filter; }
 const saveFilter = () => setSetting('vocabFilter', { ...filter, q: '' });
@@ -48,15 +57,19 @@ export async function vocabList(el) {
         ${[1, 2, 3, 4, 5].map((l) => `<button data-l="${l}" class="${f.levels.includes(l) ? 'on' : ''}">${LEVEL_LABELS[l]}</button>`).join('')}
       </div><p class="hint">未評価・判定保留は「未習得」に含まれます</p></div>
       <div class="fgrp"><span>タグ</span><select id="tag"><option value="">すべて</option>${tags.map((t) => `<option ${f.tag === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
+      <div class="fgrp"><span>出元（登録元・教材）</span><select id="src"><option value="">すべて</option>${[...new Set(words.map(srcKey))].sort((a, b) => srcText(a).localeCompare(srcText(b), 'ja')).map((k) => `<option value="${esc(k)}" ${f.src === k ? 'selected' : ''}>${esc(srcText(k))}（${words.filter((w) => srcKey(w) === k).length}）</option>`).join('')}</select></div>
+      <div class="fgrp"><span>元の録音</span>${seg('au', [['all', 'すべて'], ['yes', 'あり'], ['no', 'なし（読み上げ）']], f.au || 'all')}</div>
       <div class="fgrp"><span>単語集</span><select id="deck"><option value="">すべて</option>${decks.map((d) => `<option value="${d.id}" ${f.deck === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
         <a href="#decks" class="link small">単語集を管理</a></div>
-      <div class="fgrp"><span>並び順</span><select id="sort">${[['new', '新しい順'], ['old', '古い順'], ['abc', 'ABC順'], ['weak', '習得度が低い順']].map(([v, l]) => `<option value="${v}" ${f.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="fgrp"><span>並び順</span><select id="sort">${[['new', '新しい順'], ['old', '古い順'], ['abc', 'ABC順'], ['weak', '習得度が低い順'], ['src', '出元順']].map(([v, l]) => `<option value="${v}" ${f.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <button class="btn ghost" id="clear">条件をクリア</button>
     </details>
     ${await (async () => { const n = (await scanWords()).flagged.length; return n ? `<a class="notice warn" href="#datacheck">${icon('warn', 18)}<span>列がずれて登録された可能性のある項目が${n}件あります。データ点検で確認できます</span></a>` : ''; })()}
     <p class="muted small" id="count"></p>
     <div id="list"></div>`;
 
+  // original recordings (text index; only read when the filter / sort needs it)
+  const wa = f.au !== 'all' || f.src || f.sort === 'src' ? await import('./word-audio.js').then((m) => m.prepare().then(() => m)).catch(() => null) : await import('./word-audio.js').then((m) => (m.prepare().then(() => { if (f.au !== 'all') draw(true); }), m)).catch(() => null);
   const headCount = {};
   words.forEach((w) => { const k = headKey(w.headword); headCount[k] = (headCount[k] || 0) + 1; });
   const listEl = $('#list', el);
@@ -72,8 +85,11 @@ export async function vocabList(el) {
       if (f.tag && !(w.tags || []).includes(f.tag)) return false;
       if (f.deck && !(w.deckIds || []).includes(f.deck)) return false;
       if (f.levels.length && !f.levels.includes(filterLevel(lvOf(mastery[w.id], f.skill)))) return false;
+      if (f.src && srcKey(w) !== f.src) return false;
+      if (f.au === 'yes' && !wa?.has(w.headword)) return false;
+      if (f.au === 'no' && wa?.has(w.headword)) return false;
       if (q) {
-        const hay = (w.headword + ' ' + (w.senses || []).flatMap((s) => s.meanings || []).join(' ')).toLowerCase();
+        const hay = (w.headword + ' ' + (w.senses || []).flatMap((s) => s.meanings || []).join(' ') + ' ' + srcText(srcKey(w)) + ' ' + (w.tags || []).join(' ')).toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -81,6 +97,7 @@ export async function vocabList(el) {
     const cmp = {
       new: (a, b) => b.createdAt - a.createdAt, old: (a, b) => a.createdAt - b.createdAt,
       abc: (a, b) => a.headword.localeCompare(b.headword),
+      src: (a, b) => srcText(srcKey(a)).localeCompare(srcText(srcKey(b)), 'ja') || a.headword.localeCompare(b.headword),
       weak: (a, b) => filterLevel(lvOf(mastery[a.id], f.skill)) - filterLevel(lvOf(mastery[b.id], f.skill)) || a.headword.localeCompare(b.headword),
     }[f.sort];
     rows.sort(cmp);
@@ -99,7 +116,7 @@ export async function vocabList(el) {
         ${sel ? `<input type="checkbox" class="wsel" data-sel="${w.id}" ${sel.has(w.id) ? 'checked' : ''} aria-label="選ぶ">` : ''}
         <a class="wmain" href="#word?id=${w.id}">
           <b class="tl">${esc(w.headword)}</b>${w.ipa && isZh(langOf(w)) ? `<span class="small muted"> ${esc(numToMarks(w.ipa))}</span>` : ''}${w.review === 'unverified' ? '<span class="tagp ai">未検証</span>' : ''}${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}${headCount[headKey(w.headword)] > 1 ? '<span class="tagp">多義</span>' : ''}${w.slim ? '<span class="tagp slim">軽量</span>' : ''}
-          <span class="mean">${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>
+          <span class="mean">${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>${f.sort === 'src' || f.src || f.au !== 'all' ? `<small class="muted wsrc">${wa?.has(w.headword) ? '🔊 ' : ''}${esc(srcText(srcKey(w)))}</small>` : ''}
         </a>
         <div class="wact">
           <button class="icon-btn spk" data-say="${esc(w.headword)}" aria-label="発音">${icon('speaker', 22)}</button>
@@ -132,7 +149,7 @@ export async function vocabList(el) {
     f.levels = f.levels.includes(l) ? f.levels.filter((x) => x !== l) : [...f.levels, l];
     e.target.classList.toggle('on'); saveFilter(); draw();
   });
-  for (const k of ['skill', 'tag', 'deck', 'sort']) $('#' + k, el).addEventListener('change', (e) => { f[k] = e.target.value; saveFilter(); draw(); });
+  for (const k of ['skill', 'tag', 'deck', 'sort', 'src']) $('#' + k, el).addEventListener('change', (e) => { f[k] = e.target.value; saveFilter(); draw(); });
   $('#clear', el).onclick = () => { filter = { ...DEFAULT_FILTER }; saveFilter(); vocabList(el); };
   $('#add', el).onclick = addMenu;
   // ---- 1.16: choose several words → lighten (remove examples etc.) / bring back ----
@@ -146,7 +163,7 @@ export async function vocabList(el) {
     bar.innerHTML = `<span class="small"><b>${sel.size}</b>語</span>
       <button class="btn sm" data-a="all">表示中を全部</button><button class="btn sm" data-a="done">習得済みだけ</button><button class="btn sm" data-a="none">解除</button>
       <button class="btn sm primary" data-a="slim" ${chosen.some((w) => !w.slim) ? '' : 'disabled'}>軽量化</button>
-      <button class="btn sm" data-a="back" ${chosen.some((w) => w.slim) ? '' : 'disabled'}>出題に戻す</button><button class="btn sm ghost" data-a="end">終了</button>`;
+      <button class="btn sm" data-a="back" ${chosen.some((w) => w.slim) ? '' : 'disabled'}>出題に戻す</button><button class="btn sm danger" data-a="del" ${sel.size ? '' : 'disabled'}>削除</button><button class="btn sm ghost" data-a="end">終了</button>`;
     bar.onclick = async (e) => {
       const a = e.target.dataset.a; if (!a) return;
       if (a === 'all') rowsNow.forEach((w) => sel.add(w.id));
@@ -154,6 +171,12 @@ export async function vocabList(el) {
       if (a === 'none') sel.clear();
       if (a === 'end') { sel = null; $('#selMode', el).textContent = '選ぶ'; }
       if (a === 'slim') { if (await slimWords(words.filter((w) => sel.has(w.id) && !w.slim), isMastered)) { vocabList(el); return; } }
+      if (a === 'del') {   // 1.18.5: delete many words at once (e.g. words registered without a meaning)
+        const list = words.filter((w) => sel.has(w.id));
+        if (!(await confirmDialog({ title: `${list.length}語を削除`, body: `<p>単語・習得度・復習予定が削除されます（元に戻せません）。</p><p class="small muted">${list.slice(0, 8).map((w) => esc(w.headword)).join('、')}${list.length > 8 ? ' …' : ''}</p>`, okLabel: '削除', danger: true }))) return;
+        for (const w of list) await deleteWord(w.id);
+        toast(`${list.length}語を削除しました`, 2500); sel = null; vocabList(el); return;
+      }
       if (a === 'back') { const list = words.filter((w) => sel.has(w.id) && w.slim); for (const w of list) { delete w.slim; await db.put('words', w); } toast(`${list.length}語を出題に戻しました（消した例文などは戻りません）`, 3000); }
       draw(true); selBar();
     };
@@ -178,7 +201,7 @@ export async function vocabList(el) {
       return;
     }
     const spk = e.target.closest('[data-say]');
-    if (spk) speak(spk.dataset.say);
+    if (spk) sayOrig(spk.dataset.say);
   });
   listEl.addEventListener('change', async (e) => {
     const s = e.target.closest('select[data-lv]'); if (!s) return;
@@ -190,7 +213,7 @@ export async function vocabList(el) {
   });
 }
 
-function hasFilter(f) { return f.bm !== 'all' || f.kind !== 'all' || f.levels.length || f.tag || f.deck || (f.st && f.st !== 'all'); }
+function hasFilter(f) { return f.bm !== 'all' || f.kind !== 'all' || f.levels.length || f.tag || f.deck || (f.st && f.st !== 'all') || f.src || (f.au && f.au !== 'all'); }
 
 // 1.16: lighten mastered words. Keeps the headword, meanings, part of speech, mastery and (by default) every answer record;
 // removes examples, their translations, context notes and links to videos (the videos themselves stay).
@@ -363,7 +386,7 @@ export async function wordDetail(el, params) {
   drawSenses();
   $('#split', el)?.addEventListener('click', () => splitDialog(w, el, params));
   sensesEl.addEventListener('click', (e) => { const i = e.target.dataset.rm; if (i != null) { readSenses(); senses.splice(+i, 1); drawSenses(); } });
-  $('#say', el).onclick = () => speak($('[name=headword]', el).value, 0.95, wl);
+  $('#say', el).onclick = () => sayOrig($('[name=headword]', el).value, () => speak($('[name=headword]', el).value, 0.95, wl));
 
   $('#f', el).onsubmit = async (e) => {
     e.preventDefault();

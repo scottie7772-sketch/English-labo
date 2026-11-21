@@ -1213,3 +1213,18 @@ body.selecting #list { padding-bottom: 130px; }
 .st-pv .st-pvrows { max-height: 50vh; overflow: auto; border-top: 1px solid var(--line); padding-top: 6px; display: flex; flex-direction: column; gap: 3px; }
 .st-pv .tagp { font-size: 11px; }
 .st-fcard { gap: 12px; align-items: center; text-decoration: none; color: var(--text); margin-bottom: 12px; } .st-fcard .ic { color: var(--accent); }
+
+/* 1.18.4: progress status "学習中" = deep vermilion (bar segment + legend dot). Warning / "near" colours keep --mid */
+.p-learn { background: #c65a3d; }
+.wcard .wsrc { display: block; font-size: 11px; margin-top: 2px; }
+
+/* ===== 1.18.5 accent roles — brown/blue pages only (home, word list, review, settings …). Test / game / video pages keep their colours.
+   deep viridian = selected / learning status; eucalyptus = calm notices & warnings. Errors (red) and level colours are unchanged. ===== */
+body[data-zone="brown"] { --sel: #5f9f8a; --note: #80a99a; }
+body[data-zone="brown"] #tabs a.on { color: var(--sel); }
+body[data-zone="brown"] .c-review, body[data-zone="brown"] .rhead .ic, body[data-zone="brown"] .rhead .count { color: var(--sel); }
+body[data-zone="brown"] .notice.warn { background: rgba(128,169,154,.06); border: 1px solid rgba(128,169,154,.28); color: var(--text); }
+body[data-zone="brown"] .notice.warn .ic { color: var(--note); }
+body[data-zone="brown"] .hnotice.notice.warn { background: rgba(128,169,154,.015); border-color: rgba(128,169,154,.20); color: var(--note); }
+body[data-zone="brown"] .card.warn { background: rgba(128,169,154,.10); color: #cfe2da; border: 1px solid rgba(128,169,154,.30); }
+body[data-zone="brown"] .tagp.warn, body[data-zone="brown"] .tagp.ai { color: var(--note); border-color: rgba(128,169,154,.55); }

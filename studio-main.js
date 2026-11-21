@@ -13,7 +13,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.19.3';
+export const STUDIO_VERSION = '0.19.4';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -195,7 +195,7 @@ async function setsScreen(el) {
     $('#eAll', el)?.addEventListener('click', () => { sets.forEach((x) => chosen.add(x.id)); draw(); });
     $('#eNone', el)?.addEventListener('click', () => { chosen.clear(); draw(); });
     // 1.18.3: rename from the list (選ぶ → one set → 名前を変える, or press and hold a row)
-    const rename = async (x) => { const t = prompt('新しい名前', x.title); if (!t || !t.trim() || t.trim() === x.title) return; x.title = t.trim(); x.updatedAt = Date.now(); await sdb.put('sets', x); toast('名前を変えました'); draw(); };
+    const rename = async (x) => { const t = await askText('名前を変える', x.title); if (!t || !t.trim() || t.trim() === x.title) return; x.title = t.trim(); x.updatedAt = Date.now(); await sdb.put('sets', x); toast('名前を変えました'); draw(); };
     $('#eRen', el)?.addEventListener('click', () => { const x = sets.find((s) => chosen.has(s.id)); if (x) rename(x); });
     if (!editing) $$('a.st-setrow', el).forEach((a) => {
       let t = 0, held = false;
@@ -475,6 +475,14 @@ async function findEdges(src, blob, D, a16 = null, opt = null) {
 }
 // screen-recording sound: seconds cut at the start / end (import screen and the 前後をカット dialog share them)
 const REC_DEF = { S: 0.52, E: 0.30 };
+// 1.18.5: text input in the app's own dialog (window.prompt does not open in some home-screen apps on the iPhone)
+async function askText(title, value = '') {
+  const dlg = document.querySelector('#dialog'); if (dlg.open) { dlg.onclose = null; dlg.close(); await new Promise((r) => setTimeout(r, 60)); }
+  dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(title)}</h3><input id="askT" value="${esc(value)}" autocomplete="off"><div class="row end"><button class="btn ghost" value="cancel">キャンセル</button><button class="btn primary" value="ok">OK</button></div></form>`;
+  dlg.returnValue = ''; dlg.showModal(); const inp = dlg.querySelector('#askT'); setTimeout(() => { inp.focus(); inp.select(); }, 50);
+  await new Promise((q) => (dlg.onclose = q));
+  return dlg.returnValue === 'ok' ? inp.value.trim() : null;
+}
 const fmt2 = (t) => { t = Math.max(0, +t || 0); return `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, '0')}`; };
 const recCutGet = (k) => { try { const v = localStorage.getItem('st-rec' + k); return v != null && v !== '' && !isNaN(+v) ? +v : REC_DEF[k]; } catch { return REC_DEF[k]; } };
 const recCutSet = (k, v) => { try { localStorage.setItem('st-rec' + k, String(v)); } catch {} };
@@ -1194,13 +1202,13 @@ async function editorScreen(el, params) {
       return run('削除', { blocks: list0.map((b) => ({ ...b, deleted: true })), order: set.order.filter((id) => !ids.has(id)) });
     }
     if (a === 'shift') {
-      const v = prompt('ずらす秒数（例：0.5 / -1.2）', '0.5'); const d = parseFloat(v); if (!d) return;
+      const v = await askText('ずらす秒数（例：0.5 / -1.2）', '0.5'); const d = parseFloat(v); if (!d) return;
       return run(`時間を${d > 0 ? '+' : ''}${d}秒ずらす`, { blocks: list0.filter((b) => b.segments.length).map((b) => ops.shiftTime(b, d)) });
     }
     if (a === 'redo') return redoAsr(list0);
     if (a === 'replace') {
-      const from = prompt(`置き換える文字（${sel.size ? '選択中の項目' : 'すべての項目'}）`); if (!from) return;
-      const to = prompt('置き換え後の文字', '') ?? ''; const target = sel.size ? list0 : blocks;
+      const from = await askText(`置き換える文字（${sel.size ? '選択中の項目' : 'すべての項目'}）`); if (!from) return;
+      const to = (await askText('置き換え後の文字', '')) ?? ''; const target = sel.size ? list0 : blocks;
       const ch = target.filter((b) => b.text.includes(from) || (b.ja || '').includes(from)).map((b) => ops.editText(b, b.text.split(from).join(to), (b.ja || '').split(from).join(to)));
       if (!ch.length) return toast('見つかりませんでした');
       return run(`${ch.length}項目で置換`, { blocks: ch });
@@ -1861,7 +1869,7 @@ async function editorScreen(el, params) {
       if (v === 'track') chooseTrackAgain();
       if (v === 'autotrim') autoTrim();
       if (v === 'trim') trimDialog();
-      if (v === 'ren') { const t = prompt('新しい名前', set.title); if (t) { set.title = t; await sdb.put('sets', set); route(); } }
+      if (v === 'ren') { const t = await askText('名前を変える', set.title); if (t) { set.title = t; await sdb.put('sets', set); route(); } }
       if (v === 'del' && (await confirmDialog({ title: 'セットを削除', body: '<p>字幕・編集・版も削除します（元に戻せません）。動画本体は、ほかのセットで使っていなければ削除します。</p>', okLabel: '削除', danger: true }))) { await deleteSet(set); nav('sets'); }
     };
     dlg.showModal();
@@ -2052,7 +2060,7 @@ async function versionsScreen(el, params) {
       <small class="muted">${new Date(v.at).toLocaleString('ja-JP')}・${Object.keys(v.revs).length}項目・今との差：追加${d.add} 削除${d.del} 変更${d.mod}${d.moved ? '・順番' : ''}</small></span>
       <button class="btn sm" data-v="${v.id}">この版に戻す</button></div>`; }).join('') || '<p class="empty">版がありません</p>'}</div>
     <p class="hint">「この版に戻す」は1つの操作として記録されるので、編集画面の ↶ で取り消せます。今の状態も消えません（先に版として保存しておくと安心です）。</p>`;
-  $('#save', el).onclick = async () => { const label = prompt('版の名前（任意）', '') ?? ''; await saveVersion(set, label); toast('保存しました'); versionsScreen(el, params); };
+  $('#save', el).onclick = async () => { const label = (await askText('版の名前（任意）', '')) ?? ''; await saveVersion(set, label); toast('保存しました'); versionsScreen(el, params); };
   $$('[data-v]', el).forEach((b) => (b.onclick = async () => {
     const v = vers.find((x) => x.id === b.dataset.v);
     if (!(await confirmDialog({ title: `版${v.number}に戻す`, body: '<p>編集画面の ↶ で取り消せます。</p>', okLabel: '戻す' }))) return;

@@ -4,7 +4,7 @@
 // No match → the caller falls back to the synthetic voice (TTS).
 import { db } from './db.js';
 
-export const norm = (t) => String(t || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/[“”"]/g, '').replace(/\s*[×x✕*]\s*\d+\s*$/i, '')
+export const norm = (t) => String(t || '').toLowerCase().replace(/^\s*(no\.?\s*)?\d+[.):：]?\s+/, '').replace(/[’‘`]/g, "'").replace(/[“”"]/g, '').replace(/\s*[×x✕*]\s*\d+\s*$/i, '')
   .replace(/[^a-z0-9' -]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^'+|'+$/g, '');
 
 let index = null, loading = null, builtAt = 0;
@@ -31,15 +31,35 @@ async function build() {
     const vids = new Set((await db.all('videos')).map((v) => v.id));
     for (const c of await db.all('cues')) if (vids.has(c.videoId) && c.text && c.end > c.start) put(c.text, { from: 'lab', id: c.videoId, start: c.start, end: c.end, kind: c.kind || '' });
   } catch { /* no lab data */ }
-  index = m; builtAt = Date.now(); return m;
+  index = m; near.clear(); builtAt = Date.now(); return m;
 }
 // load (again) — called when a card session starts; cheap enough to rebuild each time (text only)
 export function prepare(force = false) {
   if (!force && index && Date.now() - builtAt < 60000) return Promise.resolve(index);
   return (loading ||= build().finally(() => { loading = null; }));
 }
-export const has = (text) => !!index?.get(norm(text));
-export const find = (text) => index?.get(norm(text)) || null;
+// 1.18.5: not only whole lines. A word line joined with its example ("anyway Let's try anyway.") or an example inside a longer
+// line is found too; the part is timed by its share of the letters (marked est)
+const near = new Map();
+function lookup(text) {
+  const k = norm(text); if (!k || !index) return null;
+  const hit = index.get(k); if (hit) return hit;
+  if (near.has(k)) return near.get(k);
+  const multi = k.split(' ').length >= 3; let best = null, bl = Infinity;
+  for (const [key, e] of index) {
+    if (key.length <= k.length) continue;
+    let at = -1;
+    if (key.startsWith(k + ' ')) at = 0;
+    else if (multi) { const i = (' ' + key + ' ').indexOf(' ' + k + ' '); if (i >= 0) at = i; }
+    if (at < 0 || key.length >= bl) continue;
+    best = { e, at, key }; bl = key.length;
+  }
+  let r = null;
+  if (best) { const { e, at, key } = best, d = e.end - e.start; r = { ...e, start: +(e.start + (d * at) / key.length).toFixed(2), end: +(e.start + (d * Math.min(key.length, at + k.length + 1)) / key.length).toFixed(2), est: true }; }
+  near.set(k, r); return r;
+}
+export const has = (text) => !!lookup(text);
+export const find = (text) => lookup(text);
 
 // ---- playback: one shared <audio>; one object URL per file (the 2 most recent are kept) ----
 const PAD0 = 0.06, PAD1 = 0.14;   // a little before / after so the first and last sounds are not clipped

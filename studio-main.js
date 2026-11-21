@@ -11,9 +11,9 @@ import { findCandidates, applySpans } from './studio-names.js';
 import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
-import { TIERS, bytesPerMin, compressAudio, estimate } from './compress.js';
+import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.18.0';
+export const STUDIO_VERSION = '0.18.2';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -72,6 +72,10 @@ const head = (title, backPath = null, right = '') => `
   <div class="st-band">制作・教材スタジオ <small>v${STUDIO_VERSION}</small></div>
   <header class="top">${backPath != null ? `<a class="back" href="${backPath === '__exit' ? HOST?.exitHref || '#home' : `#${BASE}${backPath}`}" aria-label="戻る">${icon('back')}</a>` : ''}<h1 title="${esc(title)}">${esc(title)}</h1><span class="grow"></span>${right}</header>`;
 
+// 1.17.2: forget what was worked out from a source's OLD file (playback URL, track table) once its file is replaced
+// (compressed, cut, made into sound only). Before this, the editor could keep playing / reading the original camera-roll file:
+// "再生できません（コード4）", transcription "再生もできません", the start not cut — until the app was reopened.
+function forgetSource(id) { const u = urlCache.get(id); if (u) { try { URL.revokeObjectURL(u); } catch {} } urlCache.delete(id); probeCache.delete(id); }
 function mediaURL(src) {
   if (!src) return null;
   if (urlCache.has(src.id)) return urlCache.get(src.id);
@@ -290,7 +294,7 @@ async function importScreen(el, params) {
       let i = 0;
       for (const n of media) { const b = await z.file(n); await addMedia(new File([b], n.split('/').pop(), { type: mimeOf(n) }), n); $('#flist', el).innerHTML = `<span class="muted">ZIPを展開しています… ${++i} / ${media.length + subs.length}</span>`; }
       for (const n of subs) { await addSub(await z.text(n), n); i++; }
-      const folders = new Set(media.map(dirOf)); if (folders.size > 1 || media.length > 3) groupMode = 'folder';
+      const folders = new Set(media.map(dirOf).filter(Boolean)); if (folders.size > 1) groupMode = 'folder';   // only when the ZIP really has several folders
       toast(`動画・音声 ${media.length}件・字幕 ${subs.length}件を読み込みました${skipped ? `（対象外 ${skipped}件）` : ''}`, 3000);
       listFiles(); pair();
     } catch (err) { toast('ZIPを読めませんでした：' + err.message, 4000); }
@@ -354,7 +358,7 @@ async function importScreen(el, params) {
     $('#gm', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { groupMode = v; draw(); } };
     $('#incAll', el).onclick = () => { sets.forEach((s) => (s.include = true)); draw(); };
     $('#incNone', el).onclick = () => { sets.forEach((s) => (s.include = false)); draw(); };
-    $('#go', el).onclick = () => { const inc = sets.filter((s) => s.include); const mode = storeMode === 'store' && TIERS[videoQ] ? `store-c:${videoQ}` : storeMode; if (toSet) return runAppend(inc, mode); runImport(groupMode === 'folder' ? groupsOf(inc) : inc.map((s) => ({ title: s.title, items: [s], folder: groupsOf([s])[0]?.title || '' })), mode); };
+    $('#go', el).onclick = () => { const inc = sets.filter((s) => s.include); const mode = storeMode === 'store' && TIERS[videoQ] ? `store-c:${videoQ}` : storeMode; if (toSet) return runAppend(inc, mode); runImport(groupMode === 'folder' ? groupsOf(inc).map(({ folder, ...g }) => g) : inc.map((s) => ({ title: s.title, items: [s], folder: groupsOf([s])[0]?.folder || '' })), mode); };
   }
   async function runAppend(list, mode) {
     const prog = $('#prog', el); $('#go', el).disabled = true; running('追加');
@@ -365,13 +369,22 @@ async function importScreen(el, params) {
   }
   async function runImport(list, mode) {
     const prog = $('#prog', el);
-    // the same data imported before (or stopped halfway): continue it and overwrite the rows of the same files
+    // the same data imported before (or stopped halfway): found by the FILES themselves (fingerprint / subtitle name), not by the title
     const reuseOf = new Map();
-    const existing = (await sdb.all('sets')).filter((x) => x.importKey);
-    const hits = list.map((g) => [importKeyOf(g), existing.find((x) => x.importKey === importKeyOf(g))]).filter(([, x]) => x);
+    const impOf = (it) => it.media?.fp?.id || it.en?.name || it.ja?.name || '';
+    const owner = new Map();   // imported file → set that already has rows from it
+    const setsById = Object.fromEntries((await sdb.all('sets')).map((x) => [x.id, x]));
+    for (const blk of await sdb.all('blocks')) if (!blk.deleted && blk.imp && setsById[blk.setId]?.order?.includes(blk.id)) owner.set(blk.imp, blk.setId);
+    const hits = list.map((g) => { const ids = g.items.map(impOf).filter(Boolean).map((k) => owner.get(k)).filter(Boolean); const best = ids.sort((x, y) => ids.filter((v) => v === y).length - ids.filter((v) => v === x).length)[0]; return best ? [g, setsById[best]] : null; }).filter(Boolean);
     if (hits.length) {
-      const ok = await confirmDialog({ title: '同じ教材がすでにあります', body: `<p>${hits.map(([, x]) => `${esc(x.title)}${x.importing ? `（取り込み途中 ${x.importing.done}/${x.importing.total}）` : ''}`).join('<br>')}</p><p class="hint">続きを取り込み、同じファイルから作った行は新しい内容で上書きします（行は増えません）。「別の教材にする」を選ぶと新しく作ります。</p>`, okLabel: '上書きして続ける', cancelLabel: '別の教材にする' });
-      if (ok) hits.forEach(([k, x]) => reuseOf.set(k, x));
+      const dlg = $('#dialog');
+      dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>前に取り込んだファイルが含まれています</h3>
+        <div class="small">${hits.map(([g, x]) => `「${esc(g.title)}」→ 教材「${esc(x.title)}」${x.importing ? `（取り込み途中 ${x.importing.done}/${x.importing.total}）` : ''}`).join('<br>')}</div>
+        <p class="hint">上書き：その教材に続きを入れ、同じファイルから作った行は新しい内容に置き換えます（行は増えません）。<br>別の教材：新しい教材として、元のファイル名で作ります。</p>
+        <button class="btn primary" value="ok">上書きして続ける</button><button class="btn" value="new">別の教材にする</button><button class="btn ghost" value="cancel">キャンセル</button></form>`;
+      dlg.returnValue = ''; dlg.showModal(); await new Promise((q) => (dlg.onclose = q));
+      if (dlg.returnValue !== 'ok' && dlg.returnValue !== 'new') return;   // cancel: nothing is imported
+      if (dlg.returnValue === 'ok') hits.forEach(([g, x]) => reuseOf.set(g, x));
     }
     const lock = await navigator.wakeLock?.request?.('screen').catch(() => null);
     navigator.storage?.persist?.().catch(() => {});
@@ -381,7 +394,7 @@ async function importScreen(el, params) {
     for (let i = 0; i < list.length; i++) {
       const s = list[i];
       prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}</p>`;
-      const reuse = reuseOf.get(importKeyOf(s)) || null;
+      const reuse = reuseOf.get(s) || null;
       try { const r = await createSet(s, mode, autoTrimOn, (k, n, t = '') => (prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}（${k} / ${n}）${t ? `<br>${esc(t)}` : ''}</p>`), reuse); results.push({ s, id: r.id, notes: r.notes, again: !!reuse }); }
       catch (e) { results.push({ s, err: (e?.message || String(e)) }); }
     }
@@ -436,7 +449,9 @@ async function hardTrim(srcId, a, b, say = () => {}) {
   const info = isContainer(src, src.blob) ? await probe(src.blob).catch(() => null) : null;
   const at = info ? audioTracks(info) : [];
   const t = at.find((x) => x.id === src.audio?.trackId) || at[src.audio?.index ?? 0];
-  if (t && canExtract(t) && (src.kind === 'audio' || src.derived === 'audio16k')) {   // sound file: cut without re-encoding
+  if (src.derived === 'aac') {   // 1.17.2: our own AAC (compressed at import): exact cut, keeps the quality, no track copy
+    say('カット部分を削っています…'); const x = await cutAac(src.blob, a, b, src.name); blob = x.file; start = x.start;
+  } else if (t && canExtract(t) && (src.kind === 'audio' || src.derived === 'audio16k')) {   // sound file: cut without re-encoding
     say('カット部分を削っています…'); const x = await extractTrack(src.blob, t, a, b); blob = new File([await x.blob.arrayBuffer()], src.name.replace(/\.[^.]+$/, '') + '.m4a', { type: 'audio/mp4' }); start = x.start;
   } else {   // video or other format: keep only the sound of [a, b] (same as the data saver)
     say('音声だけにして削っています…');
@@ -449,7 +464,7 @@ async function hardTrim(srcId, a, b, say = () => {}) {
   const m = await readDuration(blob);
   if (!m.playable) throw new Error('カット後のファイルが再生できなかったため、元のまま残しました');   // never replace a good file with a broken one
   Object.assign(src, { blob, mime: blob.type, origSize: src.origSize || src.size, size: blob.size, duration: m.duration || b - start, trimmed: { from: start, to: b, at: Date.now() } });
-  delete src.audio; probeCache.delete(src.id); URL.revokeObjectURL(urlCache.get(src.id) || ''); urlCache.delete(src.id);
+  delete src.audio; forgetSource(src.id);
   await sdb.put('sources', src);
   // shift every set's items that use this file
   for (const set of await sdb.all('sets')) {
@@ -595,8 +610,9 @@ const dirOf = (n) => (n.includes('/') ? n.slice(0, n.lastIndexOf('/')) : '');
 // folder mode: one set per folder of the media file (keeps file order)
 function groupsOf(list) {
   const m = new Map();
-  for (const s of list) { const d = dirOf(s.media?.name || s.en?.name || s.ja?.name || '') || 'まとめ'; if (!m.has(d)) m.set(d, []); m.get(d).push(s); }
-  return [...m].map(([d, items]) => ({ title: d.split('/').filter(Boolean).join(' / '), items }));
+  // 1.17.1: files that are not in a folder are not lumped together into one "まとめ" set: each stays its own set
+  for (const s of list) { const d = dirOf(s.media?.name || s.en?.name || s.ja?.name || '') || `\u0000${s.title || s.media?.name || Math.random()}`; if (!m.has(d)) m.set(d, []); m.get(d).push(s); }
+  return [...m].map(([d, items]) => (d.startsWith('\u0000') ? { title: items[0].title || d.slice(1), items } : { title: d.split('/').filter(Boolean).join(' / '), items, folder: d.split('/').filter(Boolean).join(' / ') }));
 }
 // read the file into memory in pieces and make a new Blob, so the saved data does not depend on a temporary file
 async function copyBlob(file, say = () => {}) {
@@ -628,6 +644,7 @@ async function putSource(media, mode, say = () => {}) {
     delete src.audio;
   } else if (mode.startsWith('store') && !src.stored) { src.stored = true; src.blob = media.file.size <= 300 * 1024 * 1024 ? await copyBlob(media.file, say) : media.file; }
   else if (!src.stored) sessionFiles.set(src.id, media.file);
+  if (src.stored) forgetSource(src.id);   // the saved file (copy / compressed sound) is what plays from now on
   await sdb.put('sources', src);   // a big file is written from disk; may take a while
   return { src, a16 };
 }
@@ -786,7 +803,7 @@ async function editorScreen(el, params) {
       const f = inp.files[0]; if (!f) return; const s = srcs[inp.dataset.src];
       const fp = await fingerprint(f);
       if (fp.id !== s.id && !(await confirmDialog({ title: '別のファイルのようです', body: `<p class="small">選んだファイルは登録時と大きさか中身が違います（写真アプリから選ぶと、iPhoneが別の形式で書き出すことがあります）。このファイルでつなぎますか？時間がずれる可能性があります。</p>`, okLabel: 'つなぐ' }))) return;
-      sessionFiles.set(s.id, f); urlCache.delete(s.id); drawRelink(); toast('つなぎました（この画面を閉じるまで有効）');
+      sessionFiles.set(s.id, f); forgetSource(s.id); drawRelink(); toast('つなぎました（この画面を閉じるまで有効）');
       if (set.sourceId === s.id) attach(s.id);
     }));
   }
@@ -1515,7 +1532,7 @@ async function editorScreen(el, params) {
         if (small instanceof Error) throw small;
         if (!small || (small.file.size >= before && src.codec !== 'aac' && !/mpeg|mp3/.test(src.mime || ''))) continue;
         Object.assign(src, { blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: src.size, duration: small.duration || src.duration });
-        await sdb.put('sources', src); URL.revokeObjectURL(urlCache.get(id) || ''); urlCache.delete(id); saved += before - small.file.size;
+        await sdb.put('sources', src); forgetSource(id); saved += before - small.file.size;
       } catch (e) { running(null); await confirmDialog({ title: '変換できませんでした', body: `<p class="small">${esc(srcs[id].name)}<br>${esc((e?.message || String(e)))}</p><p class="hint">元のまま残しています。</p>`, okLabel: '閉じる', cancelLabel: null }); }
     }
     running(null); toast(saved ? `${fmtSize(saved)} 減らしました` : 'この端末では、これ以上小さくできませんでした', 3500); route();
@@ -1765,7 +1782,7 @@ async function cleanScreen(el) {
       if (!x.audio && x.kind !== 'audio') x.audio = await decideTrack(x, x.blob, (t) => toast(t, 4000));
       const a = await sourceAudio16k(x, x.blob, { say: (t) => toast(t, 4000) });
       const small = await shrinkAudio(a, x.name, true); if (!small) throw new Error('この端末では変換できませんでした');
-      Object.assign(x, { blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: x.size, size: small.file.size }); delete x.audio; probeCache.delete(x.id);
+      Object.assign(x, { blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: x.size, size: small.file.size }); delete x.audio; forgetSource(x.id);
       await sdb.put('sources', x); toast('変換しました'); cleanScreen(el);
     } catch (e) { toast('変換できませんでした：' + (e?.message || e), 4000); }
   }));

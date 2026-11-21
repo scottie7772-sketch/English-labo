@@ -31,12 +31,36 @@ const strip = (v) => {
   if (blob && !fromLab.has(blob)) return { ...rest, blob };   // the sound was changed here (cut, converted): it is the studio's own again
   return { ...rest, labRef };
 };
+// 1.17.2: a file read back from this database is never written again (iPhone can make it unplayable: "再生できません",
+// "再生もできませんでした" until the app is reopened). When only the details of such a source change (chosen sound track,
+// notes…), they are kept beside it (localStorage) and laid over the record when it is read.
+const fromIdb = new WeakSet();
+const META = 'st-srcmeta';
+const metaAll = () => { try { return JSON.parse(localStorage.getItem(META) || '{}'); } catch { return {}; } };
+const metaSave = (m) => { try { localStorage.setItem(META, JSON.stringify(m)); return true; } catch { return false; } };
+function withMeta(src) {
+  if (!src) return src;
+  if (src.blob && !src.labRef) fromIdb.add(src.blob);
+  const m = metaAll()[src.id];
+  if (m && src.blob && m._size === src.blob.size) { const { _size, ...rest } = m; Object.assign(src, rest); }
+  return src;
+}
 {
   const { get, all, byIndex, put } = sdb;
-  sdb.get = async (s, k) => { const v = await get(s, k); return s === 'sources' ? hydrate(v) : v; };
-  sdb.all = async (s) => { const v = await all(s); return s === 'sources' ? Promise.all(v.map(hydrate)) : v; };
-  sdb.byIndex = async (s, i, x) => { const v = await byIndex(s, i, x); return s === 'sources' ? Promise.all(v.map(hydrate)) : v; };
-  sdb.put = (s, v) => put(s, s === 'sources' ? strip(v) : v);
+  const prep = (v) => hydrate(v).then(withMeta);
+  sdb.get = async (s, k) => { const v = await get(s, k); return s === 'sources' ? prep(v) : v; };
+  sdb.all = async (s) => { const v = await all(s); return s === 'sources' ? Promise.all(v.map(prep)) : v; };
+  sdb.byIndex = async (s, i, x) => { const v = await byIndex(s, i, x); return s === 'sources' ? Promise.all(v.map(prep)) : v; };
+  sdb.put = (s, v) => {
+    if (s !== 'sources' || !v) return put(s, v);
+    const m = metaAll();
+    if (v.blob && fromIdb.has(v.blob) && !v.labRef) {   // same file as saved: keep only the details
+      const { blob, ...rest } = v;
+      m[v.id] = { ...JSON.parse(JSON.stringify(rest)), _size: blob.size };
+      if (metaSave(m)) return Promise.resolve(v.id);
+    } else if (m[v.id]) { delete m[v.id]; metaSave(m); }
+    return put(s, strip(v));
+  };
 }
 export const sourceStripped = strip;
 

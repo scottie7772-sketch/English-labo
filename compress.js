@@ -331,6 +331,29 @@ export async function compressAudio(blob, { tier = 'std', name = 'audio', durati
 }
 
 export const _m4a = m4a;   // for tests
+// 1.17.2: cut [a, b] seconds out of an AAC m4a WITHOUT re-encoding. Whole AAC frames are copied (plus one frame before the cut,
+// which the decoder needs to start cleanly) and the hidden start (priming) is set so playback starts exactly at a.
+// Unlike a plain track copy, the original file's edit list is respected, so the cut lands where the editor showed it.
+export async function cutAac(blob, a, b, name = 'audio') {
+  const src = await aacIndex(blob); if (!src) throw new Error('AACの音声ではありません');
+  const rate = src.sr, n = src.off.length, skip = src.skip || 0;
+  const s0 = Math.max(0, Math.round(a * rate)), s1 = Math.min(n * 1024 - skip, Math.round(b * rate));
+  if (s1 - s0 < rate * 0.2) throw new Error('残る部分が短すぎます');
+  const k0 = Math.max(0, Math.floor((skip + s0) / 1024) - 1), k1 = Math.min(n, Math.ceil((skip + s1) / 1024) + 1);
+  const frames = [];
+  for (let i = k0; i < k1;) {   // read contiguous frames in one slice
+    let j = i, end = src.off[i] + src.len[i];
+    while (j + 1 < k1 && src.off[j + 1] === end && end - src.off[i] < (8 << 20)) { j++; end += src.len[j]; }
+    const bytes = new Uint8Array(await blob.slice(src.off[i], end).arrayBuffer());
+    for (let k = i, p = 0; k <= j; k++) { frames.push(bytes.slice(p, p + src.len[k])); p += src.len[k]; }
+    i = j + 1;
+  }
+  const priming = skip + s0 - k0 * 1024, content = Math.min(s1 - s0, frames.length * 1024 - priming);
+  const m = m4a(frames, rate, content, priming), dur = content / rate;
+  const chk = await checkPlayable(m, dur);
+  if (!chk.ok) throw new Error('カット後の音声を確認できませんでした');
+  return { file: new File([m], String(name).replace(/\.[^.]+$/, '') + '.m4a', { type: 'audio/mp4' }), start: a, duration: dur };
+}
 
 // ---------------- the shared dialog: choose → convert → listen → replace ----------------
 // opts: { blob, name, duration, trackIndex, lossy (already compressed?), hasOriginal (a better source exists) }

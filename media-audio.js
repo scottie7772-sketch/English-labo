@@ -138,7 +138,7 @@ export function edgeCut(rms, zcr = []) {
 // when nothing is found in a screen recording: cut a fixed length (the usual start/stop sound), set by the user
 export const isScreenRec = (name) => /screen\s*recording|画面収録|RPReplay/i.test(name || '');
 // the iPhone screen-recording sound lasts about 0.9 s (measured by the user)
-export const defaultCut = () => { try { return +(localStorage.getItem('st-defCut2') ?? 0.9); } catch { return 0.9; } };
+export const defaultCut = () => { try { return +(localStorage.getItem('st-defCut2') ?? 0.45); } catch { return 0.45; } };
 
 // seconds [start, end] to keep, looking at the first / last few seconds of the chosen sound track
 export async function findEdgesBlob(blob, { name = '', trackIndex = null, duration = 0 } = {}) {

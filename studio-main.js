@@ -13,7 +13,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.18.7';
+export const STUDIO_VERSION = '0.18.8';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -215,7 +215,11 @@ function srcState(src) {
 // ================= bulk import =================
 async function importScreen(el, params) {
   const files = { media: [], subs: [] };   // analysed entries
-  let sets = null, storeMode = 'store', groupMode = 'file', videoQ = (() => { try { return localStorage.getItem('st-quality') || 'std'; } catch { return 'std'; } })(), autoTrimOn = true;
+  let sets = null, storeMode = 'store', groupMode = 'file', videoQ = (() => { try { return localStorage.getItem('st-quality') || 'std'; } catch { return 'std'; } })(), autoTrimOn = (() => { try { return localStorage.getItem('st-autoTrim') !== '0'; } catch { return true; } })();
+  // 1.17.8: the screen-recording start sound has its own cut (a fixed length from the start, measured 0.45 s), apart from the automatic cut
+  let recOn = (() => { try { return localStorage.getItem('st-recOn') !== '0'; } catch { return true; } })();
+  let recCut = (() => { try { const v = +localStorage.getItem('st-recCut'); return v > 0 ? v : 0.45; } catch { return 0.45; } })();
+  const trimOpt = () => (autoTrimOn || recOn ? { auto: autoTrimOn, rec: recOn ? recCut : 0 } : false);   // both off → the file as it is
   const toSet = params?.get('to') ? await sdb.get('sets', params.get('to')) : null;   // add to an existing set
   el.innerHTML = `${head(toSet ? `「${toSet.title}」に追加` : '一括登録', toSet ? `set?id=${toSet.id}` : 'sets')}
     ${toSet ? `<div class="notice stack small"><b>教材「${esc(toSet.title)}」に追加します。</b>同じ教材の続きの音声や、スクリプト（時刻なしのテキスト）を選んでください。追加したあと「文字起こし→照合」で、音声とスクリプトの位置を合わせます。</div>` : ''}
@@ -337,8 +341,10 @@ async function importScreen(el, params) {
         <label class="chk"><input type="radio" name="vq" value="orig" ${videoQ === 'orig' ? 'checked' : ''}> 元のまま（動画の映像も残す・圧縮しない）</label>
         <small class="muted">圧縮すると動画は音声だけになります。圧縮できなかったファイルは元のまま保存し、結果に表示します。</small>` : ''}
         ${needBytes ? `<small class="muted">必要な容量：約${fmtSize(storeMode === 'store' && TIERS[videoQ] ? inc.reduce((a, x) => a + Math.min(x.media.file.size, (x.media.duration || 0) * bytesPerMin(videoQ) / 60), 0) : needBytes)}</small>` : ''}</div>
-      <label class="chk"><input type="checkbox" id="atr" ${autoTrimOn ? 'checked' : ''}> 前後の画面収録音・無音を自動でカット</label>
-      ${autoTrimOn ? `<label class="chk"><input type="checkbox" id="drc" ${dropCutSetting() ? 'checked' : ''}> カットした部分（元の前後）は保存しない（容量節約・元に戻せません）</label>` : ''}
+      <div class="row wrap"><label class="chk grow"><input type="checkbox" id="rec" ${recOn ? 'checked' : ''}> 画面収録音をカット（始め ${recCut.toFixed(2)}秒）</label>${recOn ? `<button type="button" class="btn xs" data-rc="-0.05">−0.05</button><button type="button" class="btn xs" data-rc="0.05">＋0.05</button>` : ''}</div>
+      <label class="chk"><input type="checkbox" id="atr" ${autoTrimOn ? 'checked' : ''}> 前後の無音・音を自動でカット</label>
+      ${!autoTrimOn && !recOn ? '<small class="muted">どちらも外すと、カットせずに元の長さのまま取り込みます。</small>' : ''}
+      ${autoTrimOn || recOn ? `<label class="chk"><input type="checkbox" id="drc" ${dropCutSetting() ? 'checked' : ''}> カットした部分（元の前後）は保存しない（容量節約・元に戻せません）</label>` : ''}
       <button class="btn primary" id="go" ${over || !sets.some((s) => s.include) ? 'disabled' : ''}>${toSet ? '追加する' : '登録する'}</button>
       <div id="prog"></div>`;
     $$('[data-inc]', el).forEach((c) => (c.onchange = () => { sets[+c.dataset.inc].include = c.checked; draw(); }));
@@ -353,7 +359,9 @@ async function importScreen(el, params) {
     }));
     $$('input[name=sm]', el).forEach((r) => (r.onchange = () => { storeMode = r.value; draw(); }));
     $$('input[name=vq]', el).forEach((r) => (r.onchange = () => { videoQ = r.value; try { localStorage.setItem('st-quality', videoQ); } catch {} draw(); }));
-    $('#atr', el).onchange = (e) => { autoTrimOn = e.target.checked; draw(); };
+    $('#atr', el).onchange = (e) => { autoTrimOn = e.target.checked; try { localStorage.setItem('st-autoTrim', autoTrimOn ? '1' : '0'); } catch {} draw(); };
+    $('#rec', el).onchange = (e) => { recOn = e.target.checked; try { localStorage.setItem('st-recOn', recOn ? '1' : '0'); } catch {} draw(); };
+    $$('[data-rc]', el).forEach((b) => (b.onclick = () => { recCut = Math.max(0.05, Math.min(3, Math.round((recCut + +b.dataset.rc) * 100) / 100)); try { localStorage.setItem('st-recCut', String(recCut)); } catch {} draw(); }));
     $('#drc', el)?.addEventListener('change', (e) => setDropCut(e.target.checked));
     $('#gm', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { groupMode = v; draw(); } };
     $('#incAll', el).onclick = () => { sets.forEach((s) => (s.include = true)); draw(); };
@@ -363,7 +371,7 @@ async function importScreen(el, params) {
   async function runAppend(list, mode) {
     const prog = $('#prog', el); $('#go', el).disabled = true; running('追加');
     try {
-      await appendToSet(toSet.id, list.map((s) => ({ title: s.title, items: [s] })), mode, autoTrimOn, (k, n, t = '') => (prog.innerHTML = `<p class="small">追加中（${k} / ${n}）${t ? `<br>${esc(t)}` : ''}</p>`));
+      await appendToSet(toSet.id, list.map((s) => ({ title: s.title, items: [s] })), mode, trimOpt(), (k, n, t = '') => (prog.innerHTML = `<p class="small">追加中（${k} / ${n}）${t ? `<br>${esc(t)}` : ''}</p>`));
       running(null); nav(`set?id=${toSet.id}`);
     } catch (e) { running(null); prog.innerHTML = `<div class="card warn">追加できませんでした：${esc(e?.message || String(e))}</div>`; $('#go', el).disabled = false; }
   }
@@ -395,7 +403,7 @@ async function importScreen(el, params) {
       const s = list[i];
       prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}</p>`;
       const reuse = reuseOf.get(s) || null;
-      try { const r = await createSet(s, mode, autoTrimOn, (k, n, t = '') => (prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}（${k} / ${n}）${t ? `<br>${esc(t)}` : ''}</p>`), reuse); results.push({ s, id: r.id, notes: r.notes, again: !!reuse }); }
+      try { const r = await createSet(s, mode, trimOpt(), (k, n, t = '') => (prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}（${k} / ${n}）${t ? `<br>${esc(t)}` : ''}</p>`), reuse); results.push({ s, id: r.id, notes: r.notes, again: !!reuse }); }
       catch (e) { results.push({ s, err: (e?.message || String(e)) }); }
     }
     lock?.release?.(); running(null);
@@ -408,7 +416,7 @@ async function importScreen(el, params) {
 
 function highPass(a, fc = 80) { const rc = 1 / (2 * Math.PI * fc), dt = 1 / 16000, al = rc / (rc + dt); let py = 0, px = a[0] || 0; for (let i = 0; i < a.length; i++) { const x = a[i]; py = al * (py + x - px); px = x; a[i] = py; } return a; }
 // ---- trimming the start / end (screen-recording sounds, silence) ----
-async function findEdges(src, blob, D, a16 = null) {
+async function findEdges(src, blob, D, a16 = null, opt = null) {
   const W = Math.min(6, D / 3);
   let a0, a1;
   const isMp3 = /mpeg|mp3|aac/.test(blob?.type || src.mime || '') || /\.(mp3|aac)$/i.test(src.name || '');
@@ -435,7 +443,8 @@ async function findEdges(src, blob, D, a16 = null) {
   const dc = defaultCut();
   // screen recordings: always cut at least the usual sound length (more if a longer sound/silence was found)
   // (start only: the stop sound is not in the recording — on a real recording the speech runs to the very end)
-  if (isScreenRec(src.name) && dc > 0 && st.cut < dc) st = { cut: dc, why: `画面収録の音 ${dc}秒` };
+  const rc = opt ? opt.rec || 0 : isScreenRec(src.name) ? dc : 0;   // import: the user's setting; elsewhere: screen recordings only
+  if (rc > 0 && st.cut < rc) st = { cut: rc, why: `画面収録音 ${rc}秒` };
   return { start: +st.cut.toFixed(2), end: +(D - en.cut).toFixed(2), whyStart: st.why, whyEnd: en.why, duration: D };
 }
 const dropCutSetting = () => { try { return localStorage.getItem('st-dropCut') === '1'; } catch { return false; } };
@@ -692,6 +701,11 @@ async function appendToSet(setId, groups, mode, trimEdges = false, onStep = () =
   await commit(set, 'スクリプト・音声を追加', { blocks, order: [...set.order, ...blocks.map((b) => b.id)] });
   return setId;
 }
+// 1.17.8: trim = { auto, rec } from the import screen. auto: look for sounds / silence at both ends; rec: always cut that much at the start
+async function edgesFor(src, dur, a16, trim) {
+  if (trim.auto) return findEdges(src, src.stored ? src.blob : sessionFiles.get(src.id), dur, a16, { rec: trim.rec || 0 });
+  return trim.rec ? { start: Math.min(trim.rec, dur - 1), end: dur, whyStart: `画面収録音 ${trim.rec}秒`, whyEnd: '', duration: dur } : { start: 0, end: dur, whyStart: '', whyEnd: '', duration: dur };
+}
 async function buildItems(setId, group, mode, trimEdges = false, onStep = () => {}) {
   const blocks = [], tracks = [];
   let firstSrc = null, n = 0;
@@ -720,7 +734,7 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
         lines.forEach((t, i) => part.push(newBlock(setId, { segments: [], text: t, ja: jaLines[i] || '', script: true, cueRefs: { en: [], ja: [] }, sync: 'auto' })));
         if (src) {
           let a = 0, b = dur || 1;
-          if (trimEdges && dur > 4) { try { onStep(n, group.items.length, '前後の音を調べています…'); const r = await findEdges(src, src.stored ? src.blob : sessionFiles.get(src.id), dur, a16); a = r.start; b = r.end; } catch { /* whole file */ } }
+          if (trimEdges && dur > 4) { try { onStep(n, group.items.length, '前後の音を調べています…'); const r = await edgesFor(src, dur, a16, trimEdges); a = r.start; b = r.end; } catch { /* whole file */ } }
           part.push(newBlock(setId, { segments: seg(a, b), label: src.name.replace(/\.[^.]+$/, ''), sync: 'auto' }));
         }
         tag(part); blocks.push(...part); a16 = null; await new Promise((r) => setTimeout(r, 250));
@@ -743,7 +757,7 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
       ja.cues.forEach((j) => part.push(newBlock(setId, { segments: s.ja.parsed.timed ? seg(j.start, j.end) : [], text: '', ja: j.text, cueRefs: { en: [], ja: [j.id] }, sync: s.ja.parsed.timed ? 'auto' : 'estimated' })));
     } else if (src) {   // audio/video without a script: one item for the whole file (text can be added later)
       let a = 0, b = dur || 1, trimNote = '';
-      if (trimEdges && dur > 4) { try { onStep(n, group.items.length, '前後の音を調べています…'); const r = await findEdges(src, src.stored ? src.blob : sessionFiles.get(src.id), dur, a16); a = r.start; b = r.end; trimNote = [r.whyStart && `始め ${fmt(a)}`, r.whyEnd && `終わり ${fmt(b)}`].filter(Boolean).join('・'); } catch { /* keep the whole file */ } }
+      if (trimEdges && dur > 4) { try { onStep(n, group.items.length, '前後の音を調べています…'); const r = await edgesFor(src, dur, a16, trimEdges); a = r.start; b = r.end; trimNote = [r.whyStart && `始め ${fmt(a)}`, r.whyEnd && `終わり ${fmt(b)}`].filter(Boolean).join('・'); } catch { /* keep the whole file */ } }
       const shared = (await sdb.all('sets')).some((x) => x.sourceId === src.id);   // used by another set: do not cut its file
       if (trimNote && dropCutSetting() && src.stored && !shared) {
         try { onStep(n, group.items.length, 'カットした部分を削っています…'); const t2 = await hardTrim(src.id, a, b, (t) => onStep(n, group.items.length, t)); const off = t2.trimmed.from; a = Math.max(0, a - off); b = Math.min(t2.duration, b - off); Object.assign(src, t2); }
@@ -1614,7 +1628,7 @@ async function editorScreen(el, params) {
         <label class="chk"><input type="checkbox" id="tDrop" ${dropCutSetting() ? 'checked' : ''}> カットした部分は保存しない（元に戻せません）</label>
         <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">保存</button></div></form>`;
       $('#tDrop', dlg).onchange = (ev) => setDropCut(ev.target.checked);
-      $('#tDef', dlg).onclick = () => { const L = [0, 0.5, 0.9, 1.2, 1.5, 2]; const nx = L[(L.indexOf(defaultCut()) + 1) % L.length]; try { localStorage.setItem('st-defCut2', String(nx)); } catch {} draw(); };
+      $('#tDef', dlg).onclick = () => { const L = [0, 0.45, 0.5, 0.9, 1.2, 1.5, 2]; const nx = L[(L.indexOf(defaultCut()) + 1) % L.length]; try { localStorage.setItem('st-defCut2', String(nx)); } catch {} draw(); };
       $$('[data-d]', dlg).forEach((b) => (b.onclick = () => { const [k, d] = b.dataset.d.split(':'); const maxEnd = srcs[e.last.segments.at(-1).sourceId]?.duration || Infinity; if (k === 's') st = Math.min(en - 0.3, Math.max(0, +(st + +d).toFixed(2))); else en = Math.min(maxEnd, Math.max(st + 0.3, +(en + +d).toFixed(2))); draw(); }));
       $('#sNow', dlg).onclick = () => { st = +vid.currentTime.toFixed(2); draw(); };
       $('#eNow', dlg).onclick = () => { en = +vid.currentTime.toFixed(2); draw(); };

@@ -120,3 +120,4 @@ header.top.st-edhead ~ .st-stick, header.top.st-edhead ~ * .st-stick { top: var(
 .st-smeta .tagp { margin-left: 2px; font-size: 10.5px; padding: 0 5px; vertical-align: 0; }
 .st-fulllist li.st-fsel { background: rgba(224,96,96,.18); }
 #fBar { gap: 6px; padding: 6px; border-radius: 8px; background: rgba(255,255,255,.05); }
+a.st-setrow { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }

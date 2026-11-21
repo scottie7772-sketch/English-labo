@@ -13,7 +13,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.19.2';
+export const STUDIO_VERSION = '0.19.3';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -126,8 +126,8 @@ async function setsScreen(el) {
     el.innerHTML = `${head('教材スタジオ', HOST ? '__exit' : null, `<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#${BASE}clean">容量</a>`)}
     <div class="row"><a class="btn primary grow" href="#${BASE}import">＋ 一括登録（動画・音声・字幕）</a><a class="btn" href="#${BASE}io">読み込み</a></div>
     ${est ? `<p class="small muted">端末の保存量：${fmtSize(est.usage || 0)}${est.quota ? ` / 目安の上限 ${fmtSize(est.quota)}` : ''}</p>` : ''}
-    ${sets.length ? `<div class="row"><span class="grow small muted">${sets.length}セット・左にスワイプで削除</span><button class="btn sm" id="edit">${editing ? '完了' : '選ぶ（フォルダ・削除）'}</button></div>
-    ${editing ? `<div class="row wrap"><button class="btn sm" id="eAll">すべて選ぶ</button><button class="btn sm danger" id="eDel" ${chosen.size ? '' : 'disabled'}>削除（${chosen.size}）</button><button class="btn sm" id="eNone">解除</button><button class="btn sm grow" id="eFold" ${chosen.size ? '' : 'disabled'}>📁 フォルダへ</button></div>` : ''}
+    ${sets.length ? `<div class="row"><span class="grow small muted">${sets.length}セット・左スワイプで削除・長押しで名前変更</span><button class="btn sm" id="edit">${editing ? '完了' : '選ぶ（フォルダ・削除）'}</button></div>
+    ${editing ? `<div class="row wrap"><button class="btn sm" id="eAll">すべて選ぶ</button><button class="btn sm danger" id="eDel" ${chosen.size ? '' : 'disabled'}>削除（${chosen.size}）</button><button class="btn sm" id="eNone">解除</button><button class="btn sm" id="eRen" ${chosen.size === 1 ? '' : 'disabled'}>名前を変える</button><button class="btn sm grow" id="eFold" ${chosen.size ? '' : 'disabled'}>📁 フォルダへ</button></div>` : ''}
     ${[...folders, ''].map((f) => { const inF = sets.filter((s) => (s.folder || '') === f); if (!inF.length) return '';
       const rows = inF.map(rowHTML).join('');
       return f ? `<details class="card st-fold" data-f="${esc(f)}" ${openF.has(f) || editing ? 'open' : ''}><summary>📁 ${esc(f)} <small class="muted">${inF.length}</small></summary>${!editing && inF.length > 1 ? `<button class="btn sm st-fmerge" data-fmerge="${esc(f)}">🔗 このフォルダをまとめて照合（スクリプトに音声を入れる）</button>` : ''}<div class="list">${rows}</div></details>` : `<div class="card list">${rows}</div>`; }).join('')}` : '<p class="empty">まだ教材セットがありません。「一括登録」から動画・音声と字幕を選んでください。</p>'}
@@ -194,6 +194,16 @@ async function setsScreen(el) {
     $('#edit', el)?.addEventListener('click', () => { editing = !editing; chosen.clear(); draw(); });
     $('#eAll', el)?.addEventListener('click', () => { sets.forEach((x) => chosen.add(x.id)); draw(); });
     $('#eNone', el)?.addEventListener('click', () => { chosen.clear(); draw(); });
+    // 1.18.3: rename from the list (選ぶ → one set → 名前を変える, or press and hold a row)
+    const rename = async (x) => { const t = prompt('新しい名前', x.title); if (!t || !t.trim() || t.trim() === x.title) return; x.title = t.trim(); x.updatedAt = Date.now(); await sdb.put('sets', x); toast('名前を変えました'); draw(); };
+    $('#eRen', el)?.addEventListener('click', () => { const x = sets.find((s) => chosen.has(s.id)); if (x) rename(x); });
+    if (!editing) $$('a.st-setrow', el).forEach((a) => {
+      let t = 0, held = false;
+      a.addEventListener('touchstart', () => { held = false; clearTimeout(t); t = setTimeout(() => { held = true; const x = sets.find((s) => a.getAttribute('href').endsWith(s.id)); if (x) rename(x); }, 600); }, { passive: true });
+      ['touchmove', 'touchend', 'touchcancel'].forEach((ev) => a.addEventListener(ev, () => clearTimeout(t), { passive: true }));
+      a.addEventListener('click', (e) => { if (held) { e.preventDefault(); e.stopPropagation(); held = false; } }, true);
+      a.addEventListener('contextmenu', (e) => e.preventDefault());
+    });
     $$('.st-cb', el).forEach((c) => (c.onchange = () => { c.checked ? chosen.add(c.dataset.id) : chosen.delete(c.dataset.id); draw(); }));
     $('#eDel', el)?.addEventListener('click', async () => {
       const list = sets.filter((x) => chosen.has(x.id));

@@ -25,7 +25,10 @@ export const arrowOf = (map, result) => ARROW[Object.keys(map).find((d) => map[d
 // the hint line under the card
 export const swipeHint = (map) => `タップで答え ・ ${['up', 'down', 'left', 'right'].filter((d) => map[d]).map((d) => ARROW[d] + RESULT_JA[map[d]]).join(' ・ ')}`;
 
-export function makeSwipeCard(card, { knowRight = true, map = null, pads = [], onTap, onCommit, canInteract = () => true, revealOnCommit = null }) {
+export function makeSwipeCard(card, { knowRight = true, map = null, pads = [], paper = false, onTap, onCommit, canInteract = () => true, revealOnCommit = null }) {
+  let tapEl = null;
+  const calm = paper && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const root = paper ? card.closest('.qrun') : null;
   let id = null, x0 = 0, y0 = 0, t0 = 0, dx = 0, dy = 0, axis = null, done = false;
   let lastX = 0, lastY = 0, lastT = 0, vx = 0, vy = 0;
   map = map || swipeMap(knowRight ? 'right' : 'left');
@@ -36,7 +39,10 @@ export function makeSwipeCard(card, { knowRight = true, map = null, pads = [], o
     card.dataset.dir = dir || '';
     card.dataset.res = (dir && resultFor(dir)) || '';
     card.style.setProperty('--s', String(Math.min(1, strength)));
+    if (root) { root.dataset.drag = dir || ''; root.style.setProperty('--drag', String(Math.min(1, strength))); }
   }
+  // paper card (1.14): follows the finger up/down with a slight tilt; the edge and shade show it lifting
+  const paperMove = (y) => `translateY(${y}px)${calm ? '' : ` rotateX(${Math.max(-7, Math.min(7, -y * 0.03)).toFixed(2)}deg)`}`;
   function reset() {
     card.style.transition = 'transform .22s cubic-bezier(.2,.8,.3,1.2)';
     card.style.transform = '';
@@ -47,13 +53,15 @@ export function makeSwipeCard(card, { knowRight = true, map = null, pads = [], o
     done = true;
     card.classList.add('gone');
     // like paper flashcards: the card shows its answer while it flies away
-    if (revealOnCommit && result !== 'skip') { const f = card.querySelector('.face'); if (f) f.innerHTML = revealOnCommit(); card.classList.add('revealed'); }
+    if (paper && result !== 'skip') card.classList.add('revealed');
+    else if (revealOnCommit && result !== 'skip') { const f = card.querySelector('.face'); if (f) f.innerHTML = revealOnCommit(); card.classList.add('revealed'); }
     const dir = dirFor(result);
     card.style.transition = 'transform .2s ease-in, opacity .2s ease-in';
     const tx = dir === 'right' ? window.innerWidth : dir === 'left' ? -window.innerWidth : dx;
     const ty = dir === 'up' ? -window.innerHeight * 0.9 : dir === 'down' ? window.innerHeight * 0.9 : dy;
     const vert = dir === 'up' || dir === 'down';
-    card.style.transform = `translate(${vert ? dx * 0.3 : tx}px, ${ty}px) rotate(${vert ? 0 : (tx > 0 ? 18 : -18)}deg)`;
+    card.style.transform = paper && vert ? paperMove(ty * 0.7) : `translate(${vert ? dx * 0.3 : tx}px, ${ty}px) rotate(${vert ? 0 : (tx > 0 ? 18 : -18)}deg)`;
+    if (paper) card.style.transition = 'transform .24s cubic-bezier(.4,0,.8,.6), opacity .2s ease-in';
     card.style.opacity = '0';
     setStamp(dir, 1);
     onCommit(result);                       // caller shows the next card right away (underneath)
@@ -78,6 +86,10 @@ export function makeSwipeCard(card, { knowRight = true, map = null, pads = [], o
     if (axis === 'x') {
       card.style.transform = `translate(${dx}px, ${dy * 0.15}px) rotate(${dx / 16}deg)`;
       setStamp(dx > 0 ? 'right' : 'left', Math.abs(dx) / DIST_X);
+    } else if (paper && (axis === 'up' || axis === 'down')) {
+      const y = axis === 'up' ? Math.min(0, dy) : Math.max(0, dy);
+      card.style.transform = paperMove(y);
+      setStamp(axis, Math.abs(y) / DIST_UP);
     } else if (axis === 'up') {
       card.style.transform = `translate(${dx * 0.15}px, ${Math.min(0, dy)}px)`;
       setStamp('up', -Math.min(0, dy) / DIST_UP);
@@ -95,7 +107,7 @@ export function makeSwipeCard(card, { knowRight = true, map = null, pads = [], o
     if (done) return;
     if (cancelled) { reset(); return; }
     const dur = t - t0;
-    if (!axis && dur < TAP_MS && Math.hypot(dx, dy) < TAP_MOVE) { reset(); if (!(tapAt && tapAt())) onTap?.(); return; }
+    if (!axis && dur < TAP_MS && Math.hypot(dx, dy) < TAP_MOVE) { reset(); if (!(tapAt && tapAt())) onTap?.(tapEl); return; }
     if (axis === 'x' && resultFor(dx > 0 ? 'right' : 'left') && (Math.abs(dx) > DIST_X || (Math.abs(dx) > FLICK_MIN && Math.abs(vx) > FLICK_V && Math.sign(vx) === Math.sign(dx)))) {
       commit(resultFor(dx > 0 ? 'right' : 'left')); return;
     }
@@ -109,7 +121,7 @@ export function makeSwipeCard(card, { knowRight = true, map = null, pads = [], o
   const onButton = (e) => !!e.target.closest?.('[data-nosw]');   // buttons on the card (bookmark) are not swipes
   card.addEventListener('touchstart', (e) => {
     if (e.touches.length > 1 || onButton(e)) return;
-    const p = e.changedTouches[0];
+    const p = e.changedTouches[0]; tapEl = e.target;
     if (start(p.clientX, p.clientY, e.timeStamp)) e.preventDefault();
   }, { passive: false });
   card.addEventListener('touchmove', (e) => {
@@ -122,6 +134,7 @@ export function makeSwipeCard(card, { knowRight = true, map = null, pads = [], o
   card.addEventListener('touchcancel', (e) => end(e.timeStamp, true));
   card.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'touch' || onButton(e)) return;
+    tapEl = e.target;
     if (start(e.clientX, e.clientY, e.timeStamp)) card.setPointerCapture?.(e.pointerId);
   });
   card.addEventListener('pointermove', (e) => { if (e.pointerType !== 'touch') move(e.clientX, e.clientY, e.timeStamp); });
@@ -132,8 +145,8 @@ export function makeSwipeCard(card, { knowRight = true, map = null, pads = [], o
   for (const pad of pads) {
     let tapTarget = null;
     pad.addEventListener('touchstart', (e) => {
-      if (e.touches.length > 1) return;
-      const p = e.changedTouches[0]; tapTarget = e.target.closest('button');
+      if (e.touches.length > 1 || card.contains(e.target) || e.target.closest?.('[data-nosw], .qhead, .sheet, .pauseov, .fc2-menu')) return;
+      const p = e.changedTouches[0]; tapTarget = e.target.closest('button'); tapEl = e.target;
       if (start(p.clientX, p.clientY, e.timeStamp)) e.preventDefault();
     }, { passive: false });
     pad.addEventListener('touchmove', (e) => { if (id === null) return; e.preventDefault(); const p = e.changedTouches[0]; move(p.clientX, p.clientY, e.timeStamp); }, { passive: false });
@@ -178,4 +191,75 @@ export function fitStage(stage, pad) {
     stage.style.height = `${Math.max(160, innerHeight - pad.offsetHeight - r.top - after - 6)}px`;
   };
   fit(); requestAnimationFrame(fit); addEventListener('resize', fit);
+}
+
+// ================= 1.14 flashcard design ("fc2"): one card, swipe ↑知ってる ↓わからない anywhere on the screen =================
+const POS_ABBR = { noun: 'n.', verb: 'v.', adjective: 'adj.', adverb: 'adv.', pronoun: 'pron.', preposition: 'prep.', conjunction: 'conj.', number: 'num.', measure: 'meas.', 'phrasal verb': 'phr. v.', idiom: 'idiom', phrase: 'phrase' };
+export const posAbbr = (w) => [...new Set((w.senses || []).map((x) => POS_ABBR[x.pos] || x.pos).filter(Boolean))].join(' / ');
+const escH = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// the card face: the big line stays in the same place; the answer appears under it (nothing moves)
+export function fc2FaceHTML(w, direction, meanings, { reading = '' } = {}) {
+  const en = `<div class="fc2-en" data-say lang="en">${escH(w.headword)}</div>`;
+  const ja = `<div class="fc2-ja">${escH(meanings.join('、'))}</div>`;
+  const ex = (w.senses || []).flatMap((x) => x.examples || []).find((x) => x.en);
+  const exH = ex ? `<div class="fc2-ex"><span data-say>${escH(ex.en)}</span>${ex.ja ? `<br><span class="fc2-exja">${escH(ex.ja)}</span>` : ''}</div>` : '';
+  const pos = posAbbr(w), posH = `<div class="fc2-pos">${escH(pos)}</div>`;
+  const read = reading ? `<div class="fc2-read">${escH(reading)}</div>` : '';
+  let big, rev;
+  if (direction === 'ja2en') { big = `<div class="fc2-en fc2-jabig">${escH(meanings.join('、'))}</div>`; rev = `${en}${read}${posH}${exH}`; }
+  else if (direction && direction.startsWith('audio')) { big = '<div class="fc2-en fc2-audio" data-say aria-label="もう一度聞く">🔊</div>'; rev = `${en}${read}${posH}<i class="fc2-line"></i>${ja}${exH}`; }
+  else { big = `${en}`; rev = `<i class="fc2-line"></i>${ja}${exH}`; }
+  return `<div class="fc2-face"><div class="fc2-top">${big}</div>${direction === 'ja2en' || direction?.startsWith('audio') ? '' : read + posH}<div class="fc2-rev">${rev}</div></div>`;
+}
+export function fc2CardHTML(faceHTML, bmHTML = '') {
+  return `<div class="fcard fc2-card">${bmHTML}<div class="face">${faceHTML}</div></div>`;
+}
+// font size from the real width: words / phrases / sentences, at most about 3 lines
+export function fitBig(card) {
+  const el = card.querySelector('.fc2-top .fc2-en'); if (!el || el.classList.contains('fc2-audio')) return;
+  const t = el.textContent.trim(), words = t.split(/\s+/).length, ja = /[\u3040-\u30ff\u3400-\u9fff]/.test(t);
+  let size = ja ? (t.length <= 8 ? 30 : t.length <= 16 ? 26 : 22)
+    : words === 1 ? (t.length <= 9 ? 40 : 38) : words <= 3 && t.length <= 16 ? 36 : t.length <= 28 ? 32 : t.length <= 48 ? 28 : 26;
+  const box = el.parentElement, min = ja ? 16 : 20;
+  el.style.fontSize = `${size}px`;
+  while (size > min && (el.scrollWidth > box.clientWidth + 1 || el.offsetHeight > box.clientHeight + 1)) { size -= 2; el.style.fontSize = `${size}px`; }
+}
+// header (✕ … ⋯), "9 / 36" + bar, the faint swipe guide, and a menu for the less used controls
+export function fc2Setup(root, { items = [], info = () => '' } = {}) {
+  root.classList.add('fc2');
+  document.body.classList.add('fc2-on');
+  const off = () => { document.body.classList.remove('fc2-on'); removeEventListener('hashchange', off); };
+  addEventListener('hashchange', off);
+  const head = root.querySelector('.qhead'), prog = root.querySelector('.progress'), pos = root.querySelector('#pos');
+  head.insertAdjacentHTML('beforeend', '<button class="xbtn fc2-more" id="fc2More" aria-label="メニュー">•••</button>');
+  const row = document.createElement('div'); row.className = 'fc2-prog'; prog.before(row); if (pos) row.appendChild(pos); row.appendChild(prog);
+  root.insertAdjacentHTML('beforeend', `<div class="fc2-guide" aria-hidden="true"><i></i><div class="fc2-gl"><span class="g-up"><b>↑</b>知ってる</span><span class="g-dn"><b>↓</b>わからない</span></div><i></i></div>
+    <div class="fc2-menu" id="fc2Menu" hidden><div class="fc2-mbox"><div class="fc2-minfo" id="fc2Info"></div>${items.map((it, i) => `<button class="fc2-mi" data-i="${i}">${it.label}</button>`).join('')}<button class="fc2-mi fc2-mclose">閉じる</button></div></div>`);
+  const menu = root.querySelector('#fc2Menu');
+  const open = () => { root.querySelector('#fc2Info').textContent = info(); items.forEach((it, i) => { const b = menu.querySelector(`[data-i="${i}"]`); b.disabled = !!it.disabled?.(); if (it.text) b.textContent = it.text(); }); menu.hidden = false; };
+  root.querySelector('#fc2More').onclick = open;
+  menu.onclick = (e) => { const b = e.target.closest('.fc2-mi'); if (e.target === menu || b?.classList.contains('fc2-mclose')) { menu.hidden = true; return; } if (b && !b.disabled) { menu.hidden = true; items[+b.dataset.i].run(); } };
+}
+// the card fills the space down to the guide (fixed height for this screen)
+export function fc2Fit(stage) {
+  const fit = () => {
+    if (!stage.isConnected) return removeEventListener('resize', fit);
+    const g = stage.closest('.qrun').querySelector('.fc2-guide');
+    const top = stage.getBoundingClientRect().top, bottom = g ? g.getBoundingClientRect().top - 34 : innerHeight * 0.76;
+    stage.style.height = `${Math.max(260, bottom - top)}px`;
+  };
+  fit(); requestAnimationFrame(fit); addEventListener('resize', fit);
+}
+// English read-aloud: once when a card appears (if the English is on the front), on every tap of the English text.
+// iPhone may refuse speech before the first touch: then the first touch on the screen plays it.
+export function fc2Voice(root, speakFn) {
+  let pending = null, unlocked = false;
+  const say = (text) => { if (!text) return; try { const u = speakFn(text); if (u) { u.onstart = () => { unlocked = true; pending = null; }; } } catch { /* the cards still work without sound */ } };
+  root.addEventListener('touchstart', () => { if (!unlocked) { unlocked = true; if (pending) { const t = pending; pending = null; say(t); } } }, { capture: true, passive: true });
+  return {
+    auto(text) { pending = text; say(text); },
+    tap(text) { pending = null; say(text); },
+    stop() { pending = null; try { speechSynthesis.cancel(); } catch {} },
+  };
 }

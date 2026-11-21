@@ -75,48 +75,48 @@ export async function homeScreen(el) {
   const left = (s) => s.queue.filter((q) => !s.answered[q.qid]).length;
   const item = (href, ic, name, sub, soon) => `<a class="mitem ${soon ? 'soon' : ''}" href="${href}">${icon(ic, 22)}<span class="grow"><b>${name}</b><small>${sub}</small></span>${soon ? '<em>準備中</em>' : ''}</a>`;
 
+  const total = st.words.length, learned = Math.max(0, total - ls.fresh);
+  const tile = (href, ic, name, sub) => `<a class="htile" href="${href}">${icon(ic, 24)}<span><b>${name}</b><small>${sub}</small></span></a>`;
   el.innerHTML = `
-    <header class="top"><h1>English Labo</h1><span class="grow"></span><a class="icon-btn" href="#settings" aria-label="設定">${icon('gear', 24)}</a></header>
-    ${backupWarn ? `<a class="notice warn" href="#settings">${icon('warn', 18)}<span>${bd == null ? 'まだバックアップがありません' : `最終バックアップから${bd}日`}。設定から保存できます</span></a>` : ''}
-
-    <section class="kpis">
-      <div class="kpi"><b>${st.words.length}</b><span>登録語数</span></div>
-      <div class="kpi"><b class="c-review">${st.weak.length}</b><span>苦手・未習得</span></div>
-      <div class="kpi"><b>${icon('flame', 18)} ${sk.n}</b><span>連続日数${sk.today ? '' : '（今日まだ）'}</span></div>
-    </section>
-
-    <section class="actions">
-      ${test ? `<a class="action resume" href="#session?id=${test.id}">${icon('play', 20)}<span class="grow"><b>前回の続きから</b><small>単語テスト 残り${left(test)}問</small></span>${icon('chevron', 18)}</a>` : ''}
-      ${quick ? `<a class="action resume" href="#quick-run?id=${quick.id}">${icon('play', 20)}<span class="grow"><b>単語帳の続きから</b><small>${Object.keys(quick.answered || {}).length}枚済み</small></span>${icon('chevron', 18)}</a>` : ''}
-      ${COURSE_LANGS.includes(curLang()) ? `<a class="action primary" href="#course">${icon('book', 20)}<span class="grow"><b>入門コース</b><small>単語 → 文法 → フレーズを課ごとに</small></span>${icon('chevron', 18)}</a>` : ''}
-      <a class="action ${COURSE_LANGS.includes(curLang()) ? '' : 'primary'}" href="#lesson">${icon('lesson', 20)}<span class="grow"><b>今日のレッスン</b><small>${ls.due ? `復習 ${ls.due}件` : '復習なし'}・未学習 ${ls.fresh}語</small></span>${icon('chevron', 18)}</a>
-      <button class="action" id="goWeak" ${st.weak.length ? '' : 'disabled'}>${icon('review', 20)}<span class="grow"><b>苦手を復習</b><small>${st.weak.length ? `苦手・未習得 ${st.weak.length}語（前回の出題方法で）` : '現在復習する単語はありません'}</small></span>${icon('chevron', 18)}</button>
-    </section>
-
-    <h2 class="sec">学習</h2>
-    <nav class="menu">
-      ${item('#study', 'cards', '単語テスト', '4択・カード・タイピング')}
-      ${item('#quick', 'bolt', '単語帳（カード）', 'スワイプで確認・リピート')}
-      ${item('#speaking', 'mic', '瞬間作文', `日本語から${L().name}`)}
-      ${item('#games', 'puzzle', 'ゲーム', 'パズル・Verb Swipe・前置詞の図解')}
-      ${item('#video', 'video', 'Video Lab', '動画と字幕')}
-      ${item('#studio/sets', 'lesson', '教材スタジオ', '音声・動画から字幕つき教材を作る')}
-      ${item('#grammar', 'grammar', '文法', '単元一覧', true)}
+    <div class="home2">
+    <header class="top h2head"><h1 class="hlogo">Englabo<i>.</i></h1><span class="grow"></span><a class="icon-btn" href="#settings" aria-label="設定">${icon('gear', 24)}</a></header>
+    ${backupWarn ? `<a class="notice warn hnotice" href="#settings">${icon('warn', 16)}<span>${bd == null ? 'まだバックアップがありません' : `最終バックアップから${bd}日`}・設定から保存</span></a>` : ''}
+    <a class="hstats" href="#review">
+      <span>${icon('book', 16)}<b>${total}</b><small>登録語数</small></span>
+      <span>${icon('review', 16)}<b class="c-review">${st.weak.length}</b><small>苦手・未習得</small></span>
+      <span>${icon('flame', 16)}<b>${sk.n}</b><small>連続日数${sk.today ? '' : '・今日まだ'}</small></span>
+    </a>
+    <div class="hsec"><h2>学習メニュー</h2></div>
+    <nav class="hgrid">
+      ${tile('#study', 'cards', '単語テスト', '4択・カード・入力')}
+      ${tile('#quick', 'bolt', '単語帳', 'スワイプで確認')}
+      ${tile('#speaking', 'mic', '瞬間作文', `日本語→${L().name}`)}
+      ${tile('#games', 'puzzle', 'ゲーム', 'パズル・Verb・図解')}
+      ${tile('#video', 'video', 'Video Lab', '字幕つきで聞く')}
+      ${tile('#studio/sets', 'lesson', '教材スタジオ', '音声から教材を作る')}
     </nav>
-    <h2 class="sec">単語・復習</h2>
-    <nav class="menu">
-      ${item('#vocab', 'book', '単語リスト', `${st.words.length}語・追加と編集`)}
-      ${item('#review', 'review', '復習・記録', '苦手・誤答・履歴・進捗')}
-    </nav>
-
-    <h2 class="sec">学習の進み具合</h2>
-    <a class="card progcard" href="#review">${progBar(st.all)}</a>
-
-    <details class="card more"><summary>その他の機能</summary>
-      <nav class="menu flat">
+    <details class="hmore"><summary>すべて見る</summary>
+      <nav class="menu">
+        ${item('#vocab', 'book', '単語リスト', `${total}語・追加と編集`)}
+        ${item('#review', 'review', '復習・記録', '苦手・誤答・履歴・進捗')}
+        ${item('#grammar', 'grammar', '文法', '単元一覧', true)}
         ${item('#import', 'import', 'Import', '画像から文字を取り込み', true)}
       </nav>
-    </details>`;
+      <a class="card progcard" href="#review">${progBar(st.all)}</a>
+    </details>
+    <section class="hbottom">
+      ${test ? `<a class="hresume" href="#session?id=${test.id}">${icon('play', 22)}<span class="grow"><b>前回の続きから</b><small>単語テスト 残り${left(test)}問</small></span>${icon('chevron', 18)}</a>` : ''}
+      ${quick ? `<a class="hresume" href="#quick-run?id=${quick.id}">${icon('play', 22)}<span class="grow"><b>単語帳の続きから</b><small>${Object.keys(quick.answered || {}).length}枚済み</small></span>${icon('chevron', 18)}</a>` : ''}
+      ${COURSE_LANGS.includes(curLang()) ? `<a class="hresume" href="#course">${icon('book', 22)}<span class="grow"><b>入門コース</b><small>単語 → 文法 → フレーズ</small></span>${icon('chevron', 18)}</a>` : ''}
+      <a class="hhero" href="#lesson">
+        <span class="hh-t"><b>今日のレッスン</b>${icon('chevron', 20)}</span>
+        <small>${ls.due ? `復習 ${ls.due}件` : '復習なし'}・未学習 ${ls.fresh}語</small>
+        <span class="hh-bar"><i style="width:${total ? Math.round((learned / total) * 100) : 0}%"></i></span>
+        <span class="hh-n">学習済み ${learned} / ${total}</span>
+      </a>
+      <button class="hweak" id="goWeak" ${st.weak.length ? '' : 'disabled'}>${icon('review', 18)}<span class="grow">${st.weak.length ? `苦手を復習（${st.weak.length}語）` : '苦手な単語はありません'}</span>${icon('chevron', 16)}</button>
+    </section>
+    </div>`;
   $('#goWeak', el)?.addEventListener('click', () => startTest({ levels: [1, 2], bookmarkedOnly: false, recentWrong: false, phraseOnly: false, lowAcc: false, tag: '', deck: '', count: 'all' }));
 }
 

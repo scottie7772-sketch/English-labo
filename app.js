@@ -6,7 +6,7 @@ import { loadLang, setLang, langSwitchHTML, enabledLangs, setEnabled, LANGS } fr
 import { seedContent } from './content.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.12.0';
+export const APP_VERSION = '1.15.0';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -219,6 +219,8 @@ async function render() {
   const main = $('#main');
   try { await screens[route](main, currentParams()); }
   catch (e) { main.innerHTML = `<div class="card warn">エラー: ${esc(e.message)}</div>`; console.error(e); }
+  // 1.15: brown × blue for pages that are mostly browsing (home, word lists, data); reading-heavy screens keep their own colours
+  document.body.dataset.zone = ['home', 'vocab', 'word', 'decks', 'vocab-bulk', 'vocab-csv', 'vocab-paste', 'datacheck', 'storage', 'review', 'log', 'settings'].includes(route) ? 'brown' : '';
   document.body.classList.toggle('focus', ['session', 'quick-run', 'speaking-run', 'listening-run', 'lesson-run', 'game', 'course-puzzle', 'studio', 'video-play'].includes(route));
   // language switch in the header of screens that depend on the learning language
   if (['home', 'vocab', 'study', 'quick', 'review', 'lesson', 'speaking', 'listening', 'games', 'course'].includes(route)) {

@@ -6,7 +6,7 @@ import { LEVEL_LABELS, SKILL_LABELS, effLevel, filterLevel, loadAllMastery } fro
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
 import { shuffle, allMeanings } from './study.js';
 import { toggleBookmark } from './words.js';
-import { makeSwipeCard, swipeCardHTML, answerStripHTML, swipeMap, isOneHand, swipeHint, oneHandPadHTML, fitStage } from './swipecard.js';
+import { makeSwipeCard, swipeCardHTML, answerStripHTML, swipeMap, isOneHand, swipeHint, oneHandPadHTML, fitStage, fc2FaceHTML, fc2CardHTML, fitBig, fc2Setup, fc2Fit, fc2Voice } from './swipecard.js';
 import { icon } from './icons.js';
 
 import { L, curLang, langOf, numToMarks, isZh } from './langs.js';
@@ -210,12 +210,25 @@ export async function quickRun(el, params) {
       <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}"><b>→</b>${knowRight ? 'わかる' : 'わからない'}</button>
       ${oneHand ? '' : `<button class="btn qb" id="undo" aria-label="取り消し">${icon('undo', 20)}</button>`}
     </div>
-    ${oneHand ? oneHandPadHTML({ undoHTML: icon('undo', 20) }) : ''}
+    ${oneHand ? '<button id="undo" hidden></button>' : ''}
     <div class="pauseov" id="pov" hidden><div class="card center stack"><b>一時停止中</b><button class="btn primary" id="resume">再開</button><button class="btn" id="quit2">終了して結果へ</button></div></div>
     </div>`;
   document.body.classList.add('noscroll');
-  const stage = $('#stage', el), pad = $('#qpad', el);
+  const stage = $('#stage', el), pad = $('#qpad', el), qrun = $('.qrun', el);
   if (pad) fitStage(stage, pad);
+  // 1.14: one-handed mode uses the new single-card design (swipe ↑↓ anywhere, rarely used controls in •••)
+  const fc2 = oneHand, voice = fc2Voice(qrun, (t) => speak(t));
+  if (fc2) {
+    fc2Setup(qrun, {
+      info: () => `${$('#unitlbl', el).textContent}　${$('#tally', el).textContent}`,
+      items: [
+        { label: '直前の回答を取り消す', run: () => doUndo(), disabled: () => !undo.length },
+        { label: '一時停止', run: () => $('#pause', el).click() },
+        { label: '表示・リピートの設定', run: () => openSheet(), text: () => `表示・リピートの設定（${REPEATS[cfg.repeat].label}）` },
+      ],
+    });
+    fc2Fit(stage);
+  }
 
   function updateTop() {
     const c = counts(s), unit = unitOf();
@@ -252,13 +265,20 @@ export async function quickRun(el, params) {
     const entry = reuse || { qid: uid('q_'), wordId, direction: cfg.direction, skill, unit: s.checked[s.play.u], pos: s.play.pos };
     if (!reuse) s.queue.push(entry);
     const f = faces(w);
-    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(f.front, map, bmBtn(w.bookmarked)));
+    stage.insertAdjacentHTML('afterbegin', fc2
+      ? fc2CardHTML(fc2FaceHTML(w, cfg.direction, allMeanings(w), { reading: w.ipa && isZh(langOf(w)) ? numToMarks(w.ipa) : '' }), bmBtn(w.bookmarked))
+      : swipeCardHTML(f.front, map, bmBtn(w.bookmarked)));
     const card = stage.firstElementChild;
     const st = { card, entry, flipped: false, revealed: false };
-    const setFace = (back) => { st.flipped = back; card.classList.add('flipping'); setTimeout(() => { $('.face', card).innerHTML = back ? f.back : f.front; card.classList.remove('flipping'); }, 90); if (back) { st.revealed = true; speak(w.headword); } };
+    const setFace = fc2
+      ? (back) => { st.flipped = back; card.classList.toggle('revealed', back); if (back) { st.revealed = true; if (cfg.direction === 'ja2en') voice.tap(w.headword); } }
+      : (back) => { st.flipped = back; card.classList.add('flipping'); setTimeout(() => { $('.face', card).innerHTML = back ? f.back : f.front; card.classList.remove('flipping'); }, 90); if (back) { st.revealed = true; speak(w.headword); } };
     st.flip = () => setFace(!st.flipped);
     st.autoFlip = () => { if (!st.flipped) setFace(true); };
-    st.ctl = makeSwipeCard(card, { map, pads: pad ? [pad] : [], canInteract: () => running && !ended, onTap: st.flip, onCommit: (r) => answer(st, r), revealOnCommit: () => f.back });
+    // fc2: tapping the English reads it aloud (again and again); tapping elsewhere shows the answer
+    const onTap = fc2 ? (t) => { const sayEl = t?.closest?.('[data-say]'); if (sayEl) voice.tap(sayEl.classList.contains('fc2-audio') ? w.headword : sayEl.textContent); else st.flip(); } : st.flip;
+    st.ctl = makeSwipeCard(card, { map, paper: fc2, pads: fc2 ? [qrun] : pad ? [pad] : [], canInteract: () => running && !ended, onTap, onCommit: (r) => { if (fc2) voice.stop(); answer(st, r); }, revealOnCommit: () => f.back });
+    if (fc2) { fitBig(card); if (cfg.direction !== 'ja2en') voice.auto(w.headword); }
     const bmb = $('.cardbm', card);
     bmb.onclick = async (e) => { e.stopPropagation(); const on = await toggleBookmark(w.id); w.bookmarked = on; bmb.classList.toggle('on', on); toast(on ? 'ブックマークしました' : 'ブックマークを外しました', 1000); };
     cur = st; cardMs = 0;

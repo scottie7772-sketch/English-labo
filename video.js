@@ -379,13 +379,13 @@ export async function videoPlay(el, params) {
   const MLABEL = (m) => MODES.find((x) => x[0] === m)[1].replace('英', L(vlang).ch);
 
   el.innerHTML = `
-    <div class="vp-root v112" id="vroot">
+    <div class="vp-root v112 v114" id="vroot">
     <header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1 class="vtitle">${esc(v.name)}</h1><span class="grow"></span><button class="icon-btn vh-btn vmode-btn" id="openMode" aria-label="学習モード">🎛</button><button class="icon-btn vh-btn" id="openSet" aria-label="表示・学習の設定">⚙︎</button><button class="icon-btn vh-btn" id="openMake" aria-label="字幕・日本語訳">字</button><button class="icon-btn" id="menu" aria-label="メニュー">⋯</button></header>
     <div class="vwrap">${!url ? '<div class="card warn">動画ファイルがありません（バックアップから復元した場合は、動画をもう一度追加してください）</div>'
       : aurl ? `<video id="vpic" src="${url}" muted playsinline webkit-playsinline preload="metadata"></video><audio id="vid" src="${aurl}" preload="auto" playsinline></audio>`
-      : `<video id="vid" src="${url}" playsinline webkit-playsinline preload="metadata"></video>`}</div>
+      : `<video id="vid" src="${url}" playsinline webkit-playsinline preload="metadata"></video><div class="vov vh-aux"><button class="vov-b" id="vAir" aria-label="AirPlay" hidden>▭</button><button class="vov-b" id="vFull" aria-label="全画面">⛶</button></div>`}</div>
     <div class="vbottom"><div class="vbin">
-      <!-- 1.12: placed for the right thumb (play ≈ between な and は on the iPhone keyboard); used less often → left -->
+      <!-- 1.15: buttons, then one seek bar at the bottom (shared by video and sound) -->
       <div class="vctl2b">
         <div class="vb-side"><button class="vb vb-speed" id="speed" aria-label="速さ">1×</button><button class="vb vb-speed vb-loop" id="loopBtn" aria-label="この文をループ">🔁</button></div>
         <button class="vb vb-skip" id="prevCue" aria-label="この文の頭へ・前の文">⏮</button>
@@ -395,7 +395,7 @@ export async function videoPlay(el, params) {
         <button class="vb vb-skip" id="nextCue" aria-label="次の文">⏭</button>
       </div>
       <div class="vseek" id="seek"><div class="vs-track"><i class="vs-range" id="sRange"></i><i class="vs-played" id="sPlayed"></i><i class="vs-head" id="sHead"></i></div></div>
-      <div class="vs-info small"><span id="sTime">0:00.0</span><span id="sRangeTxt" class="grow center"></span><button class="link small" id="sClear" hidden>区間を解除</button></div>
+      <div class="vs-info small"><span id="sTime">0:00.0</span><span id="sRangeTxt" class="grow center"></span><button class="link small" id="sClear" hidden>区間を解除</button><button class="link small vs-ab" id="sAB">⟲ 区間リピート</button></div>
     </div></div>
     <div class="subbox" id="sub"></div>
     <div id="grade"></div>
@@ -479,6 +479,13 @@ export async function videoPlay(el, params) {
     const t = $('.vtitle', el); if (t && !t.dataset.audio) { t.dataset.audio = '1'; t.textContent = '🎧 ' + t.textContent; }
   };
   vid?.addEventListener('loadedmetadata', markAudio); markAudio();
+  // 1.15: tap the video to show / hide the extra buttons (back and ⋯ always stay)
+  const vroot = $('#vroot', el), vEl = $('video#vid', el);
+  $('.vwrap', el)?.addEventListener('click', (e) => { if (e.target.closest('.vov-b')) return; vroot.classList.toggle('hideaux'); });
+  if (vEl) {
+    $('#vFull', el).onclick = () => { try { vEl.webkitEnterFullscreen ? vEl.webkitEnterFullscreen() : vEl.requestFullscreen?.(); } catch {} };
+    if (window.WebKitPlaybackTargetAvailabilityEvent && vEl.webkitShowPlaybackTargetPicker) { const ab2 = $('#vAir', el); ab2.hidden = false; ab2.onclick = () => { try { vEl.webkitShowPlaybackTargetPicker(); } catch {} }; }
+  }
   // settings / subtitles open as sheets (hidden by default)
   const sheet = (id, on) => { const x = $(id, el); if (x) x.hidden = !on; };
   $('#openSet', el).onclick = () => sheet('#shSet', true);
@@ -733,8 +740,9 @@ export async function videoPlay(el, params) {
     const D = vid.duration || 1, t = vid.currentTime || 0;
     $('#sPlayed', el).style.width = `${(t / D) * 100}%`; $('#sHead', el).style.left = `${(t / D) * 100}%`;
     const r = $('#sRange', el);
-    if (ab?.b != null) { r.hidden = false; r.style.left = `${(ab.a / D) * 100}%`; r.style.width = `${((ab.b - ab.a) / D) * 100}%`; $('#sRangeTxt', el).textContent = `区間 ${fmtT(ab.a)}–${fmtT(ab.b)} をくり返し`; $('#sClear', el).hidden = false; }
-    else { r.hidden = true; $('#sRangeTxt', el).textContent = 'バーを指でなぞると区間をくり返し'; $('#sClear', el).hidden = true; }
+    if (ab?.b != null) { r.hidden = false; r.style.left = `${(ab.a / D) * 100}%`; r.style.width = `${((ab.b - ab.a) / D) * 100}%`; $('#sRangeTxt', el).textContent = `${fmtT(ab.a)}–${fmtT(ab.b)}`; $('#sClear', el).hidden = false; }
+    else { r.hidden = true; $('#sRangeTxt', el).textContent = ''; $('#sClear', el).hidden = true; }
+    $('#sAB', el).hidden = !$('#sClear', el).hidden;
     $('#sTime', el).textContent = `${fmtT(t)} / ${fmtT(D)}`;
   }
   if (seekEl) {
@@ -753,6 +761,7 @@ export async function videoPlay(el, params) {
     });
     seekEl.addEventListener('pointercancel', () => { d = null; drawSeek(); });
     $('#sClear', el).onclick = clearRange;
+    $('#sAB', el).onclick = () => $('#qRange', el).click();
     vid?.addEventListener('loadedmetadata', drawSeek);
   }
   // ---- back / forward (seconds cycle 3 → 5 → 10), speed (1 → 0.7 → 0.5) ----

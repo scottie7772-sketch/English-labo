@@ -68,7 +68,8 @@ export function fmtDate(ts, withTime = true) {
 }
 
 // swipe a row to the left → a red "削除" button appears; tapping it calls onDelete(row) (which asks for confirmation)
-export function swipeToDelete(rows, onDelete, { width = 88 } = {}) {
+export function swipeToDelete(rows, onDelete, { width = 88, openAt = 0 } = {}) {
+  openAt ||= width / 2;   // how far the row must be pulled before the button stays open (larger = a deeper swipe)
   for (const row of rows) {
     if (row.parentElement?.classList.contains('swrap')) continue;
     const wrap = document.createElement('div'); wrap.className = 'swrap';
@@ -82,10 +83,16 @@ export function swipeToDelete(rows, onDelete, { width = 88 } = {}) {
       if (on === null) { if (Math.abs(mx) < 8 && Math.abs(my) < 8) return; on = Math.abs(mx) > Math.abs(my); }
       if (!on) return;
       e.preventDefault(); moved = true;
-      dx = Math.max(-width - 30, Math.min(0, (open ? -width : 0) + mx)); set(dx, false);
+      dx = Math.max(-Math.max(width, openAt) - 30, Math.min(0, (open ? -width : 0) + mx)); set(dx, false);
     }, { passive: false });
-    row.addEventListener('touchend', () => { if (!on) return; open = dx < -width / 2; set(open ? -width : 0, true); });
+    row.addEventListener('touchend', () => { if (!on) return; open = open ? dx < -width / 2 : dx <= -openAt; set(open ? -width : 0, true); });
     row.addEventListener('click', (e) => { if (moved || open) { e.preventDefault(); e.stopPropagation(); if (open && !moved) { open = false; set(0, true); } moved = false; } }, true);
     del.addEventListener('click', async () => { const done = await onDelete(row); if (!done) { open = false; set(0, true); } });
   }
+}
+
+// put a block so that its middle sits near the eye line (about 40% down the screen); only moves it down (1.12)
+export function toEyeLine(node, ratio = 0.4) {
+  if (!node) return;
+  requestAnimationFrame(() => { node.style.marginTop = ''; const r = node.getBoundingClientRect(); const d = innerHeight * ratio - (r.top + scrollY + r.height / 2); if (d > 0) node.style.marginTop = `${Math.round(d)}px`; });
 }

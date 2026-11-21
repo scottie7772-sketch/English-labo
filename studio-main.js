@@ -12,7 +12,7 @@ import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 
-export const STUDIO_VERSION = '0.16.0';
+export const STUDIO_VERSION = '0.16.1';
 const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -146,7 +146,8 @@ async function setsScreen(el) {
     if (dlg.returnValue !== 'ok') return;
     const del = $('#fmDel', dlg)?.checked;
     const P = await sdb.get('sets', parent.s.id);
-    const copies = kids.flatMap((k) => k.bl.map((b) => { const { id, rev, setId, deleted, ...rest } = b; return newBlock(P.id, { ...structuredClone(rest), lineage: { op: 'copy', from: [`${b.id}@${b.rev}`], at: Date.now() } }); }));
+    const mine = await liveBlocks(P);
+    const copies = kids.flatMap((k) => k.bl.filter((b) => notCopiedYet(mine, b)).map((b) => { const { id, rev, setId, deleted, ...rest } = b; return newBlock(P.id, { ...structuredClone(rest), lineage: { op: 'copy', from: [`${b.id}@${b.rev}`], at: Date.now() } }); }));
     await commit(P, `📁${f} の音声をまとめる`, { blocks: copies, order: [...P.order, ...copies.map((c) => c.id)] });
     if (del) for (const k of kids) await deleteSet(await sdb.get('sets', k.s.id));
     nav(`set?id=${P.id}&align=1`);
@@ -795,6 +796,12 @@ async function editorScreen(el, params) {
     const nScript = scriptLines().length, nAudio = blocks.filter((b) => b.segments.length && !b.aligned).length;
     $('#alignNote', el).innerHTML = nScript && nAudio && !selectMode && !arrange ? `<div class="notice row small"><span class="grow">音声の付いていないスクリプトが${nScript}行あります。</span><button class="btn sm primary" id="alignGo">文字起こし→照合</button></div>` : '';
     $('#alignGo', el)?.addEventListener('click', () => runAlign());
+    // a deep swipe to the left shows 削除 (undo ↶ brings it back)
+    if (!selectMode && !arrange && !onlySel) swipeToDelete($$('.st-row', list), async (row) => {
+      const b = byId[row.dataset.id]; if (!b) return false;
+      await run('削除', { blocks: [{ ...b, deleted: true }], order: set.order.filter((id) => id !== b.id) });
+      toast('削除しました（↶ で戻せます）', 2500); return true;
+    }, { width: 96, openAt: 130 });
     drawBar();
   }
   function drawBar() {
@@ -1269,6 +1276,20 @@ async function editorScreen(el, params) {
     if (!changed.size) {
       return confirmDialog({ title: '照合できませんでした', body: `<p>音声の文字起こしと一致する部分が、スクリプトの中に見つかりませんでした。</p><p class="hint">別の教材の音声か、スクリプトの範囲外の音声かもしれません。文字起こしの精度が低すぎる場合も一致しません。</p>`, okLabel: '閉じる', cancelLabel: null });
     }
+    // recognised lines that overlap a timed script line (same file) for most of their length, or that repeat
+    // script lines already timed by another recording, are not kept (no double lines like "Almost there?" / "Oh, most there?")
+    const timedLines = [...changed.values(), ...blocks.filter((b) => b.aligned && !changed.has(b.id))];
+    for (const h of heard) {
+      if (del.has(h.id)) continue;
+      const g = h.segments[0], d = Math.max(0.05, g.end - g.start);
+      const ov = timedLines.filter((t) => t.segments[0]?.sourceId === g.sourceId).reduce((a, t) => a + Math.max(0, Math.min(g.end, t.segments[0].end) - Math.max(g.start, t.segments[0].start)), 0);
+      if (ov / d >= 0.5) del.add(h.id);
+    }
+    const rest = heard.filter((h) => !del.has(h.id));
+    if (rest.length && timedLines.length) {
+      const bySrc2 = new Map(); for (const b of rest) { const k = b.segments[0].sourceId; if (!bySrc2.has(k)) bySrc2.set(k, []); bySrc2.get(k).push(b); }
+      for (const [, l] of bySrc2) { const r2 = alignScript(timedLines.map((b) => ({ id: b.id, text: b.text })), l.sort((a, b) => a.segments[0].start - b.segments[0].start).map((b) => ({ id: b.id, start: b.segments[0].start, end: b.segments[0].end, text: b.text }))); r2.covered.forEach((id) => del.add(id)); }
+    }
     // order: script order stays; recognised lines that were not in the script are placed by time among the aligned lines
     const cur = (id) => changed.get(id) || byId[id];
     const startOf = (id) => cur(id)?.segments[0]?.start;
@@ -1300,7 +1321,8 @@ async function editorScreen(el, params) {
     if (dlg.returnValue !== 'ok') return;
     const other = others[+($('input[name=ms]:checked', dlg)?.value || 0)];
     const live = await liveBlocks(other);
-    const copies = live.map((b) => { const { id, rev, setId, deleted, ...f } = b; return newBlock(set.id, { ...structuredClone(f), lineage: { op: 'copy', from: [`${b.id}@${b.rev}`], at: Date.now() } }); });
+    const mine = blocks.slice(); const copies = live.filter((b) => notCopiedYet(mine, b)).map((b) => { const { id, rev, setId, deleted, ...f } = b; return newBlock(set.id, { ...structuredClone(f), lineage: { op: 'copy', from: [`${b.id}@${b.rev}`], at: Date.now() } }); });
+    if (!copies.length) return toast('この教材の内容は、すでにすべて入っています', 3000);
     await run(`「${other.title}」をまとめる`, { blocks: copies, order: [...set.order, ...copies.map((c) => c.id)] });
     if (scriptLines().length && blocks.some((b) => b.segments.length && !b.aligned)) toast('「文字起こし→照合」で位置を合わせられます', 3500);
   }
@@ -1671,6 +1693,12 @@ async function versionsScreen(el, params) {
 
 // ================= export / import (material pack) =================
 // inside English Labo: put the material straight into the video lab (no file in between)
+// the same item copied twice into one set (merging again, or the same audio twice): skipped
+const itemKey = (b) => (b.segments || []).map((g) => `${g.sourceId}:${(+g.start).toFixed(1)}-${(+g.end).toFixed(1)}`).join('|') + '#' + (b.text || '').trim().toLowerCase();
+function notCopiedYet(parentBlocks, b) {
+  const keys = new Set(parentBlocks.map(itemKey)), from = new Set(parentBlocks.flatMap((x) => (x.lineage?.from || []).map((f) => String(f).split('@')[0])));
+  return !keys.has(itemKey(b)) && !from.has(b.id) && !parentBlocks.some((x) => x.id === b.id);
+}
 async function buildMaterial(set) {
   const blocks = await liveBlocks(set), srcs = await sourcesMap(), tracks = await sdb.byIndex('tracks', 'setId', set.id);
   const media = [...new Set(blocks.flatMap((b) => b.segments.map((s) => s.sourceId)))].map((id) => srcs[id]).filter(Boolean);

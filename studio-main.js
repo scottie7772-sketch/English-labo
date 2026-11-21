@@ -13,7 +13,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.18.6';
+export const STUDIO_VERSION = '0.18.7';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -923,6 +923,8 @@ async function editorScreen(el, params) {
     const rs = ops.ranges(set.order.filter((id) => byId[id]), sel);
     $('#info', el).textContent = `${blocks.length}項目${selectMode ? `・選択 ${rs.length}範囲 ${sel.size}項目` : ''}${(set.undo || []).length ? `・元に戻せる操作 ${set.undo.length}` : ''}`;
     estMap = estPos();
+    // 1.17.7: a line whose sound starts before the previous line's sound ended (same file): both play the overlap
+    const overlap = new Map(); { let pv = null; for (const id of set.order) { const x = byId[id]; if (!x?.segments.length) continue; const g = x.segments[0]; if (pv && pv.sourceId === g.sourceId && pv.end > g.start + 0.15 && pv.start < g.start) overlap.set(x.id, +(pv.end - g.start).toFixed(1)); pv = x.segments.at(-1); } }
     const base = onlySel ? blocks.filter((b) => sel.has(b.id)) : blocks;
     const filtering = view !== 'all' && !selectMode && !arrange;
     const isRest = (b) => !b.aligned && b.segments.length && (b.asr || !b.text.trim());   // left over from transcription / matching
@@ -935,7 +937,7 @@ async function editorScreen(el, params) {
     list.classList.toggle('arranging', arrange);
     list.innerHTML = shown.map((b) => (folds.has(b.id) ? foldHTML(folds.get(b.id)) : '') + (() => {
       const badges = [b.segments.length > 1 ? `<span class="tagp">${b.segments.length}区間</span>` : '', new Set(b.segments.map((s) => s.sourceId)).size > 1 ? '<span class="tagp">複数ファイル</span>' : '',
-        b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声なし</span>' : ''].join('');
+        b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', overlap.has(b.id) ? `<span class="tagp warn" title="前の行と音声が重なっています。✎で開始を動かすと前の行の終わりも合わせて動きます">前と${overlap.get(b.id)}秒重なり</span>` : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声なし</span>' : ''].join('');
       return `<div class="st-row ${sel.has(b.id) ? 'sel' : ''} ${arrange ? 'jig' : ''}" data-id="${b.id}">
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
         <span class="grow st-txt" data-play="${b.id}"><small class="muted">${b.segments.length ? `${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)}` : estMap.has(b.id) ? `≈${fmt(estMap.get(b.id).t)}（推定）` : '--:--'} ${badges}</small>
@@ -1194,6 +1196,7 @@ async function editorScreen(el, params) {
         <label class="field"><span>和訳</span><textarea id="eJa" rows="2">${esc(work.ja || '')}</textarea></label>
         <div class="stack">${work.segments.map((s, i) => `<div class="st-segrow"><b>区間${i + 1}</b> <small class="muted">${esc(srcs[s.sourceId]?.name || '')}</small>
           <div class="st-trim" data-trim="${i}"><div class="st-trk"><i class="sel"></i><b class="h" data-h="start"></b><b class="h" data-h="end"></b></div><div class="row small muted"><span class="st-tl0"></span><span class="grow"></span><span>端をドラッグ・離すと試聴</span><span class="grow"></span><span class="st-tl1"></span></div></div>
+          <div class="row"><button type="button" class="btn xs" data-pseg="${i}:all">${icon('play')} 区間</button><button type="button" class="btn xs" data-pseg="${i}:head">頭2秒</button><button type="button" class="btn xs" data-pseg="${i}:tail">後ろ2秒</button></div>
           <div class="row"><span class="small">開始 ${fmt(s.start)}</span><button type="button" class="btn xs" data-adj="${i}:start:-0.1">−0.1</button><button type="button" class="btn xs" data-adj="${i}:start:0.1">＋0.1</button><button type="button" class="btn xs" data-now="${i}:start">今の位置</button></div>
           <div class="row"><span class="small">終了 ${fmt(s.end)}</span><button type="button" class="btn xs" data-adj="${i}:end:-0.1">−0.1</button><button type="button" class="btn xs" data-adj="${i}:end:0.1">＋0.1</button><button type="button" class="btn xs" data-now="${i}:end">今の位置</button></div></div>`).join('')}</div>
         <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">保存</button></div></form>`;
@@ -1218,6 +1221,10 @@ async function editorScreen(el, params) {
     const _draw = draw; draw = () => { _draw(); trimBars(); };
     // 1.17.6: trim bar like the iPhone video editor: drag the two edges; on release the edge is played
     function trimBars() {
+      $$('[data-pseg]', dlg).forEach((x) => (x.onclick = () => { const [i, k] = x.dataset.pseg.split(':'); const g = work.segments[+i]; if (!g) return;
+        if (k === 'all') playRange(g.sourceId, g.start, g.end); else if (k === 'head') playRange(g.sourceId, g.start, Math.min(g.end, g.start + 2)); else playRange(g.sourceId, Math.max(g.start, g.end - 2), g.end); }));
+      if (!$('#eFollow', dlg) && work.segments.length) { const st = $('.st-segrow', dlg); st?.insertAdjacentHTML('beforebegin', `<label class="chk small"><input type="checkbox" id="eFollow" ${follow ? 'checked' : ''}> 前後の行もつなげて動かす（音のダブり・抜けを防ぐ）</label>`);
+        $('#eFollow', dlg).onchange = (e) => { follow = e.target.checked; try { localStorage.setItem('st-follow', follow ? '1' : '0'); } catch {} }; }
       $$('[data-trim]', dlg).forEach((box) => {
         const i = +box.dataset.trim, sg = work.segments[i], D = srcs[sg.sourceId]?.duration || sg.end + 4;
         const lo = Math.max(0, sg.start - 4), hi = Math.min(D, sg.end + 4), trk = $('.st-trk', box);
@@ -1235,6 +1242,20 @@ async function editorScreen(el, params) {
         }));
       });
     }
+    // 1.17.7: neighbours follow — when this line's start / end moves, the line before ends there / the line after starts there,
+    // so the sound is neither heard twice nor lost between the two lines (only lines of the same file that touch or overlap)
+    const ids0 = set.order.filter((id) => byId[id]), at0 = ids0.indexOf(b.id);
+    const prevB = (() => { for (let k = at0 - 1; k >= 0; k--) { const x = byId[ids0[k]]; if (x.segments.length) return x; } return null; })();
+    const nextB = (() => { for (let k = at0 + 1; k < ids0.length; k++) { const x = byId[ids0[k]]; if (x.segments.length) return x; } return null; })();
+    let follow = (() => { try { return localStorage.getItem('st-follow') !== '0'; } catch { return true; } })();
+    function neighbourChanges() {
+      if (!follow || !work.segments.length || !b.segments.length) return [];
+      const out = [], s0 = b.segments[0], s1 = b.segments.at(-1), n0 = work.segments[0], n1 = work.segments.at(-1);
+      if (prevB && n0.start !== s0.start) { const pl = prevB.segments.at(-1); if (pl.sourceId === n0.sourceId && (Math.abs(pl.end - s0.start) < 1.0 || pl.end > n0.start) && n0.start > pl.start + 0.1) out.push({ ...prevB, segments: [...prevB.segments.slice(0, -1), { ...pl, end: n0.start }], sync: 'manual', align: [] }); }
+      if (nextB && n1.end !== s1.end) { const nf = nextB.segments[0]; if (nf.sourceId === n1.sourceId && (Math.abs(nf.start - s1.end) < 1.0 || nf.start < n1.end) && n1.end < nf.end - 0.1) out.push({ ...nextB, segments: [{ ...nf, start: n1.end }, ...nextB.segments.slice(1)], sync: 'manual', align: [] }); }
+      return out;
+    }
+    const playRange = (sid, from, to) => { readText(); if (!attach(sid, from)) return toast('ファイルを選んでください'); playing = null; vid.play().catch(() => {}); clearTimeout(playRange.t); playRange.t = setTimeout(() => vid.pause(), Math.max(0.1, to - from) * 1000 / (vid.playbackRate || 1)); };
     const readText = () => { const en = $('#eEn', dlg)?.value, ja = $('#eJa', dlg)?.value; if (en != null && (en !== work.text || ja !== work.ja)) work = ops.editText(work, en.trim(), (ja || '').trim()); };
     draw();
     dlg.returnValue = '';
@@ -1243,7 +1264,9 @@ async function editorScreen(el, params) {
       readText();
       if (JSON.stringify(work) === JSON.stringify(b)) return;
       if (work.text !== b.text) delete work.asr;
-      await run('編集', { blocks: [work] });
+      const nb = neighbourChanges();
+      await run('編集', { blocks: [work, ...nb] });
+      if (nb.length) toast(`前後の行（${nb.length}行）の区間もつなげました（↶で戻せます）`, 2500);
     };
     dlg.showModal();
   }

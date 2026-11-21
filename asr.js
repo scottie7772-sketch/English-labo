@@ -4,8 +4,14 @@
 const TF_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1';
 const MODELS = { en: 'onnx-community/whisper-base.en', multi: 'onnx-community/whisper-base', enFast: 'onnx-community/whisper-tiny.en', multiFast: 'onnx-community/whisper-tiny', enBest: 'Xenova/whisper-small.en', multiBest: 'Xenova/whisper-small', enHigh: 'onnx-community/distil-small.en', multiHigh: 'onnx-community/whisper-small' };
 // quality: 'fast' (tiny ~40 MB) / 'acc' (base ~80 MB, default) / 'best' (small ~250 MB, slow, experimental)
-export const QUALITY = { fast: '速さ優先（約40MB・精度は低め）', acc: '標準（約80MB）', high: '高精度（約170MB・時間は標準の2倍ほど・行の時刻がずれることがあります）' };  // whisper-small (about 250 MB) was dropped: it stops on the iPhone
-const modelFor = (lang, q) => { const k = q === 'fast' ? 'Fast' : q === 'best' ? 'Best' : q === 'high' ? 'High' : ''; return lang === 'en' ? MODELS['en' + k] : MODELS['multi' + k]; };
+// 1.17.10: two lighter levels. lite = the same tiny model with smaller (4-bit) weights: less download and memory.
+// ultra = Moonshine tiny (English only, made for small devices; experimental: no time stamps, so lines are timed by ~8 s parts)
+export const QUALITY = { ultra: '超軽量・試験的（Moonshine 約30MB・英語のみ・時刻は推定）', lite: '軽量（約25MB・速さ優先をさらに軽く）', fast: '速さ優先（約40MB・精度は低め）', acc: '標準（約80MB）', high: '高精度（約170MB・時間は標準の2倍ほど・行の時刻がずれることがあります）' };  // whisper-small (about 250 MB) was dropped: it stops on the iPhone
+const LITE = { en: 'onnx-community/whisper-tiny.en', multi: 'onnx-community/whisper-tiny' }, ULTRA = 'onnx-community/moonshine-tiny-ONNX';
+const dtypeFor = (q) => (q === 'lite' ? 'q4' : null);
+const modelFor = (lang, q) => {
+  if (q === 'ultra' && lang === 'en') return ULTRA;
+  if (q === 'lite' || q === 'ultra') return lang === 'en' ? LITE.en : LITE.multi; const k = q === 'fast' ? 'Fast' : q === 'best' ? 'Best' : q === 'high' ? 'High' : ''; return lang === 'en' ? MODELS['en' + k] : MODELS['multi' + k]; };
 const LANG_NAME = { es: 'spanish', 'zh-TW': 'chinese', 'zh-CN': 'chinese' };
 
 const WORKER_SRC = `
@@ -13,24 +19,26 @@ import { pipeline, env } from '${TF_URL}';
 env.allowLocalModels = false;
 let asr = null, asrModel = null;
 self.onmessage = async (e) => {
-  const { audio, model, language, ts = true } = e.data;
+  const { audio, model, language, ts = true, dtype = null } = e.data;
+  const moon = /moonshine/i.test(model), key = model + '|' + (dtype || '');
   let lastErr = null;
-  if (asr && asrModel !== model) asr = null;
+  if (asr && asrModel !== key) asr = null;
   if (!asr) for (const device of e.data.devices) {
     try {
       asr = await pipeline('automatic-speech-recognition', model, {
-        device, dtype: device === 'webgpu' ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : 'q8',
+        device, dtype: dtype || (device === 'webgpu' ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : 'q8'),
         progress_callback: (p) => self.postMessage({ type: 'load', p }),
       });
-      asrModel = model; self.postMessage({ type: 'device', device });
+      asrModel = key; self.postMessage({ type: 'device', device });
       break;
     } catch (err) { lastErr = err; }
   }
   if (!asr) { self.postMessage({ type: 'error', message: String(lastErr?.message || lastErr) }); return; }
   try {
     self.postMessage({ type: 'run' });
-    const opt = { chunk_length_s: 30, stride_length_s: 5, ...(language && !/\.en$/.test(model) ? { language, task: 'transcribe' } : {}) };
+    const opt = moon ? {} : { chunk_length_s: 30, stride_length_s: 5, ...(language && !/\.en$/.test(model) ? { language, task: 'transcribe' } : {}) };
     let out, noTs = false;
+    if (moon) { out = await asr(audio); self.postMessage({ type: 'done', chunks: [], text: out.text || '', noTs: true }); return; }
     try { out = await asr(audio, { ...opt, return_timestamps: ts }); }
     catch (err) {
       // some models (e.g. distil-small.en) fail while reading time stamps ("token_ids must be a non-empty array"): text only
@@ -114,7 +122,7 @@ export async function transcribe(blob, { lang = 'en', onProgress = () => {}, isC
 
 // Keeps one worker (model loaded once) for several pieces of audio. run(audio16k) -> cues with times relative to the piece.
 export function openTranscriber(lang = 'en', onProgress = () => {}, { fast, quality } = {}) {
-  const model = modelFor(lang, quality || (fast === true ? 'fast' : 'acc'));
+  const q = quality || (fast === true ? 'fast' : 'acc'), model = modelFor(lang, q), dtype = dtypeFor(q);
   const devices = useGPU() ? ['webgpu', 'wasm'] : ['wasm'];
   const worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })), { type: 'module' });
   const files = {};
@@ -140,8 +148,9 @@ export function openTranscriber(lang = 'en', onProgress = () => {}, { fast, qual
   return {
     run(audio, { timestamps = true } = {}) {
       const duration = audio.length / 16000;
-      return new Promise((resolve, reject) => { pending = { resolve, reject, duration }; worker.postMessage({ audio, model, language: LANG_NAME[lang] || null, devices, ts: timestamps }, [audio.buffer]); });
+      return new Promise((resolve, reject) => { pending = { resolve, reject, duration }; worker.postMessage({ audio, model, dtype, language: LANG_NAME[lang] || null, devices, ts: timestamps }, [audio.buffer]); });
     },
+    noTime: /moonshine/i.test(model),   // Moonshine gives text only: recognisePiece cuts ~8 s parts so each line's time is close
     close() { worker.terminate(); pending?.resolve([]); pending = null; },
   };
 }

@@ -90,8 +90,8 @@ export async function quickSetup(el) {
   function draw() {
     const nWords = cfg.units.reduce((t, i) => t + (data.units[i]?.ids.length || 0), 0);
     el.innerHTML = `
-      <header class="top"><a href="#study" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>単語帳</h1><span class="grow"></span><span class="small muted">スワイプで確認</span></header>
-      ${active && active.units ? `<div class="resume-bar"><span class="grow"><b>途中の単語帳</b><small>${QDIRS[active.config.direction].label}・${esc(REPEATS[active.config.repeat]?.label || '')}・${Object.keys(active.answered).length}枚済み</small></span>
+      <header class="top"><a href="#study" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>フラッシュカード</h1><span class="grow"></span><span class="small muted">スワイプで確認</span></header>
+      ${active && active.units ? `<div class="resume-bar"><span class="grow"><b>途中のフラッシュカード</b><small>${QDIRS[active.config.direction].label}・${esc(REPEATS[active.config.repeat]?.label || '')}・${Object.keys(active.answered).length}枚済み</small></span>
         <button class="btn sm ghost" id="end">終了</button><a class="btn sm primary" href="#quick-run?id=${active.id}">再開</a></div>` : ''}
       <div class="setlist">
         <div class="setrow"><span class="setlabel">問題範囲</span>
@@ -479,7 +479,7 @@ export async function quickResult(el, params) {
       return `<a class="rrow" href="#word?id=${w.id}"><span class="mk ${mk[1]}">${mk[0]}</span><span class="grow"><b>${esc(w.headword)}</b> <span class="small muted">${esc(allMeanings(w).slice(0, 2).join('、'))}</span></span><span class="small lvc">${ch}</span></a>`;
     }).join('')}
     <p class="hint">「わかる」は自己申告なので0.8回分、「曖昧」は0.4回分として習得度を判定します。自己申告だけでは「ほぼ習得」まで。「習得済み」にはテストでの正解と7日以上空けた正解が必要です。</p>
-    <a class="btn" href="#quick" style="margin-top:12px">単語帳に戻る</a>`;
+    <a class="btn" href="#quick" style="margin-top:12px">フラッシュカードに戻る</a>`;
   const again = async (ids) => {
     const cfg = { ...s.config, units: [0], repeat: 'end' };
     const ns = await createQuick(cfg, [{ label: `${ids.length}語`, ids: shuffle([...ids]) }], s.id);

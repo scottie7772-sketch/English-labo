@@ -34,7 +34,7 @@ export async function vocabList(el) {
   const tags = [...new Set(words.flatMap((w) => w.tags || []))].sort();
 
   el.innerHTML = `
-    <header class="top"><h1>単語・熟語</h1><span class="grow"></span>
+    <header class="top"><h1>単語帳</h1><span class="grow"></span>
       <button class="btn sm ghost" id="selMode">選ぶ</button><button class="icon-btn" id="add" aria-label="追加">${icon('plus', 26)}</button></header>
     <div class="searchbar"><input id="q" type="search" placeholder="検索（${esc(L().name)}・日本語）" value="${esc(f.q)}" autocapitalize="off" autocorrect="off"></div>
     <details class="card filters" ${hasFilter(f) ? 'open' : ''}>

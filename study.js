@@ -112,7 +112,8 @@ export async function studySetup(el) {
     const n = cfg.count === 'all' ? sel.list.length : Math.min(sel.list.length, cfg.count === 'custom' ? cfg.customCount : cfg.count);
     const range = rangeOf(cfg);
     el.innerHTML = `
-      <header class="top"><h1>単語テスト</h1><span class="grow"></span><a class="pill-link" href="#quick">${icon('cards', 18)}単語帳（カード）</a></header>
+      <header class="top"><h1>単語テスト</h1></header>
+      <a class="card row st-fcard" href="#quick">${icon('cards', 26)}<span class="grow"><b>フラッシュカード</b><small class="muted" style="display:block">スワイプでわかる・わからないを仕分け</small></span>${icon('chevron', 18)}</a>
       ${active ? `
         <div class="resume-bar">
           <span class="grow"><b>中断中のテスト</b><small>${DIRS[active.config.direction].label}・${FMT_SHORT[active.config.format]}　残り ${remaining(active)}/${active.queue.length}問</small></span>

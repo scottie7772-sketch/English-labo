@@ -1212,3 +1212,4 @@ body.selecting #list { padding-bottom: 130px; }
 .wselbar > span { margin-right: 4px; }
 .st-pv .st-pvrows { max-height: 50vh; overflow: auto; border-top: 1px solid var(--line); padding-top: 6px; display: flex; flex-direction: column; gap: 3px; }
 .st-pv .tagp { font-size: 11px; }
+.st-fcard { gap: 12px; align-items: center; text-decoration: none; color: var(--text); margin-bottom: 12px; } .st-fcard .ic { color: var(--accent); }

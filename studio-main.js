@@ -13,7 +13,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.18.9';
+export const STUDIO_VERSION = '0.19.0';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -100,9 +100,20 @@ async function setsScreen(el) {
   const sets = (await sdb.all('sets')).sort((a, b) => b.updatedAt - a.updatedAt);
   const srcs = await sourcesMap();
   // オリジナル / カット済み label: from the first and last items that have sound
-  const cutInfo = {};
+  const cutInfo = {}, stInfo = {};
   for (const st of sets) {
-    const bl = (await liveBlocks(st)).filter((b) => b.segments.length); if (!bl.length) continue;
+    const all = await liveBlocks(st);
+    // 1.17.10: how far the set has got: transcription / matching to the script / left over
+    { const scr = all.filter((b) => b.script || b.aligned), al = scr.filter((b) => b.aligned).length;
+      const raw = all.filter((b) => b.segments.length && !b.text.trim() && !/文字にできなかった/.test(b.label || '')).length;
+      const rest = all.filter((b) => !b.aligned && b.segments.length && (b.asr || /文字にできなかった/.test(b.label || ''))).length;
+      const t = [];
+      if (scr.length) t.push(al === scr.length ? '<span class="tagp ok">照合済み</span>' : al ? `<span class="tagp warn">照合 ${al}/${scr.length}</span>` : `<span class="tagp">未照合 ${scr.length}行</span>`);
+      if (raw) t.push(`<span class="tagp">未文字起こし ${raw}</span>`); else if (all.some((b) => b.asr || b.aligned)) t.push('<span class="tagp ok">文字起こし済み</span>');
+      if (!scr.length && !all.some((b) => b.asr) && all.some((b) => b.segments.length && b.text.trim())) t.push('<span class="tagp ok">字幕（時刻つき）</span>');
+      if (rest) t.push(`<span class="tagp warn">残り ${rest}</span>`);
+      stInfo[st.id] = t.join(''); }
+    const bl = all.filter((b) => b.segments.length); if (!bl.length) continue;
     const f = bl[0].segments[0], l = bl[bl.length - 1].segments.at(-1), src = srcs[f.sourceId];
     if (src?.trimmed) cutInfo[st.id] = `<span class="tagp">カット済み・元は削除</span>`;
     else if (src && (f.start > 0.05 || (src.duration && l.end < src.duration - 0.05))) cutInfo[st.id] = `<span class="tagp">カット済み ${fmt(f.start)}–${fmt(l.end)}（元も保存）</span>`;
@@ -129,7 +140,7 @@ async function setsScreen(el) {
   };
   const rowHTML = (s) => {
       const src = srcs[s.sourceId];
-      const info = `<span class="grow"><b>${esc(s.title)}</b> ${cutInfo[s.id] || ''}${s.importing ? `<span class="tagp warn">取り込み途中 ${s.importing.done}/${s.importing.total}</span>` : ''}<small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${srcState(src)}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
+      const info = `<span class="grow"><b>${esc(s.title)}</b> ${cutInfo[s.id] || ''}${stInfo[s.id] || ''}${s.importing ? `<span class="tagp warn">取り込み途中 ${s.importing.done}/${s.importing.total}</span>` : ''}<small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${srcState(src)}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
       return editing ? `<label class="st-setrow"><input type="checkbox" class="st-cb" data-id="${s.id}" ${chosen.has(s.id) ? 'checked' : ''}>${info}</label>` : `<a class="st-setrow" href="#${BASE}set?id=${s.id}">${info}›</a>`;
   };
   // folder = one material: the script (lines without sound) is the parent; the sound of the other sets goes into it and is aligned

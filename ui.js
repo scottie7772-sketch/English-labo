@@ -68,6 +68,9 @@ export function fmtDate(ts, withTime = true) {
 }
 
 // swipe a row to the left → a red "削除" button appears; tapping it calls onDelete(row) (which asks for confirmation)
+// 1.17.10: only one row is open (red) at a time: opening / touching another row closes the open one
+let swOpenClose = null;
+document.addEventListener('touchstart', (e) => { if (swOpenClose && !e.target.closest?.('.swdel') && !e.target.closest?.('.swrap.swiping')) { swOpenClose(); swOpenClose = null; } }, { passive: true, capture: true });
 export function swipeToDelete(rows, onDelete, { width = 88, openAt = 0 } = {}) {
   openAt ||= width / 2;   // how far the row must be pulled before the button stays open (larger = a deeper swipe)
   for (const row of rows) {
@@ -77,7 +80,8 @@ export function swipeToDelete(rows, onDelete, { width = 88, openAt = 0 } = {}) {
     const del = document.createElement('button'); del.type = 'button'; del.className = 'swdel'; del.textContent = '削除'; wrap.appendChild(del);
     let x0 = 0, y0 = 0, dx = 0, on = false, moved = false, open = false;
     const set = (x, anim) => { row.style.transition = anim ? 'transform .18s' : 'none'; row.style.transform = x ? `translateX(${x}px)` : ''; wrap.classList.toggle('swiping', !!x); };
-    row.addEventListener('touchstart', (e) => { const t = e.touches[0]; x0 = t.clientX; y0 = t.clientY; dx = 0; on = null; moved = false; }, { passive: true });
+    const close = () => { open = false; set(0, true); };
+    row.addEventListener('touchstart', (e) => { if (swOpenClose && swOpenClose !== close) { swOpenClose(); swOpenClose = null; } const t = e.touches[0]; x0 = t.clientX; y0 = t.clientY; dx = 0; on = null; moved = false; }, { passive: true });
     row.addEventListener('touchmove', (e) => {
       const t = e.touches[0], mx = t.clientX - x0, my = t.clientY - y0;
       if (on === null) { if (Math.abs(mx) < 8 && Math.abs(my) < 8) return; on = Math.abs(mx) > Math.abs(my); }
@@ -85,7 +89,7 @@ export function swipeToDelete(rows, onDelete, { width = 88, openAt = 0 } = {}) {
       e.preventDefault(); moved = true;
       dx = Math.max(-Math.max(width, openAt) - 30, Math.min(0, (open ? -width : 0) + mx)); set(dx, false);
     }, { passive: false });
-    row.addEventListener('touchend', () => { if (!on) return; open = open ? dx < -width / 2 : dx <= -openAt; set(open ? -width : 0, true); });
+    row.addEventListener('touchend', () => { if (!on) return; open = open ? dx < -width / 2 : dx <= -openAt; set(open ? -width : 0, true); swOpenClose = open ? close : swOpenClose === close ? null : swOpenClose; });
     row.addEventListener('click', (e) => { if (moved || open) { e.preventDefault(); e.stopPropagation(); if (open && !moved) { open = false; set(0, true); } moved = false; } }, true);
     del.addEventListener('click', async () => { const done = await onDelete(row); if (!done) { open = false; set(0, true); } });
   }

@@ -6,7 +6,7 @@ import { loadLang, setLang, langSwitchHTML, enabledLangs, setEnabled, LANGS } fr
 import { seedContent } from './content.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.17.9';
+export const APP_VERSION = '1.18.0';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -76,9 +76,12 @@ screens.settings = async (el) => {
       <div class="chips" id="langs">${Object.values(LANGS).map((l) => `<button data-v="${l.code}" class="${enabledLangs().includes(l.code) ? 'on' : ''}" ${l.code === 'en' ? 'disabled' : ''}>${l.name}</button>`).join('')}</div>
       <p class="hint">スペイン語は中南米（メキシコ）基準。華語は繁体字・ピンイン。初期の単語・問題はAI作成で未検証です。読み上げは端末に入っている声を使います（設定 → アクセシビリティ → 読み上げコンテンツ → 声 で追加できます）。</p></div>
 
-    <h2 class="sec">単語帳（カード）</h2>
+    <h2 class="sec">フラッシュカード</h2>
     <div class="card stack"><span class="small muted">スワイプの向き（単語テストのカードにも適用）。上下（片手）＝↑わかる ↓わからない →後回し（記録しない）。右・左＝わかる側、↑は曖昧</span>
       <div class="seg" id="swipe">${[['up', '上下（片手）'], ['right', '右＝わかる'], ['left', '左＝わかる']].map(([v, l]) => `<button data-v="${v}" class="${swipe === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+
+    <div class="card stack"><label class="chk"><input type="checkbox" id="fcOrig" ${(() => { try { return localStorage.getItem('fc-orig') !== '0'; } catch { return true; } })() ? 'checked' : ''}> カードの音声に元の録音を使う</label>
+      <p class="hint">教材スタジオで照合した行・動画ラボの字幕に同じ単語・例文があれば、その部分の録音を再生します（出元にかかわらず同じ音声）。無い単語は読み上げ音声です。</p></div>
 
     <h2 class="sec">バックアップ</h2>
     <div class="card stack">
@@ -111,6 +114,7 @@ screens.settings = async (el) => {
 
   $('#langs', el).onclick = async (e) => { const v = e.target.dataset.v; if (!v || v === 'en') return; const cur = enabledLangs().filter((c) => c !== 'en'); await setEnabled(cur.includes(v) ? cur.filter((c) => c !== v) : [...cur, v]); render(); };
   $('#swipe', el).addEventListener('click', async (e) => { const v = e.target.dataset.v; if (!v) return; await setSetting('swipeKnow', v); toast('スワイプの向きを変更しました'); render(); });
+  $('#fcOrig', el)?.addEventListener('change', (e) => { try { localStorage.setItem('fc-orig', e.target.checked ? '1' : '0'); } catch {} toast(e.target.checked ? '元の録音を使います' : '読み上げ音声だけにします'); });
   $('#bk-json', el).onclick = async () => {
     try { const r = await exportJSON(); if (r !== 'cancelled') { toast('バックアップを作成しました'); render(); } }
     catch (e) { toast('失敗: ' + e.message); }

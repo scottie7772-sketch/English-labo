@@ -254,12 +254,22 @@ export function fc2Fit(stage) {
 // English read-aloud: once when a card appears (if the English is on the front), on every tap of the English text.
 // iPhone may refuse speech before the first touch: then the first touch on the screen plays it.
 export function fc2Voice(root, speakFn) {
-  let pending = null, unlocked = false;
-  const say = (text) => { if (!text) return; try { const u = speakFn(text); if (u) { u.onstart = () => { unlocked = true; pending = null; }; } } catch { /* the cards still work without sound */ } };
-  root.addEventListener('touchstart', () => { if (!unlocked) { unlocked = true; if (pending) { const t = pending; pending = null; say(t); } } }, { capture: true, passive: true });
+  let pending = null, unlocked = false, wa = null, seq = 0;
+  // 1.17.10: the original recording first (when the same word / sentence is in a matched material), else the synthetic voice
+  import('./word-audio.js').then((m) => { wa = m; return m.prepare(true); }).catch(() => {});
+  const tts = (text) => { try { const u = speakFn(text); if (u) { u.onstart = () => { unlocked = true; pending = null; }; } } catch { /* the cards still work without sound */ } };
+  const say = (text) => {
+    if (!text) return; const my = ++seq;
+    try { speechSynthesis.cancel(); } catch {}
+    if (wa?.has(text) && origOn()) { wa.play(text).then((ok) => { if (ok) { unlocked = true; pending = null; } else if (my === seq) tts(text); }); return; }
+    wa?.stop(); tts(text);
+  };
+  root.addEventListener('touchstart', () => { wa?.unlock(); if (!unlocked) { unlocked = true; if (pending) { const t = pending; pending = null; say(t); } } }, { capture: true, passive: true });
   return {
     auto(text) { pending = text; say(text); },
     tap(text) { pending = null; say(text); },
-    stop() { pending = null; try { speechSynthesis.cancel(); } catch {} },
+    stop() { pending = null; seq++; wa?.stop(); try { speechSynthesis.cancel(); } catch {} },
   };
 }
+// setting: use the original recording on cards (on by default)
+export const origOn = () => { try { return localStorage.getItem('fc-orig') !== '0'; } catch { return true; } };

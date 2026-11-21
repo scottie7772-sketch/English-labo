@@ -110,3 +110,4 @@ header.top.st-edhead ~ .st-stick, header.top.st-edhead ~ * .st-stick { top: var(
 .st-cutgrid .btn, .st-cutrow .btn.sm { min-height: 42px; touch-action: manipulation; }
 .st-recrow { gap: 6px; padding-left: 28px; }
 .st-recrow .btn.xs { min-height: 34px; min-width: 52px; touch-action: manipulation; }
+.tagp.ok { color: #7fd3b2; border-color: rgba(127,211,178,.6); }

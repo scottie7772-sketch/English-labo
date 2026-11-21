@@ -111,3 +111,12 @@ header.top.st-edhead ~ .st-stick, header.top.st-edhead ~ * .st-stick { top: var(
 .st-recrow { gap: 6px; padding-left: 28px; }
 .st-recrow .btn.xs { min-height: 34px; min-width: 52px; touch-action: manipulation; }
 .tagp.ok { color: #7fd3b2; border-color: rgba(127,211,178,.6); }
+
+/* 1.18.1: compact set list */
+.st-setrow { padding: 8px 4px; gap: 8px; }
+.st-sinfo { min-width: 0; line-height: 1.3; }
+.st-stitle { display: block; font-size: 14px; font-weight: 700; word-break: break-all; }
+.st-smeta { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.st-smeta .tagp { margin-left: 2px; font-size: 10.5px; padding: 0 5px; vertical-align: 0; }
+.st-fulllist li.st-fsel { background: rgba(224,96,96,.18); }
+#fBar { gap: 6px; padding: 6px; border-radius: 8px; background: rgba(255,255,255,.05); }

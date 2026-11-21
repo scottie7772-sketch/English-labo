@@ -6,7 +6,7 @@ import { loadLang, setLang, langSwitchHTML, enabledLangs, setEnabled, LANGS } fr
 import { seedContent } from './content.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.18.0';
+export const APP_VERSION = '1.18.1';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },

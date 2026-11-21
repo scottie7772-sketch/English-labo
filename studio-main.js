@@ -13,7 +13,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.19.0';
+export const STUDIO_VERSION = '0.19.1';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -108,16 +108,15 @@ async function setsScreen(el) {
       const raw = all.filter((b) => b.segments.length && !b.text.trim() && !/文字にできなかった/.test(b.label || '')).length;
       const rest = all.filter((b) => !b.aligned && b.segments.length && (b.asr || /文字にできなかった/.test(b.label || ''))).length;
       const t = [];
-      if (scr.length) t.push(al === scr.length ? '<span class="tagp ok">照合済み</span>' : al ? `<span class="tagp warn">照合 ${al}/${scr.length}</span>` : `<span class="tagp">未照合 ${scr.length}行</span>`);
-      if (raw) t.push(`<span class="tagp">未文字起こし ${raw}</span>`); else if (all.some((b) => b.asr || b.aligned)) t.push('<span class="tagp ok">文字起こし済み</span>');
-      if (!scr.length && !all.some((b) => b.asr) && all.some((b) => b.segments.length && b.text.trim())) t.push('<span class="tagp ok">字幕（時刻つき）</span>');
-      if (rest) t.push(`<span class="tagp warn">残り ${rest}</span>`);
+      if (scr.length) t.push(al === scr.length ? '<span class="tagp ok">照合済</span>' : al ? `<span class="tagp warn">照合 ${al}/${scr.length}</span>` : '<span class="tagp">未照合</span>');
+      if (raw) t.push('<span class="tagp">未起こし</span>'); else if (all.some((b) => b.asr || b.aligned)) t.push('<span class="tagp ok">起こし済</span>');
+      if (!scr.length && !all.some((b) => b.asr) && all.some((b) => b.segments.length && b.text.trim())) t.push('<span class="tagp ok">字幕</span>');
       stInfo[st.id] = t.join(''); }
     const bl = all.filter((b) => b.segments.length); if (!bl.length) continue;
     const f = bl[0].segments[0], l = bl[bl.length - 1].segments.at(-1), src = srcs[f.sourceId];
-    if (src?.trimmed) cutInfo[st.id] = `<span class="tagp">カット済み・元は削除</span>`;
-    else if (src && (f.start > 0.05 || (src.duration && l.end < src.duration - 0.05))) cutInfo[st.id] = `<span class="tagp">カット済み ${fmt(f.start)}–${fmt(l.end)}（元も保存）</span>`;
-    else cutInfo[st.id] = `<span class="tagp">オリジナル</span>`;
+    if (src?.trimmed) cutInfo[st.id] = `<span class="tagp">カット</span>`;
+    else if (src && (f.start > 0.05 || (src.duration && l.end < src.duration - 0.05))) cutInfo[st.id] = `<span class="tagp">カット</span>`;
+    else cutInfo[st.id] = '';
   }
   const est = await navigator.storage?.estimate?.().catch(() => null);
   let editing = false; const chosen = new Set();
@@ -140,7 +139,8 @@ async function setsScreen(el) {
   };
   const rowHTML = (s) => {
       const src = srcs[s.sourceId];
-      const info = `<span class="grow"><b>${esc(s.title)}</b> ${cutInfo[s.id] || ''}${stInfo[s.id] || ''}${s.importing ? `<span class="tagp warn">取り込み途中 ${s.importing.done}/${s.importing.total}</span>` : ''}<small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${srcState(src)}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
+      // 1.18.1: compact — the full title (wraps only when it must), then one line of short marks
+      const info = `<span class="grow st-sinfo"><b class="st-stitle">${esc(s.title)}</b><span class="st-smeta">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'}${fmt(src.duration).replace(/\.\d$/, '')}` : '音声なし'}・${s.order.length}行${cutInfo[s.id] || ''}${stInfo[s.id] || ''}${s.importing ? `<span class="tagp warn">途中 ${s.importing.done}/${s.importing.total}</span>` : ''}</span><small class="muted" hidden>${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
       return editing ? `<label class="st-setrow"><input type="checkbox" class="st-cb" data-id="${s.id}" ${chosen.has(s.id) ? 'checked' : ''}>${info}</label>` : `<a class="st-setrow" href="#${BASE}set?id=${s.id}">${info}›</a>`;
   };
   // folder = one material: the script (lines without sound) is the parent; the sound of the other sets goes into it and is aligned
@@ -1203,6 +1203,26 @@ async function editorScreen(el, params) {
   }
 
   // ---------- edit one block ----------
+  // 1.18.1: delete many lines at once (undoable; the sound files stay)
+  async function bulkDel(list, what) {
+    if (!list.length) return toast(`${what}はありません`);
+    if (!(await confirmDialog({ title: `${list.length}行を削除`, body: `<p>${esc(what)}を ${list.length}行削除します。</p><p class="small">音声ファイル自体は消えません。↶で戻せます。</p>`, okLabel: '削除する', danger: true }))) return;
+    const ids = new Set(list.map((b) => b.id));
+    await run(`${what}を削除`, { blocks: list.map((b) => ({ ...b, deleted: true })), order: set.order.filter((id) => !ids.has(id)) });
+    toast(`${ids.size}行を削除しました（↶で戻せます）`, 2500);
+  }
+  // 1.18.1: a copy of the whole material (lines copied; the sound files are shared, not copied)
+  async function dupSet() {
+    const nid = newId('set_'), live = set.order.map((id) => byId[id]).filter(Boolean);
+    const copy = live.map((b) => ({ ...structuredClone(b), id: newId('b_'), setId: nid, rev: 0, deleted: false }));
+    const ns = { ...structuredClone({ ...set, undo: [], redo: [] }), id: nid, title: set.title + '（複製）', order: [], createdAt: Date.now(), updatedAt: Date.now() };
+    delete ns.exported; delete ns.importing; delete ns.importKey;
+    await sdb.put('sets', ns);
+    await commit(ns, '複製から作成', { blocks: copy, order: copy.map((b) => b.id) });
+    ns.undo = []; await sdb.put('sets', ns);
+    for (const t of await sdb.byIndex('tracks', 'setId', set.id)) await sdb.put('tracks', { ...structuredClone(t), id: newId('t_'), setId: nid });
+    toast('複製しました（音声ファイルは共有）', 2500); nav(`set?id=${nid}`);
+  }
   // 1.17.6: the whole text in order, one line each, to check the script for missing / doubled / misplaced parts
   function fullText() {
     const ids = set.order.filter((id) => byId[id]); const est = estPos();
@@ -1212,11 +1232,30 @@ async function editorScreen(el, params) {
     let last = -1, lastSid = null; const back = new Set();
     for (const id of ids) { const g = byId[id].segments[0]; if (!g) continue; if (g.sourceId === lastSid && g.start < last - 1) back.add(id); last = g.end; lastSid = g.sourceId; }
     const dlg = $('#dialog');
-    dlg.innerHTML = `<form method="dialog" class="dlg stack st-full"><div class="row"><h3 class="grow">スクリプト全文（${ids.length}行）</h3><button class="btn sm ghost" value="x">閉じる</button></div>
+    dlg.innerHTML = `<form method="dialog" class="dlg stack st-full"><div class="row"><h3 class="grow">スクリプト全文（${ids.length}行）</h3><button type="button" class="btn sm" id="fRange">範囲を選ぶ</button><button class="btn sm ghost" value="x">閉じる</button></div>
+      <div id="fBar" class="row wrap small" hidden></div>
       <p class="small muted">✓ 照合済み　○ 音声なし　起 照合できなかった文字起こし　♪ 音声あり（未照合）　<b class="warn-text">↺</b> 時間が前に戻っている行（順番の入れ違い）</p>
       <ol class="st-fulllist">${ids.map((id, i) => { const b = byId[id], [m, c] = mark(b); return `<li class="${c}" data-go="${id}"><span class="st-fm">${m}</span><span class="st-ft">${tm(b)}${back.has(id) ? ' <b class="warn-text">↺</b>' : ''}</span><span class="st-fx">${esc(b.text || b.label || '（英文なし）')}</span></li>`; }).join('')}</ol></form>`;
     dlg.returnValue = ''; dlg.showModal();
-    $$('[data-go]', dlg).forEach((x) => (x.onclick = () => { const id = x.dataset.go; dlg.close(); if (view !== 'all') setView('all'); setTimeout(() => goNear(id), 50); }));
+    // 1.18.1: range: tap the first and the last line, then delete (the script lines only, or every line in the range)
+    let picking = false, a0 = null, a1 = null;
+    const lis = $$('[data-go]', dlg), mark2 = () => { const i0 = ids.indexOf(a0), i1 = ids.indexOf(a1 ?? a0); lis.forEach((x, k) => x.classList.toggle('st-fsel', a0 != null && k >= Math.min(i0, i1) && k <= Math.max(i0, i1))); };
+    const inRange = () => { const i0 = ids.indexOf(a0), i1 = ids.indexOf(a1 ?? a0); return ids.slice(Math.min(i0, i1), Math.max(i0, i1) + 1).map((id) => byId[id]); };
+    const fBar = $('#fBar', dlg);
+    const drawFB = () => { fBar.hidden = !picking;
+      if (!picking) return;
+      if (a0 == null || a1 == null) { fBar.innerHTML = `<span class="grow">${a0 == null ? '始めの行' : '終わりの行'}をタップ</span><button type="button" class="btn xs" id="fCancel">やめる</button>`; }
+      else { const r = inRange(), na = r.filter((b) => !b.segments.length && b.text.trim());
+        fBar.innerHTML = `<span class="grow">${r.length}行を選択</span><button type="button" class="btn xs danger" id="fDelS" ${na.length ? '' : 'disabled'}>音声のない行だけ削除（${na.length}）</button><button type="button" class="btn xs danger" id="fDelA">すべて削除</button><button type="button" class="btn xs" id="fCancel">やめる</button>`;
+        // open the confirmation only after this dialog has really closed (its close event would cancel the next dialog)
+        const after = (fn) => { dlg.onclose = null; dlg.addEventListener('close', () => setTimeout(fn, 0), { once: true }); dlg.close(); };
+        $('#fDelS', fBar).onclick = () => after(() => bulkDel(na, '選んだ範囲の音声のないスクリプト行'));
+        $('#fDelA', fBar).onclick = () => after(() => bulkDel(r, '選んだ範囲の行')); }
+      $('#fCancel', fBar).onclick = () => { picking = false; a0 = a1 = null; mark2(); drawFB(); }; };
+    $('#fRange', dlg).onclick = () => { picking = true; a0 = a1 = null; mark2(); drawFB(); };
+    lis.forEach((x) => (x.onclick = () => { const id = x.dataset.go;
+      if (picking) { if (a0 == null || a1 != null) { a0 = id; a1 = null; } else a1 = id; mark2(); drawFB(); return; }
+      dlg.close(); if (view !== 'all') setView('all'); setTimeout(() => goNear(id), 50); }));
   }
   async function editBlock(b) {
     vid.pause(); playing = null;
@@ -1774,7 +1813,10 @@ async function editorScreen(el, params) {
       <button class="btn" value="txt">テキストを書き出す</button>
       ${Object.values(srcs).some((x) => x.audio?.count > 1 && x.derived !== 'audio16k') ? '<button class="btn" value="track">使う音声トラックを選ぶ</button>' : ''}
       ${Object.values(srcs).some((x) => x.stored && (x.derived !== 'audio16k' || x.codec === 'aac')) ? '<button class="btn" value="toaudio">容量を減らす（音声だけ・低音質に）</button>' : ''}
-      <button class="btn" value="full">スクリプト全文を見る（抜け・重複の確認）</button>
+      <button class="btn" value="full">スクリプト全文を見る（抜け・重複の確認・範囲で削除）</button>
+      <button class="btn" value="cutNoA">音声のないスクリプト行を削除</button>
+      <button class="btn" value="cutNoS">スクリプトのない音声の行を削除</button>
+      <button class="btn" value="dupset">この教材を複製</button>
       <button class="btn" value="ren">名前を変える</button>
       <button class="btn danger" value="del">このセットを削除</button>
       <button class="btn ghost" value="cancel">閉じる</button></form>`;
@@ -1786,6 +1828,9 @@ async function editorScreen(el, params) {
       if (v === 'exp') exportSet(set);
       if (v === 'send') sendToLab(set);
       if (v === 'full') fullText();
+      if (v === 'cutNoA') bulkDel(blocks.filter((b) => !b.segments.length && b.text.trim()), '音声のないスクリプト行');
+      if (v === 'cutNoS') bulkDel(blocks.filter((b) => b.segments.length && !b.aligned && (b.asr || !b.text.trim())), 'スクリプトのない音声の行（照合できなかった文字起こし・文字にできなかった部分）');
+      if (v === 'dupset') dupSet();
       if (v === 'asr') runAsr();
       if (v === 'words') nav(`words?id=${set.id}`);
       if (v === 'names') fixNames();
@@ -2032,7 +2077,8 @@ async function sendToLab(set) {
   } catch (e) { toast('送れませんでした：' + (e?.message || e), 5000); }
 }
 async function exportSet(set) {
-  const blocks = await liveBlocks(set), srcs = await sourcesMap(), tracks = await sdb.byIndex('tracks', 'setId', set.id);
+  let blocks = await liveBlocks(set);
+  const srcs = await sourcesMap(), tracks = await sdb.byIndex('tracks', 'setId', set.id);
   const media = [...new Set(blocks.flatMap((b) => b.segments.map((s) => s.sourceId)))].map((id) => srcs[id]).filter(Boolean);
   const canInclude = media.every((m) => m.stored || sessionFiles.has(m.id));
   // English Labo already has the sound that was sent before: a later export can carry only the new sound (+ all subtitles)
@@ -2046,11 +2092,14 @@ async function exportSet(set) {
       ${sent.size ? `<label class="chk"><input type="radio" name="em" value="new" checked> 字幕の更新（${newOnes.length ? `新しい音声 ${newOnes.length}件・${fmtSize(newOnes.reduce((a, m) => a + m.size, 0))}だけ含める` : '音声は含めない・とても小さい'}）</label>` : ''}
       <label class="chk"><input type="radio" name="em" value="all" ${sent.size ? '' : 'checked'} ${canInclude ? '' : 'disabled'}> 音声もすべて含める（${fmtSize(media.reduce((a, m) => a + m.size, 0))}）</label>
       <label class="chk"><input type="radio" name="em" value="none"> 音声を含めない（字幕だけ）</label></div>
+    <p class="hint">別のスタジオ（ホーム画面のスタジオ ⇄ 英語ラボ内のスタジオ）へ移すときは「音声もすべて含める」を選んでください。スタジオどうしは保存場所が別なので、前に送った音声は向こうにありません。</p>
+    ${nWait ? `<label class="chk"><input type="checkbox" id="onlyA"> 音声の付いた行だけ書き出す（音声のないスクリプト ${nWait}行は入れない）</label>` : ''}
     <p class="hint">英語ラボで同じ教材を読み込むと、字幕だけ入れ替わります（学習記録は残ります）。前に送った音声は送り直さなくて大丈夫です。</p>
     <div class="row end"><button class="btn ghost" value="cancel">やめる</button><button class="btn primary" value="ok">書き出す</button></div></form>`;
   dlg.returnValue = ''; dlg.showModal(); await new Promise((q) => (dlg.onclose = q));
   if (dlg.returnValue !== 'ok') return;
   const em = dlg.querySelector('input[name=em]:checked')?.value || 'all';
+  if (dlg.querySelector('#onlyA')?.checked) blocks = blocks.filter((b) => b.segments.length);
   const inc = new Set(em === 'all' ? media.map((m) => m.id) : em === 'new' ? newOnes.filter((m) => m.stored || sessionFiles.has(m.id)).map((m) => m.id) : []);
   const withMedia = inc.size > 0;
   const manifest = { format: 'elpack', formatVersion: 2, packId: newId('pk_'), materialId: set.id, materialVersion: (await sdb.byIndex('versions', 'setId', set.id)).length, title: set.title, lang: 'en', source: { app: 'Englabo Studio', appVersion: STUDIO_VERSION }, scope: 'collection', createdAt: new Date().toISOString(),
@@ -2081,7 +2130,10 @@ async function ioScreen(el) {
       const manifest = JSON.parse(await z.text('manifest.json')), material = JSON.parse(await z.text('material.json'));
       if (manifest.format !== 'elpack' || manifest.formatVersion > 2) throw new Error('対応していない教材パックです（アプリを更新してください）');
       const exists = await sdb.get('sets', material.set.id);
+      // 1.18.1: sound that is neither in the pack nor already in this studio → the lines would open without sound
+      const missing = []; for (const m of material.media) { if (m.included) continue; const ex = await sdb.get('sources', m.id); if (!(ex?.stored && ex.blob)) missing.push(m.name || m.id); }
       $('#out', el).innerHTML = `<div class="card stack"><b>${esc(manifest.title)}</b><span class="small">${material.items.length}項目・動画/音声 ${material.media.length}件（${manifest.contents.audio ? '含む' : '含まない＝あとで選び直し'}）</span>
+        ${missing.length ? `<p class="warn-text small">このパックには音声が入っていないファイルが ${missing.length}件あります（${missing.slice(0, 3).map(esc).join('、')}${missing.length > 3 ? '…' : ''}）。読み込むと英文だけになり再生できません。書き出し側で「音声もすべて含める」を選んで書き出し直してください。（あとで教材の画面からファイルを選び直すこともできます）</p>` : ''}
         ${exists ? '<p class="warn-text small">同じセットがすでにあります。</p><button class="btn" id="asCopy">複製として追加</button><button class="btn primary" id="asUpdate">今のセットを更新（新しい版として）</button>' : '<button class="btn primary" id="asNew">登録する</button>'}</div>`;
       const go = async (mode) => { const id = await importPack(z, manifest, material, mode); toast('読み込みました'); nav(`set?id=${id}`); };
       $('#asNew', el)?.addEventListener('click', () => go('new'));
@@ -2095,8 +2147,11 @@ async function importPack(z, manifest, material, mode) {
   const setId = remap ? newId('set_') : material.set.id;
   for (const m of material.media) {
     const exist = await sdb.get('sources', m.id);
-    if (exist?.stored) continue;
-    const blob = m.included ? await z.file(m.path) : null;
+    if (exist?.stored && exist.blob && !exist.labMissing) continue;
+    let blob = m.included ? await z.file(m.path) : null;
+    // 1.18.1: copy the sound into memory first (as the 動画ラボ does). A piece of the chosen ZIP file stored as it is could be
+    // unplayable on the iPhone: the material opened with its script only, without sound.
+    if (blob) blob = new File([await blob.arrayBuffer()], m.name || 'audio', { type: m.mime || blob.type || (m.kind === 'audio' ? 'audio/mp4' : 'video/mp4') });
     await sdb.put('sources', { id: m.id, kind: m.kind, name: m.name, size: m.size, mime: m.mime, duration: m.duration, head: m.head, tail: m.tail, stored: !!blob, blob: blob || undefined, addedAt: Date.now() });
   }
   const idMap = {};

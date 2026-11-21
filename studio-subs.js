@@ -22,10 +22,83 @@ export function parseScript(text, fileName = '') {
     cues.sort((a, b) => a.start - b.start);
     return { format: ext === 'vtt' || /^WEBVTT/.test(text) ? 'vtt' : 'srt', cues, timed: true };
   }
+  // 1.17: JSON made for Englabo ("englabo-script") and one-line-per-item text with [mm:ss.xx] times (LRC style)
+  if (/^\s*\{/.test(text)) { const j = parseEnglaboJson(text); if (j) return j; }
+  if (text.split('\n').filter((l) => LRC.test(l)).length >= 3) return parseLrc(text);
   if (ext === 'csv' || ext === 'tsv' || /\t/.test(text.split('\n')[0] || '')) return parseTable(text, ext === 'csv' ? ',' : '\t');
   // TXT: one line per item (blank lines ignored)
   const cues = text.split('\n').map((l) => clean(l)).filter(Boolean).map((t) => ({ id: newId('c'), start: null, end: null, text: t }));
   return { format: 'txt', cues, timed: false };
+}
+
+// ---------- 1.17: timed one-line text / JSON with sections per audio file, repeat marks, word + example pairs ----------
+const LRC = /^\s*\[((?:\d+:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?)\]\s*/;
+const REP = /\s*[×xX✕＊*]\s*([2-9]|1\d)\s*$/;                 // "×2" "x2" "X3" at the end of a line = read n times in the audio
+const HEAD = /^\s*(?:#+\s*)?(?:file\s*[:：]\s*)?([^\[\]|]*?\.(?:mp3|m4a|wav|aac|mp4|m4v|mov))\s*$/i;
+const tSec = (v) => { if (typeof v === 'number') return v; const m = String(v || '').trim().replace(',', '.'); if (!m) return null; return /:/.test(m) ? toSec(m) : +m; };
+const isWordLine = (t) => t.split(/\s+/).length <= 4 && !/[.!?。]["”’)]?$/.test(t);
+const stem = (w) => w.toLowerCase().replace(/[^a-z']/g, '').replace(/(ing|ed|es|s)$/, '');
+const usesWord = (word, sent) => { const ws = word.toLowerCase().split(/\s+/).map(stem).filter((x) => x.length > 1); const ss = sent.toLowerCase().split(/[\s,.;:!?"“”]+/).map(stem); return ws.length > 0 && ws.every((w) => ss.some((x) => x.startsWith(w.slice(0, Math.max(3, w.length - 1))))); };
+// end times: the next line's start (an estimate, marked endEst); word ↔ example pairs
+function finishSection(sec) {
+  sec.cues.sort((a, b) => a.start - b.start);
+  sec.cues.forEach((c, i) => {
+    const nx = sec.cues[i + 1];
+    if (c.end == null) { c.end = nx ? nx.start : c.start + 30; c.endEst = true; }   // the last line: up to 30 s (cut at the end of the audio file)
+    if (!c.kind && c.text) c.kind = isWordLine(c.text) ? 'word' : 'example';
+  });
+  sec.cues.forEach((c, i) => { const p = sec.cues[i - 1]; if (c.kind === 'example' && p?.kind === 'word' && !c.pair && usesWord(p.text, c.text)) c.pair = p.id; });
+  return sec;
+}
+function result(format, sections, rows) {
+  sections = sections.filter((x) => x.cues.length).map(finishSection);
+  return { format, timed: true, sections, cues: sections.flatMap((x) => x.cues), rows };
+}
+function parseLrc(text) {
+  const sections = [{ file: '', cues: [] }], rows = [];
+  let started = false, last = null;
+  text.split('\n').forEach((raw, n) => {
+    const line = raw.replace(/\s+$/, ''); if (!line.trim()) return;
+    const h = !LRC.test(line) && line.match(HEAD);
+    if (h) { started = true; sections.push({ file: h[1].trim().split('/').pop(), cues: [] }); last = null; rows.push({ n, cls: 'head', text: line }); return; }
+    const m = line.match(LRC);
+    if (!m) {
+      const t = clean(line);
+      if (!started) rows.push({ n, cls: 'intro', text: t });
+      else if (isJa(t) && last && !last.ja) { last.ja = t.replace(REP, ''); rows.push({ n, cls: 'ja', text: t }); }
+      else rows.push({ n, cls: 'unknown', text: t });
+      return;
+    }
+    started = true;
+    let body = clean(line.slice(m[0].length)), rep = 1;
+    const r = body.match(REP); if (r) { rep = +r[1]; body = body.replace(REP, ''); }
+    let [en, ja = ''] = body.split(/\s+\|\s+|\s*｜\s*/);
+    const r2 = en.match(REP); if (r2) { rep = Math.max(rep, +r2[1]); en = en.replace(REP, ''); }
+    if (isJa(en) && !/[A-Za-z]{2}/.test(en)) { ja = en; en = ''; }
+    const cue = { id: newId('c'), start: toSec(m[1]), end: null, text: en.trim(), ja: ja.trim(), ...(rep > 1 ? { rep } : {}) };
+    sections.at(-1).cues.push(cue); last = cue;
+    rows.push({ n, cls: cue.text ? (isWordLine(cue.text) ? 'word' : 'example') : 'ja', text: line, rep });
+  });
+  return result('lrc', sections, rows);
+}
+function parseEnglaboJson(text) {
+  let j; try { j = JSON.parse(text); } catch { return null; }
+  if (!j || (j.format !== 'englabo-script' && !Array.isArray(j.files))) return null;
+  const rows = [];
+  const sections = (j.files || []).map((f) => {
+    const cues = []; const byNo = {};
+    for (const x of f.lines || []) {
+      let en = String(x.en || '').trim(), rep = +x.repeat || 1;
+      const r = en.match(REP); if (r) { rep = Math.max(rep, +r[1]); en = en.replace(REP, ''); }
+      const c = { id: newId('c'), start: tSec(x.t ?? x.start), end: x.end != null ? tSec(x.end) : null, text: en, ja: String(x.ja || '').trim(), ...(rep > 1 ? { rep } : {}), ...(x.type === 'word' || x.type === 'example' ? { kind: x.type } : {}) };
+      if (c.start == null || Number.isNaN(c.start)) { rows.push({ cls: 'unknown', text: JSON.stringify(x).slice(0, 80) }); continue; }
+      if (x.no != null && c.kind === 'word') byNo[x.no] = c.id;
+      if (x.no != null && c.kind === 'example' && byNo[x.no]) c.pair = byNo[x.no];
+      cues.push(c); rows.push({ cls: c.kind || (c.text ? 'example' : 'ja'), text: en || c.ja, rep });
+    }
+    return { file: String(f.audio || f.file || '').split('/').pop(), cues };
+  });
+  return result('json', sections, rows);
 }
 
 function splitCSVLine(line, sep) {

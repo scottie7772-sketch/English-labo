@@ -1210,3 +1210,5 @@ body.selecting #list { padding-bottom: 130px; }
 .tagp.slim { background: rgba(169,213,183,.15); color: #a9d5b7; }
 .wselbar .btn { width: auto; flex: 0 0 auto; margin: 0; min-height: 36px; padding: 6px 12px; font-size: 13px; display: inline-flex; }
 .wselbar > span { margin-right: 4px; }
+.st-pv .st-pvrows { max-height: 50vh; overflow: auto; border-top: 1px solid var(--line); padding-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+.st-pv .tagp { font-size: 11px; }

@@ -13,7 +13,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate } from './compress.js';
 
-export const STUDIO_VERSION = '0.17.0';
+export const STUDIO_VERSION = '0.18.0';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -226,7 +226,22 @@ async function importScreen(el, params) {
     <div id="pairs"></div>`;
   const listFiles = () => {
     $('#flist', el).innerHTML = [...files.media.map((m) => `🎬 ${esc(m.name)}（${m.duration ? fmt(m.duration) : '長さ不明'}${m.playable ? '' : '・この端末で再生できません'}・${fmtSize(m.file.size)}）`),
-      ...files.subs.map((s) => `📄 ${esc(s.name)}（${s.lang === 'ja' ? '日本語' : '英語'}・${s.parsed.cues.length}行${s.parsed.timed ? '' : '・時間なし'}）`)].join('<br>');
+      ...files.subs.map((s) => `📄 ${esc(s.name)}（${s.lang === 'ja' ? '日本語' : '英語'}・${s.parsed.cues.length}行${s.parsed.timed ? '' : '・時間なし'}${s.parsed.cues.some((c) => c.rep > 1) ? `・くり返し×n ${s.parsed.cues.filter((c) => c.rep > 1).length}行` : ''}）`),
+      ...previews.map(previewHTML)].join('<br>');
+    $$('[data-pv]', el).forEach((b) => (b.onclick = () => { const d = b.nextElementSibling; d.hidden = !d.hidden; }));
+  };
+  // 1.17: what a timed text / JSON file was read as (before importing): explanations and unreadable lines are left out
+  const previews = [];
+  const CLS = { head: ['見出し（音声ファイル）', ''], intro: ['説明文（入れない）', 'muted'], word: ['単語', ''], example: ['例文', ''], ja: ['和訳', ''], unknown: ['解釈できない（入れない）', 'warn-text'] };
+  const previewHTML = (pv) => {
+    const cnt = {}; for (const r of pv.rows) cnt[r.cls] = (cnt[r.cls] || 0) + 1;
+    const reps = pv.rows.filter((r) => r.rep > 1).length;
+    return `<div class="card stack small st-pv"><b>📄 ${esc(pv.name)} の読み取り結果</b>
+      <span>${pv.sections.length > 1 || pv.sections[0]?.file ? `音声ファイルごとに ${pv.sections.length}つに分けました：${pv.sections.map((x) => esc(x.file || '（名前なし）')).join('、')}<br>` : ''}
+      ${Object.entries(CLS).filter(([k]) => cnt[k]).map(([k, [l, c]]) => `<span class="${c}">${l} ${cnt[k]}</span>`).join('・')}${reps ? `・くり返し（×n） ${reps}行（記号は字幕から外し、回数だけ残します）` : ''}</span>
+      ${cnt.unknown ? '<span class="warn-text">解釈できない行があります。内容を確認してください（時刻のない英文など）。</span>' : ''}
+      <button type="button" class="link small" data-pv>内容を確認</button>
+      <div class="st-pvrows" hidden>${pv.rows.slice(0, 400).map((r) => `<div class="${CLS[r.cls]?.[1] || ''}"><span class="tagp">${CLS[r.cls]?.[0] || r.cls}</span> ${esc(r.text)}</div>`).join('')}${pv.rows.length > 400 ? `<div class="muted">ほか ${pv.rows.length - 400}行</div>` : ''}</div></div>`;
   };
   async function addMedia(f, name = f.name) {
     const meta = await readDuration(f);
@@ -236,6 +251,16 @@ async function importScreen(el, params) {
   async function addSub(text, name) {
     const parsed = parseScript(text, name);
     if (!parsed.cues.length) return;
+    if (parsed.sections) {   // timed text / JSON: English with its Japanese per line; one subtitle per audio file named in the text
+      previews.push({ name: name.split('/').pop(), rows: parsed.rows, sections: parsed.sections });
+      const named = parsed.sections.filter((x) => x.file);
+      for (const sec of parsed.sections) {
+        const nm = sec.file && named.length ? `${dirOf(name) ? dirOf(name) + '/' : ''}${sec.file.replace(/\.[^.]+$/, '')}.en.txt` : name;
+        const p2 = { format: parsed.format, cues: sec.cues, timed: true };
+        files.subs.push({ key: newId('f'), name: nm, text: '', parsed: p2, lang: 'en', lastEnd: Math.max(...sec.cues.map((c) => c.end)) });
+      }
+      return;
+    }
     const lang = langFromName(name.split('/').pop()) || (parsed.cues.slice(0, 30).filter((c) => isJa(c.text)).length > Math.min(5, parsed.cues.length / 2) ? 'ja' : 'en');
     const lastEnd = parsed.timed ? Math.max(...parsed.cues.map((c) => c.end)) : null;
     files.subs.push({ key: newId('f'), name, text, parsed, lang, lastEnd });
@@ -361,7 +386,7 @@ async function importScreen(el, params) {
       catch (e) { results.push({ s, err: (e?.message || String(e)) }); }
     }
     lock?.release?.(); running(null);
-    files.media = []; files.subs = []; sets = null; listFiles();   // the next files start from empty (not mixed with these)
+    files.media = []; files.subs = []; previews.length = 0; sets = null; listFiles();   // the next files start from empty (not mixed with these)
     prog.innerHTML = `<div class="card stack"><b>登録 ${results.filter((r) => r.id).length}セット・失敗 ${results.filter((r) => r.err).length}</b>
       ${results.map((r) => `<div class="small">${r.id ? `✓ <a class="link" href="#${BASE}set?id=${r.id}">${esc(r.s.title)}</a>${r.again ? '（上書き・続き）' : ''}${(r.notes || []).map((t) => `<br><span class="warn-text">${esc(t)}</span>`).join('')}` : `✕ ${esc(r.s.title)}：${esc(r.err)}<br><span class="muted">途中までのファイルは保存されています。同じデータをもう一度取り込むと続きから入ります。</span>`}</div>`).join('')}
       <a class="btn" href="#${BASE}sets">一覧へ</a></div>`;
@@ -690,8 +715,11 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
         const jaText = jas.length ? jas.map((j) => j.text).join('') : c.ja || (ja && !s.ja.parsed.timed ? ja.cues[i]?.text || '' : '');
         const segs = seg(c.start, c.end);
         part.push(newBlock(setId, { segments: segs, text: c.text, ja: jaText, cueRefs: { en: [c.id], ja: jas.map((j) => j.id) }, sync: c.est ? 'estimated' : 'auto',
-          align: segs.length && tokensOf(c.text).length ? [{ s: 0, e: tokensOf(c.text).length - 1, v0: 0, v1: segs[0].end - segs[0].start }] : [] }));
+          align: segs.length && tokensOf(c.text).length ? [{ s: 0, e: tokensOf(c.text).length - 1, v0: 0, v1: segs[0].end - segs[0].start }] : [],
+          // 1.17: read n times in the audio ("×n", not part of the text); the end is the next line's start = an estimate; word ↔ example
+          ...(c.rep > 1 ? { rep: c.rep } : {}), ...(c.endEst ? { endEst: true } : {}), ...(c.kind ? { kind: c.kind } : {}), ...(c.pair ? { pairCue: c.pair } : {}) }));
       });
+      { const byCue = new Map(part.map((b) => [b.cueRefs?.en?.[0], b.id])); part.forEach((b) => { if (b.pairCue) { b.pair = byCue.get(b.pairCue) || null; delete b.pairCue; if (!b.pair) delete b.pair; } }); }
       for (const j of extra) part.push(newBlock(setId, { segments: seg(j.start, j.end), text: '', ja: j.text, jaStatus: 'needsReview', cueRefs: { en: [], ja: [j.id] } }));
       part.sort((a, b) => (a.segments[0]?.start ?? 0) - (b.segments[0]?.start ?? 0));
     } else if (ja) {
@@ -793,7 +821,9 @@ async function editorScreen(el, params) {
         else if (playing.cont) {
           const n = nextPlayable(playing.b), s1 = n?.segments[0];
           if (!n) { vid.pause(); playing = null; }
-          else if (s1.sourceId === s.sourceId && Math.abs(s1.start - vid.currentTime) < 0.3) { playing = { b: n, i: 0, loop: false, cont: true }; curBlock = n; }   // already there: no seek, no gap
+          // 1.17: the next row of the same file starts at / after the current point → keep playing (no seek): pauses between rows
+          // and sounds no row covers (e.g. the 2nd reading of "×2") are heard as they are, nothing is skipped
+          else if (s1.sourceId === s.sourceId && s1.start >= vid.currentTime - 0.3 && s1.start - vid.currentTime < 15) { playing = { b: n, i: 0, loop: false, cont: true }; curBlock = n; }
           else { playing = { b: n, i: 0, loop: false, cont: true }; curBlock = n; startSeg(); }
         }
         else { vid.pause(); playing = null; }
@@ -837,7 +867,7 @@ async function editorScreen(el, params) {
     list.classList.toggle('arranging', arrange);
     list.innerHTML = shown.map((b) => {
       const badges = [b.segments.length > 1 ? `<span class="tagp">${b.segments.length}区間</span>` : '', new Set(b.segments.map((s) => s.sourceId)).size > 1 ? '<span class="tagp">複数ファイル</span>' : '',
-        b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声なし</span>' : ''].join('');
+        b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声なし</span>' : ''].join('');
       return `<div class="st-row ${sel.has(b.id) ? 'sel' : ''} ${arrange ? 'jig' : ''}" data-id="${b.id}">
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
         <span class="grow st-txt" data-play="${b.id}"><small class="muted">${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)} ${badges}</small>
@@ -1605,7 +1635,15 @@ async function wordsScreen(el, params) {
   const chosen = new Set();
   const draw = () => {
     let list;
-    if (mode === 'phrase') list = extractPhrases(items).map((x) => ({ key: x.phrase, head: x.phrase, sub: x.ex, ex: x.ex, exJa: x.exJa, first: x.at, n: 1 }));
+    if (mode === 'phrase') {
+      // 1.17: word ↔ example pairs that came with the material (timed text / JSON) first, then the guesses for the rest
+      const byId = Object.fromEntries(blocks.map((b, i) => [b.id, { b, i }])), given = new Set();
+      const pairs = blocks.map((b, i) => (b.kind === 'example' && b.pair && byId[b.pair] ? { w: byId[b.pair], e: { b, i } } : null)).filter(Boolean);
+      list = pairs.map(({ w, e }) => { given.add(w.b.id); given.add(e.b.id); return { key: w.b.text, head: w.b.text, sub: e.b.text, ex: e.b.text, exJa: e.b.ja || '', ja: w.b.ja || '', first: w.i, n: 1 }; });
+      const rest = blocks.map((b, i) => (given.has(b.id) ? { text: '', ja: '' } : items[i]));
+      const keys = new Set(list.map((x) => x.key.toLowerCase()));
+      list.push(...extractPhrases(rest).filter((x) => !keys.has(x.phrase.toLowerCase())).map((x) => ({ key: x.phrase, head: x.phrase, sub: x.ex, ex: x.ex, exJa: x.exJa, first: x.at, n: 1 })));
+    }
     else list = extractWords(items, { hideBasic, showCommon }).map((x) => ({ key: x.w, head: x.w, sub: `×${x.n}${x.forms.size > 1 ? `（${[...x.forms].join(', ')}）` : ''}・${x.ex}`, ex: x.ex, exJa: x.exJa, first: x.first, n: x.n }));
     list.sort(sort === 'freq' ? (a, b) => b.n - a.n || a.first - b.first : sort === 'abc' ? (a, b) => a.key.localeCompare(b.key) : (a, b) => a.first - b.first);
     const shown = new Set(list.map((x) => x.key)); for (const k of [...chosen]) if (!shown.has(k)) chosen.delete(k);
@@ -1641,7 +1679,7 @@ async function wordsScreen(el, params) {
     const q = (v) => `"${String(v || '').replace(/"/g, '""')}"`;
     $('#csv', el).onclick = () => {
       const tag = set.title.replace(/[,\s/]+/g, '_').replace(/_+/g, '_');
-      const csv = '﻿' + ['英語,日本語,例文,例文訳,タグ', ...picked().map((x) => [x.head, '', x.ex, x.exJa, tag].map(q).join(','))].join('\n');
+      const csv = '﻿' + ['英語,日本語,例文,例文訳,タグ', ...picked().map((x) => [x.head, x.ja || '', x.ex, x.exJa, tag].map(q).join(','))].join('\n');
       const file = new File([csv], `${set.title.replace(/[\\/:*?"<>|]/g, '_')}-${mode === 'phrase' ? 'phrases' : 'words'}.csv`, { type: 'text/csv' });
       const copyIt = () => navigator.clipboard.writeText(csv.slice(1)).then(() => toast('書き出せなかったので、CSVの中身をコピーしました（メモ等に貼り付けて保存できます）', 4500), () => toast('書き出せませんでした'));
       if (navigator.canShare?.({ files: [file] })) navigator.share({ files: [file] }).catch((e) => { if (e?.name !== 'AbortError') copyIt(); });

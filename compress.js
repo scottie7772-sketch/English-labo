@@ -259,6 +259,7 @@ export async function compressAudio(blob, { tier = 'std', name = 'audio', durati
       const per = Math.max(1, Math.round((CHUNK_SEC * src.sr) / src.spf)), n = src.off.length, r = T.rate / src.sr;
       let skip = Math.round((src.skip || 0) * r);   // samples the original player hid at the start
       let left = src.total ? Math.round(src.total * r) : Infinity;   // and the padding it hid at the end
+      let shifted = 0;
       let tail = null;   // the end of the previous piece: the next piece is lined up against it (decoders may start a few ms off)
       for (let s = 0; s < n; s += per) {
         const e = Math.min(n, s + per), a = Math.max(0, s - LEAD), b = Math.min(n, e + LEAD);
@@ -275,8 +276,10 @@ export async function compressAudio(blob, { tier = 'std', name = 'audio', durati
         const mono = await toMono(buf, T.rate);
         const g0 = Math.round(s * src.spf * r), g1 = Math.round(e * src.spf * r);
         let lead = Math.round((s - a) * src.spf * r);
-        if (tail && s > 0) lead += lineUp(mono, lead, tail, T.rate);
+        if (tail && s > 0) { const d = lineUp(mono, lead, tail, T.rate); lead += d; if (Math.abs(d) > T.rate * 0.004) shifted++; }
         let piece = new Float32Array(g1 - g0); piece.set(mono.subarray(lead, Math.min(mono.length, lead + piece.length)));
+        // a piece the decoder returned too short would leave a silent hole at the joint (= a skip): stop rather than save that
+        if (mono.length < lead + piece.length - Math.round(0.002 * T.rate) && e < n) throw new Error('区切りで音が欠けるおそれがあるため、変換を中止しました（元の音声はそのまま）');
         tail = piece.slice(Math.max(0, piece.length - Math.round(0.1 * T.rate)));
         if (skip) { const k = Math.min(skip, piece.length); piece = piece.slice(k); skip -= k; }
         if (piece.length > left) piece = piece.slice(0, left);

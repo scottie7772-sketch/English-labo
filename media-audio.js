@@ -126,7 +126,11 @@ export function edgeCut(rms, zcr = []) {
   let j = i; while (j < rms.length && rms[j] >= th) j++;
   let k = j; while (k < rms.length && rms[k] < th) k++;
   const burst = (j - i) * 0.02, gap = (k - j) * 0.02;
-  if (i < rms.length && burst > 0.04 && burst <= 0.9 && gap >= 0.25 && k < rms.length) return { cut: Math.max(0, k * 0.02 - 0.15), why: `短い音（${burst.toFixed(1)}秒）とその後の無音` };
+  // 1.17.5: only when that short sound is NOT speech: a word ("Surely," + pause) was cut before. A click / tone has a steady pitch
+  // (zero-crossing rate barely changes); speech changes it all the time
+  const zs = zcr.slice(i, j), zm = zs.reduce((a, x) => a + x, 0) / Math.max(1, zs.length), zsd = Math.sqrt(zs.reduce((a, x) => a + (x - zm) * (x - zm), 0) / Math.max(1, zs.length));
+  const steady = zs.length > 0 && (burst <= 0.1 || zsd < 0.03);
+  if (i < rms.length && burst > 0.04 && burst <= 0.9 && gap >= 0.25 && k < rms.length && steady) return { cut: Math.max(0, k * 0.02 - 0.15), why: `短い音（${burst.toFixed(1)}秒）とその後の無音` };
   // 3) silence
   if (lead * 0.02 >= 0.3) return { cut: Math.max(0, lead * 0.02 - 0.15), why: '無音' };
   return { cut: 0, why: '' };

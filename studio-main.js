@@ -13,7 +13,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.18.5';
+export const STUDIO_VERSION = '0.18.6';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -778,7 +778,12 @@ async function editorScreen(el, params) {
       <div class="row st-ctl"><button class="btn sm" id="back3">⟲3</button><button class="btn sm primary" id="pp">${icon('play')}</button><button class="btn sm" id="fwd3">3⟳</button><span class="small muted" id="tnow">0:00.0</span><span class="grow"></span><button class="btn sm" id="arrB">結合・移動</button><button class="btn sm" id="selB">選択</button></div></div>
     <div id="info" class="small muted"></div><div id="alignNote"></div>
     <div id="list" class="st-list"></div>
-    <div id="bar" class="st-bar" hidden></div>`;
+    <div id="bar" class="st-bar" hidden></div><div class="st-jump" id="jump"><button type="button" data-j="top" aria-label="いちばん上へ">▲</button><button type="button" data-j="bot" aria-label="いちばん下へ">▼</button></div>`;
+  // 1.17.6: long lists: ▲▼ appear at the right edge while scrolling (tap = jump to the top / bottom)
+  { const jp = $('#jump', el); let hideT = null;
+    const onScroll = () => { if (!el.contains(jp)) return window.removeEventListener('scroll', onScroll); if (document.documentElement.scrollHeight < innerHeight * 2.5) return; jp.classList.add('on'); clearTimeout(hideT); hideT = setTimeout(() => jp.classList.remove('on'), 1800); };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    jp.onclick = (e) => { const j = e.target.closest('[data-j]')?.dataset.j; if (!j) return; window.scrollTo({ top: j === 'top' ? 0 : document.documentElement.scrollHeight, behavior: 'auto' }); jp.classList.add('on'); clearTimeout(hideT); hideT = setTimeout(() => jp.classList.remove('on'), 1800); }; }
   const vid = $('#vid', el), list = $('#list', el), bar = $('#bar', el);
   // 1.17.4: the title bar (title・↶↷・⋯) stays on top too; the player controls stick right under it
   { const hd = $('header.top', el); hd?.classList.add('st-edhead'); const fit = () => el.style.setProperty('--edh', `${hd?.offsetHeight || 0}px`); fit(); try { new ResizeObserver(fit).observe(hd); } catch {} }
@@ -787,7 +792,17 @@ async function editorScreen(el, params) {
   let view = (() => { try { return localStorage.getItem('st-view') || 'all'; } catch { return 'all'; } })(); if (!VIEWS[view]) view = 'all';
   const drawViewB = () => { const b = $('#viewB', el); b.innerHTML = `<span class="st-vico">☰</span><b>${VIEWS[view].t}</b>`; b.classList.toggle('on', view !== 'all'); b.title = VIEWS[view].d; };
   drawViewB();
-  $('#viewB', el).onclick = () => { view = { all: 'todo', todo: 'done', done: 'rest', rest: 'all' }[view]; try { localStorage.setItem('st-view', view); } catch {} drawViewB(); toast(VIEWS[view].d, 1500); drawList(); };
+  // 1.17.6: after switching the view, the list stays near the line that was at the top before
+  const topLine = () => { const lim = (el.querySelector('.st-stick')?.getBoundingClientRect().bottom || 0) + 4; const r = [...list.querySelectorAll('.st-row, .st-fold1')].find((x) => x.getBoundingClientRect().bottom > lim); return r ? (r.dataset.id || r.dataset.oid) : null; };
+  const goNear = (id) => {
+    if (!id) return; const ids = set.order.filter((x) => byId[x]); const k = ids.indexOf(id); if (k < 0) return;
+    const els = [...list.querySelectorAll('.st-row, .st-fold1')]; let best = null, bd = Infinity;
+    for (const x of els) { const kk = ids.indexOf(x.dataset.id || x.dataset.oid); if (kk < 0) continue; const d = Math.abs(kk - k) + (kk < k ? 0.5 : 0); if (d < bd) { bd = d; best = x; } }
+    if (!best) return; const lim = el.querySelector('.st-stick')?.getBoundingClientRect().bottom || 0;
+    window.scrollBy(0, best.getBoundingClientRect().top - lim - 8);
+  };
+  const setView = (v) => { const keep = topLine(); view = v; try { localStorage.setItem('st-view', view); } catch {} drawViewB(); drawList(); goNear(keep); };
+  $('#viewB', el).onclick = () => { setView({ all: 'todo', todo: 'done', done: 'rest', rest: 'all' }[view]); toast(VIEWS[view].d, 1500); };
   // play only the chosen sound track (screen recordings: app sound and microphone are separate tracks; never mixed)
   vid.addEventListener('loadedmetadata', () => { const at = vid.audioTracks, a = srcs[vid.dataset.src]?.audio; if (at && at.length > 1) { const k = a?.index ?? 0; for (let i = 0; i < at.length; i++) at[i].enabled = i === k; } });
   vid.addEventListener('error', () => { const s0 = srcs[vid.dataset.src]; logErr(`再生できません（コード${vid.error?.code}・${s0?.name}・${s0?.mime || '?'}・${s0?.codec || '元のまま'}）`); });
@@ -817,8 +832,27 @@ async function editorScreen(el, params) {
   }
   // play a block: its segments in order (may switch files)
   // cont: keep going to the next items in order (subtitles follow line by line)
+  // 1.17.6: lines without sound get an estimated place in the recording: between the lines around them, by length of text
+  function estPos() {
+    const ids = set.order.filter((id) => byId[id]), m = new Map();
+    for (let i = 0; i < ids.length; i++) {
+      if (byId[ids[i]].segments.length) continue;
+      let j = i; while (j < ids.length && !byId[ids[j]].segments.length) j++;
+      const P = i > 0 ? byId[ids[i - 1]].segments.at(-1) : null, N = j < ids.length ? byId[ids[j]].segments[0] : null;
+      const run = ids.slice(i, j), len = run.map((id) => Math.max(1, byId[id].text.length)), tot = len.reduce((a, x) => a + x, 0);
+      const sid = (P || N)?.sourceId;
+      if (sid) {
+        const D = srcs[sid]?.duration || 0;
+        const t0 = P ? P.end : Math.max(0, N.start - tot / 15), t1 = N && N.sourceId === sid && N.start > t0 ? N.start : (P ? Math.min(D || Infinity, t0 + tot / 15) : N.start);
+        let acc = 0; run.forEach((id, k) => { m.set(id, { sid, t: +(t0 + ((t1 - t0) * acc) / tot).toFixed(1) }); acc += len[k]; });
+      }
+      i = j - 1;
+    }
+    return m;
+  }
+  let estMap = new Map();
   function playBlock(b, loop = false, cont = false, from = null) {
-    if (!b.segments.length) return toast('この項目には音声区間がありません');
+    if (!b.segments.length) { const e = estMap.get(b.id); if (e && attach(e.sid, e.t)) { vid.pause(); playing = null; return toast(`音声なし・推定位置 ≈${fmt(e.t)}`, 1800); } return toast('この項目には音声区間がありません'); }
     let i = 0;
     if (from != null) { const k = b.segments.findIndex((x) => x.sourceId === vid.dataset.src && from >= x.start && from < x.end - 0.05); if (k >= 0) i = k; else from = null; }
     playing = { b, i, loop, cont }; curBlock = b;
@@ -888,6 +922,7 @@ async function editorScreen(el, params) {
   function drawList() {
     const rs = ops.ranges(set.order.filter((id) => byId[id]), sel);
     $('#info', el).textContent = `${blocks.length}項目${selectMode ? `・選択 ${rs.length}範囲 ${sel.size}項目` : ''}${(set.undo || []).length ? `・元に戻せる操作 ${set.undo.length}` : ''}`;
+    estMap = estPos();
     const base = onlySel ? blocks.filter((b) => sel.has(b.id)) : blocks;
     const filtering = view !== 'all' && !selectMode && !arrange;
     const isRest = (b) => !b.aligned && b.segments.length && (b.asr || !b.text.trim());   // left over from transcription / matching
@@ -896,14 +931,14 @@ async function editorScreen(el, params) {
     const folds = new Map();
     if (filtering && view === 'todo') { let run = 0, first = null; const flush = (nextId) => { if (run) folds.set(nextId ?? '__end', { n: run, from: first }); run = 0; first = null; };
       for (const b of base) { if (b.aligned) { if (!run) first = b; run++; } else flush(b.id); } flush(null); }
-    const foldHTML = (f) => `<div class="st-fold1" data-unfold="1">✓ 照合済み ${f.n}行（${fmt(f.from.segments[0]?.start)}〜）<small class="muted">タップで全表示</small></div>`;
+    const foldHTML = (f) => `<div class="st-fold1" data-unfold="1" data-oid="${f.from.id}">✓ 照合済み ${f.n}行（${fmt(f.from.segments[0]?.start)}〜）<small class="muted">タップで全表示</small></div>`;
     list.classList.toggle('arranging', arrange);
     list.innerHTML = shown.map((b) => (folds.has(b.id) ? foldHTML(folds.get(b.id)) : '') + (() => {
       const badges = [b.segments.length > 1 ? `<span class="tagp">${b.segments.length}区間</span>` : '', new Set(b.segments.map((s) => s.sourceId)).size > 1 ? '<span class="tagp">複数ファイル</span>' : '',
         b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声なし</span>' : ''].join('');
       return `<div class="st-row ${sel.has(b.id) ? 'sel' : ''} ${arrange ? 'jig' : ''}" data-id="${b.id}">
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
-        <span class="grow st-txt" data-play="${b.id}"><small class="muted">${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)} ${badges}</small>
+        <span class="grow st-txt" data-play="${b.id}"><small class="muted">${b.segments.length ? `${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)}` : estMap.has(b.id) ? `≈${fmt(estMap.get(b.id).t)}（推定）` : '--:--'} ${badges}</small>
           ${b.label ? `<b class="small">${esc(b.label)}</b>` : ''}<span class="st-en2">${holeHTML(b) || `<span class="muted">（英文なし${b.label ? '・✎で追加' : ''}）</span>`}</span><span class="st-ja2">${esc(b.ja || '')}</span></span>
         ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
     })()).join('') + (folds.has('__end') ? foldHTML(folds.get('__end')) : '') || `<p class="empty">${filtering ? (view === 'done' ? '照合済みの行はまだありません' : view === 'rest' ? '残っている文字起こしはありません' : '未照合の行はありません（すべて照合済み）') : '項目がありません'}</p>`;
@@ -916,7 +951,7 @@ async function editorScreen(el, params) {
         toast(`${ids.size}行を削除しました（↶で戻せます）`, 2500);
       };
     }
-    $$('[data-unfold]', list).forEach((x) => (x.onclick = () => { view = 'all'; try { localStorage.setItem('st-view', view); } catch {} drawViewB(); drawList(); }));
+    $$('[data-unfold]', list).forEach((x) => (x.onclick = () => { const id = x.dataset.oid; setView('all'); goNear(id); }));
     $('#undoB', el).disabled = !(set.undo || []).length; $('#redoB', el).disabled = !(set.redo || []).length;
     const nScript = scriptLines().length, nAudio = blocks.filter((b) => b.segments.length && !b.aligned).length;
     $('#alignNote', el).innerHTML = nScript && nAudio && !selectMode && !arrange ? `<div class="notice row small"><span class="grow">音声の付いていないスクリプトが${nScript}行あります。</span><button class="btn sm primary" id="alignGo">文字起こし→照合</button></div>` : '';
@@ -1130,11 +1165,26 @@ async function editorScreen(el, params) {
   }
 
   // ---------- edit one block ----------
+  // 1.17.6: the whole text in order, one line each, to check the script for missing / doubled / misplaced parts
+  function fullText() {
+    const ids = set.order.filter((id) => byId[id]); const est = estPos();
+    const mark = (b) => b.aligned ? ['✓', 'ok'] : !b.segments.length ? ['○', 'na'] : b.asr ? ['起', 'asr'] : !b.text.trim() ? ['空', 'na'] : ['♪', ''];
+    const tm = (b) => b.segments.length ? fmt(b.segments[0].start) : est.has(b.id) ? `≈${fmt(est.get(b.id).t)}` : '';
+    // a line whose time goes back (another part of the recording put here) is marked
+    let last = -1, lastSid = null; const back = new Set();
+    for (const id of ids) { const g = byId[id].segments[0]; if (!g) continue; if (g.sourceId === lastSid && g.start < last - 1) back.add(id); last = g.end; lastSid = g.sourceId; }
+    const dlg = $('#dialog');
+    dlg.innerHTML = `<form method="dialog" class="dlg stack st-full"><div class="row"><h3 class="grow">スクリプト全文（${ids.length}行）</h3><button class="btn sm ghost" value="x">閉じる</button></div>
+      <p class="small muted">✓ 照合済み　○ 音声なし　起 照合できなかった文字起こし　♪ 音声あり（未照合）　<b class="warn-text">↺</b> 時間が前に戻っている行（順番の入れ違い）</p>
+      <ol class="st-fulllist">${ids.map((id, i) => { const b = byId[id], [m, c] = mark(b); return `<li class="${c}" data-go="${id}"><span class="st-fm">${m}</span><span class="st-ft">${tm(b)}${back.has(id) ? ' <b class="warn-text">↺</b>' : ''}</span><span class="st-fx">${esc(b.text || b.label || '（英文なし）')}</span></li>`; }).join('')}</ol></form>`;
+    dlg.returnValue = ''; dlg.showModal();
+    $$('[data-go]', dlg).forEach((x) => (x.onclick = () => { const id = x.dataset.go; dlg.close(); if (view !== 'all') setView('all'); setTimeout(() => goNear(id), 50); }));
+  }
   async function editBlock(b) {
     vid.pause(); playing = null;
     let mode = 'hole'; let work = structuredClone(b);
     const dlg = $('#dialog');
-    const draw = () => {
+    let draw = () => {
       const toks = tokensOf(work.text);
       dlg.innerHTML = `<form method="dialog" class="dlg stack st-edit"><h3>項目の編集</h3>
         <div class="row"><button type="button" class="btn sm" id="ePlay">${icon('play')} 再生</button><button type="button" class="btn sm" id="eLoop">ループ</button><span class="small muted">${fmt(blockDur(work))}・${work.segments.length}区間</span></div>
@@ -1143,6 +1193,7 @@ async function editorScreen(el, params) {
         <div class="st-toks">${toks.map((w, i) => `<button type="button" class="st-tok ${(work.holes || []).some((h) => i >= h.s && i <= h.e) ? 'hole' : ''}" data-t="${i}">${esc(w)}</button>`).join('')}</div>
         <label class="field"><span>和訳</span><textarea id="eJa" rows="2">${esc(work.ja || '')}</textarea></label>
         <div class="stack">${work.segments.map((s, i) => `<div class="st-segrow"><b>区間${i + 1}</b> <small class="muted">${esc(srcs[s.sourceId]?.name || '')}</small>
+          <div class="st-trim" data-trim="${i}"><div class="st-trk"><i class="sel"></i><b class="h" data-h="start"></b><b class="h" data-h="end"></b></div><div class="row small muted"><span class="st-tl0"></span><span class="grow"></span><span>端をドラッグ・離すと試聴</span><span class="grow"></span><span class="st-tl1"></span></div></div>
           <div class="row"><span class="small">開始 ${fmt(s.start)}</span><button type="button" class="btn xs" data-adj="${i}:start:-0.1">−0.1</button><button type="button" class="btn xs" data-adj="${i}:start:0.1">＋0.1</button><button type="button" class="btn xs" data-now="${i}:start">今の位置</button></div>
           <div class="row"><span class="small">終了 ${fmt(s.end)}</span><button type="button" class="btn xs" data-adj="${i}:end:-0.1">−0.1</button><button type="button" class="btn xs" data-adj="${i}:end:0.1">＋0.1</button><button type="button" class="btn xs" data-now="${i}:end">今の位置</button></div></div>`).join('')}</div>
         <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">保存</button></div></form>`;
@@ -1164,6 +1215,26 @@ async function editorScreen(el, params) {
       $$('[data-adj]', dlg).forEach((x) => (x.onclick = () => { readText(); const [i, edge, d] = x.dataset.adj.split(':'); const s = work.segments[+i]; s[edge] = Math.max(0, +(s[edge] + +d).toFixed(2)); work.sync = 'manual'; draw(); }));
       $$('[data-now]', dlg).forEach((x) => (x.onclick = () => { readText(); const [i, edge] = x.dataset.now.split(':'); const s = work.segments[+i]; if (vid.dataset.src !== s.sourceId) return toast('この区間のファイルを再生してから押してください'); s[edge] = +vid.currentTime.toFixed(2); work.sync = 'manual'; draw(); }));
     };
+    const _draw = draw; draw = () => { _draw(); trimBars(); };
+    // 1.17.6: trim bar like the iPhone video editor: drag the two edges; on release the edge is played
+    function trimBars() {
+      $$('[data-trim]', dlg).forEach((box) => {
+        const i = +box.dataset.trim, sg = work.segments[i], D = srcs[sg.sourceId]?.duration || sg.end + 4;
+        const lo = Math.max(0, sg.start - 4), hi = Math.min(D, sg.end + 4), trk = $('.st-trk', box);
+        const pos = () => { const L = ((sg.start - lo) / (hi - lo)) * 100, R = ((sg.end - lo) / (hi - lo)) * 100; $('.sel', trk).style.cssText = `left:${L}%;width:${R - L}%`; $('[data-h=start]', trk).style.left = `${L}%`; $('[data-h=end]', trk).style.left = `${R}%`; $('.st-tl0', box).textContent = fmt(sg.start); $('.st-tl1', box).textContent = fmt(sg.end); };
+        pos();
+        $$('[data-h]', trk).forEach((h) => (h.onpointerdown = (e) => {
+          e.preventDefault(); h.setPointerCapture(e.pointerId); const edge = h.dataset.h; readText();
+          const mv = (ev) => { const r = trk.getBoundingClientRect(); let t = lo + ((ev.clientX - r.left) / r.width) * (hi - lo); t = Math.round(Math.max(lo, Math.min(hi, t)) * 20) / 20;
+            if (edge === 'start') sg.start = Math.min(t, sg.end - 0.1); else sg.end = Math.max(t, sg.start + 0.1); work.sync = 'manual'; pos(); };
+          h.onpointermove = mv;
+          h.onpointerup = h.onpointercancel = () => { h.onpointermove = null; h.onpointerup = null;
+            const from = edge === 'start' ? sg.start : Math.max(sg.start, sg.end - 1.2), to = edge === 'start' ? Math.min(sg.end, sg.start + 1.2) : sg.end;
+            if (attach(sg.sourceId, from)) { playing = null; vid.play().catch(() => {}); clearTimeout(trimBars.t); trimBars.t = setTimeout(() => vid.pause(), (to - from) * 1000 / (vid.playbackRate || 1)); }
+            draw(); };
+        }));
+      });
+    }
     const readText = () => { const en = $('#eEn', dlg)?.value, ja = $('#eJa', dlg)?.value; if (en != null && (en !== work.text || ja !== work.ja)) work = ops.editText(work, en.trim(), (ja || '').trim()); };
     draw();
     dlg.returnValue = '';
@@ -1637,6 +1708,7 @@ async function editorScreen(el, params) {
       <button class="btn" value="txt">テキストを書き出す</button>
       ${Object.values(srcs).some((x) => x.audio?.count > 1 && x.derived !== 'audio16k') ? '<button class="btn" value="track">使う音声トラックを選ぶ</button>' : ''}
       ${Object.values(srcs).some((x) => x.stored && (x.derived !== 'audio16k' || x.codec === 'aac')) ? '<button class="btn" value="toaudio">容量を減らす（音声だけ・低音質に）</button>' : ''}
+      <button class="btn" value="full">スクリプト全文を見る（抜け・重複の確認）</button>
       <button class="btn" value="ren">名前を変える</button>
       <button class="btn danger" value="del">このセットを削除</button>
       <button class="btn ghost" value="cancel">閉じる</button></form>`;
@@ -1647,6 +1719,7 @@ async function editorScreen(el, params) {
       if (v === 'ver') nav(`versions?id=${set.id}`);
       if (v === 'exp') exportSet(set);
       if (v === 'send') sendToLab(set);
+      if (v === 'full') fullText();
       if (v === 'asr') runAsr();
       if (v === 'words') nav(`words?id=${set.id}`);
       if (v === 'names') fixNames();

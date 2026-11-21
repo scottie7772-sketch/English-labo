@@ -85,3 +85,21 @@ header.top.st-edhead ~ .st-stick, header.top.st-edhead ~ * .st-stick { top: var(
 .st-viewb .st-vico { font-size: 12px; opacity: .7; }
 .st-viewb.on { background: #3a9474; color: #fff; border-radius: 10px; }
 .st-fold1 { padding: 8px 12px; margin: 4px 0; border: 1px dashed rgba(58,148,116,.55); border-radius: 10px; color: #7fd3b2; font-size: 13px; display: flex; gap: 8px; align-items: baseline; }
+
+/* 1.17.6: ▲▼ jump buttons, shown while scrolling */
+.st-jump { position: fixed; right: 6px; top: 50%; transform: translateY(-50%); z-index: 8; display: flex; flex-direction: column; gap: 10px; opacity: 0; pointer-events: none; transition: opacity .25s; }
+.st-jump.on { opacity: 1; pointer-events: auto; }
+.st-jump button { width: 40px; height: 40px; border-radius: 20px; border: 0; background: rgba(58,148,116,.9); color: #fff; font-size: 15px; box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+
+.st-full { max-height: 86vh; }
+.st-fulllist { margin: 0; padding-left: 2.6em; max-height: 68vh; overflow-y: auto; font-size: 14px; line-height: 1.45; }
+.st-fulllist li { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,.06); }
+.st-fulllist li > span { margin-right: 6px; }
+.st-fulllist .st-fm { display: inline-block; width: 1.3em; text-align: center; font-weight: 800; }
+.st-fulllist li.ok .st-fm { color: #5ec79e; } .st-fulllist li.na .st-fm { color: #e0a85a; } .st-fulllist li.asr .st-fm { color: #8aa6e8; }
+.st-fulllist .st-ft { color: var(--muted, #9aa); font-size: 12px; font-variant-numeric: tabular-nums; }
+.st-trim { margin: 6px 0 2px; }
+.st-trk { position: relative; height: 30px; border-radius: 8px; background: rgba(255,255,255,.08); touch-action: none; }
+.st-trk .sel { position: absolute; top: 0; bottom: 0; background: rgba(240,190,60,.28); border-top: 3px solid #f0be3c; border-bottom: 3px solid #f0be3c; }
+.st-trk .h { position: absolute; top: -4px; width: 22px; height: 38px; margin-left: -11px; border-radius: 6px; background: #f0be3c; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+.st-trk .h::after { content: ''; position: absolute; left: 9px; top: 11px; width: 4px; height: 16px; border-radius: 2px; background: rgba(0,0,0,.45); }

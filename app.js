@@ -6,7 +6,7 @@ import { loadLang, setLang, langSwitchHTML, enabledLangs, setEnabled, LANGS } fr
 import { seedContent } from './content.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.11.0';
+export const APP_VERSION = '1.12.0';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -90,8 +90,8 @@ screens.settings = async (el) => {
       <p class="hint">スペイン語は中南米（メキシコ）基準。華語は繁体字・ピンイン。初期の単語・問題はAI作成で未検証です。読み上げは端末に入っている声を使います（設定 → アクセシビリティ → 読み上げコンテンツ → 声 で追加できます）。</p></div>
 
     <h2 class="sec">単語帳（カード）</h2>
-    <div class="card stack"><span class="small muted">スワイプの左右（↑は常に「曖昧」。単語テストのカードにも適用）</span>
-      <div class="seg" id="swipe">${[['right', '右＝わかる'], ['left', '左＝わかる']].map(([v, l]) => `<button data-v="${v}" class="${swipe === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="card stack"><span class="small muted">スワイプの向き（単語テストのカードにも適用）。上下（片手）＝↑わかる ↓わからない →後回し（記録しない）。右・左＝わかる側、↑は曖昧</span>
+      <div class="seg" id="swipe">${[['up', '上下（片手）'], ['right', '右＝わかる'], ['left', '左＝わかる']].map(([v, l]) => `<button data-v="${v}" class="${swipe === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
 
     <h2 class="sec">バックアップ</h2>
     <div class="card stack">
@@ -242,6 +242,8 @@ async function boot() {
   await applyTheme();
   try { const n = await seedIfNeeded(); if (n) setTimeout(() => toast(`初期単語${n}語を追加しました（苦手として登録）`, 4000), 300); } catch (e) { console.error('seed', e); }
   try { const n = await splitSeedIfNeeded(); if (n) setTimeout(() => toast(`多義語を意味ごとに分け、${n}項目を追加しました`, 4500), 4600); } catch (e) { console.error('split', e); }
+  // 1.12: one-handed swipe (↑わかる ↓わからない →後回し) becomes the setting once; the old directions stay selectable
+  if (!(await getSetting('swipe:v112', false))) { await setSetting('swipeKnow', 'up'); await setSetting('swipe:v112', true); }
   await loadLang();
   seedContent().then((n) => { if (n) { toast(`教材の単語${n}語を追加しました（AI作成・未検証）`, 3500); if (['home', 'vocab'].includes(currentRoute())) render(); } }).catch((e) => console.error('content', e));
   document.addEventListener('click', async (e) => {

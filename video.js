@@ -379,23 +379,23 @@ export async function videoPlay(el, params) {
   const MLABEL = (m) => MODES.find((x) => x[0] === m)[1].replace('英', L(vlang).ch);
 
   el.innerHTML = `
-    <div class="vp-root" id="vroot">
+    <div class="vp-root v112" id="vroot">
     <header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1 class="vtitle">${esc(v.name)}</h1><span class="grow"></span><button class="icon-btn vh-btn vmode-btn" id="openMode" aria-label="学習モード">🎛</button><button class="icon-btn vh-btn" id="openSet" aria-label="表示・学習の設定">⚙︎</button><button class="icon-btn vh-btn" id="openMake" aria-label="字幕・日本語訳">字</button><button class="icon-btn" id="menu" aria-label="メニュー">⋯</button></header>
     <div class="vwrap">${!url ? '<div class="card warn">動画ファイルがありません（バックアップから復元した場合は、動画をもう一度追加してください）</div>'
       : aurl ? `<video id="vpic" src="${url}" muted playsinline webkit-playsinline preload="metadata"></video><audio id="vid" src="${aurl}" preload="auto" playsinline></audio>`
       : `<video id="vid" src="${url}" playsinline webkit-playsinline preload="metadata"></video>`}</div>
     <div class="vbottom"><div class="vbin">
-      <div class="vseek" id="seek"><div class="vs-track"><i class="vs-range" id="sRange"></i><i class="vs-played" id="sPlayed"></i><i class="vs-head" id="sHead"></i></div></div>
-      <div class="vs-info small"><span id="sTime">0:00.0</span><span id="sRangeTxt" class="grow center"></span><button class="link small" id="sClear" hidden>区間を解除</button></div>
+      <!-- 1.12: placed for the right thumb (play ≈ between な and は on the iPhone keyboard); used less often → left -->
       <div class="vctl2b">
-        <button class="vb vb-speed" id="speed" aria-label="速さ">1×</button>
+        <div class="vb-side"><button class="vb vb-speed" id="speed" aria-label="速さ">1×</button><button class="vb vb-speed vb-loop" id="loopBtn" aria-label="この文をループ">🔁</button></div>
         <button class="vb vb-skip" id="prevCue" aria-label="この文の頭へ・前の文">⏮</button>
         <button class="vb vb-step" id="back" aria-label="戻す（長押しで秒数）">⟲3</button>
         <button class="vb vb-play" id="play" aria-label="再生">▶︎</button>
         <button class="vb vb-step" id="fwd" aria-label="送る（長押しで秒数）">3⟳</button>
         <button class="vb vb-skip" id="nextCue" aria-label="次の文">⏭</button>
-        <span class="vb-speed vb-spacer"></span>
       </div>
+      <div class="vseek" id="seek"><div class="vs-track"><i class="vs-range" id="sRange"></i><i class="vs-played" id="sPlayed"></i><i class="vs-head" id="sHead"></i></div></div>
+      <div class="vs-info small"><span id="sTime">0:00.0</span><span id="sRangeTxt" class="grow center"></span><button class="link small" id="sClear" hidden>区間を解除</button></div>
     </div></div>
     <div class="subbox" id="sub"></div>
     <div id="grade"></div>
@@ -448,6 +448,10 @@ export async function videoPlay(el, params) {
   let followOff = 0;
   const followBtn = document.createElement('button'); followBtn.className = 'btn sm vfollow'; followBtn.textContent = '↧ 現在の行へ'; followBtn.hidden = true;
   cl?.before(followBtn);
+  // the subtitle list fills the space down to the control panel (whose height changed in 1.12)
+  const vbar = $('.vbottom', el);
+  const fitList = () => { if (!cl || !vbar) return; const top = cl.getBoundingClientRect().top + scrollY; cl.style.maxHeight = `${Math.max(140, innerHeight - vbar.offsetHeight - top - 8)}px`; };
+  const fitRO = new ResizeObserver(() => fitList()); if (vbar) fitRO.observe(vbar); if (sub) fitRO.observe(sub); const vmedia = $('video, audio', el); if (vmedia) fitRO.observe(vmedia); addEventListener('resize', fitList);
   const followCue = (row, force = false) => {
     if (!cl || !row) return;
     if (!force && followOff && Date.now() - followOff < 20000) { followBtn.hidden = false; return; }
@@ -544,6 +548,7 @@ export async function videoPlay(el, params) {
     $('#step', el).checked = view.step; $('#jaHint', el).checked = view.jaHint;
     $('#qMode', el).textContent = `字幕：${MLABEL(view.mode)}`;
     $('#qCloze', el).classList.toggle('on', view.cloze);
+    $('#loopBtn', el)?.classList.toggle('on', !!loop);
     $('#qLoop', el).classList.toggle('on', !!loop); $('#qLoop', el).textContent = !loop ? 'ループ' : view.loopMax ? `ループ${view.loopMax}回` : 'ループ∞';
     $('#qTest', el).classList.toggle('on', view.test);
     $('#qDict', el).classList.toggle('on', dictOn); $('#qShadow', el).classList.toggle('on', shadowOn); $('#qRange', el).classList.toggle('on', !!rangeMode);
@@ -936,6 +941,7 @@ export async function videoPlay(el, params) {
     }
     applyView();
   };
+  $('#loopBtn', el).onclick = () => $('#qLoop', el).click();
   $('#qTest', el).onclick = () => { view.test = !view.test; revealedCue = null; saveView(); applyView(); };
   const seg = (id, key, num = true) => ($('#' + id, el).onclick = (e) => { const b = e.target.closest('button'); if (!b) return; view[key] = num ? +b.dataset.v : b.dataset.v; saveView(); applyView(); });
   seg('order', 'order', false); seg('opEn', 'opEn'); seg('opJa', 'opJa'); seg('fsEn', 'fsEn'); seg('fsJa', 'fsJa'); seg('loopMax', 'loopMax'); seg('clozeUnit', 'clozeUnit', false);
@@ -1166,6 +1172,7 @@ export async function videoPlay(el, params) {
     on('seekto', (d) => { if (d.seekTime != null) vid.currentTime = d.seekTime; });
   }
   setCleanup(() => {
+    removeEventListener('resize', fitList); fitRO.disconnect();
     cancelAnimationFrame(rafId); savePos(); vid?.pause(); if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
     if (ms) { for (const a of MS_ACTS) { try { ms.setActionHandler(a, null); } catch {} } try { ms.metadata = null; } catch {} }
   });

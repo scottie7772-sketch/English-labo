@@ -3,7 +3,7 @@ import { db, uid, getSetting, setSetting, attemptsSince } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, speak } from './ui.js';
 import { SKILL_LABELS, LEVEL_LABELS, effLevel, filterLevel, levelText, loadAllMastery, loadWordMastery } from './mastery.js';
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
-import { makeSwipeCard, swipeCardHTML, answerStripHTML } from './swipecard.js';
+import { makeSwipeCard, swipeCardHTML, answerStripHTML, swipeMap, isOneHand, swipeHint, oneHandPadHTML, fitStage } from './swipecard.js';
 import { icon } from './icons.js';
 import { L, curLang, langOf, compareAnswer, numToMarks, isZh } from './langs.js';
 
@@ -312,7 +312,7 @@ export async function sessionScreen(el, params) {
 
   const undoStack = [];
   let busy = Promise.resolve();
-  const knowRight = (await getSetting('swipeKnow', 'right')) === 'right';
+  const swipeSet = await getSetting('swipeKnow', 'up'), map = swipeMap(swipeSet), oneHand = isOneHand(map), knowRight = swipeSet === 'right';
 
   // ---- flashcard format: 1 swipe = judged, auto-advance (no feedback screen) ----
   function showFlash(q, w) {
@@ -327,19 +327,19 @@ export async function sessionScreen(el, params) {
     const back = q.direction === 'ja2en' ? `${ja}${en}${exH}` : `${en}${ja}${exH}`;
     if (!$('#fstage', el)) {
       el.innerHTML = `
-        <div class="qrun">
+        <div class="qrun ${oneHand ? 'onehand' : ''}">
         <header class="qhead"><button class="xbtn" id="quit" aria-label="中断">✕</button><span class="qlabel">${DIRS[q.direction].label}・${FORMATS.flash}</span><span class="qleft" id="left"></span></header>
         <div class="progress"><i id="prog"></i></div>
         <p class="small muted center" id="pos"></p>
         <div class="qstage" id="fstage"></div>
         <div class="laststrip" id="last"></div>
-        <p class="hint center">タップで答え ・ ${knowRight ? '← わからない ・ → わかる' : '← わかる ・ → わからない'} ・ ↑曖昧</p>
-        <div class="qbtns3">
+        <p class="hint center">${oneHand ? swipeHint(map) : `タップで答え ・ ${knowRight ? '← わからない ・ → わかる' : '← わかる ・ → わからない'} ・ ↑曖昧`}</p>
+        ${oneHand ? oneHandPadHTML() : `<div class="qbtns3">
           <button class="btn qb ${knowRight ? 'dont' : 'know'}" data-r="${knowRight ? 'dont' : 'know'}"><b>←</b>${knowRight ? 'わからない' : 'わかる'}</button>
       <button class="btn qb vague" data-r="vague"><b>↑</b>曖昧</button>
       <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}"><b>→</b>${knowRight ? 'わかる' : 'わからない'}</button>
           <button class="btn qb" id="undo">↩︎</button>
-        </div>
+        </div>`}
         ${isAudio ? `<button class="btn" id="say" style="margin-top:8px">${icon('speaker', 20)} もう一度聞く</button>` : ''}
         </div>`;
       document.body.classList.add('noscroll');
@@ -348,6 +348,8 @@ export async function sessionScreen(el, params) {
       $('#quit', el).onclick = () => { toast(`中断しました（残り${remaining(s)}問）。学習タブから再開できます`); go('#study'); };
       $('#undo', el).onclick = flashUndo;
       el.querySelectorAll('.qb[data-r]').forEach((b) => (b.onclick = () => { const c = el._flashCur; if (c && !c.ctl.done) c.ctl.commit(b.dataset.r); }));
+      $('[data-flip]', el)?.addEventListener('click', () => { const c = el._flashCur; if (c && !c.ctl.done) c.flip(); });
+      if ($('#qpad', el)) fitStage($('#fstage', el), $('#qpad', el));
       $('#say', el)?.addEventListener('click', () => speak(words[s.queue[idx]?.wordId]?.headword));
     }
     $('#left', el).textContent = `残り ${left}`;
@@ -358,8 +360,15 @@ export async function sessionScreen(el, params) {
     stage.insertAdjacentHTML('afterbegin', swipeCardHTML(front, knowRight));
     const card = stage.firstElementChild;
     const st = { flipped: false, revealed: false, t0: performance.now() };
+    st.flip = () => {
+      st.flipped = !st.flipped;
+      card.classList.add('flipping');
+      setTimeout(() => { $('.face', card).innerHTML = st.flipped ? back : front; card.classList.remove('flipping'); }, 90);
+      if (st.flipped) { st.revealed = true; if (q.direction === 'ja2en') speak(w.headword); }
+    };
+    const qpad = $('#qpad', el);
     st.ctl = makeSwipeCard(card, {
-      knowRight,
+      map, pads: qpad ? [qpad] : [],
       revealOnCommit: () => back,
       onTap: () => {
         st.flipped = !st.flipped;
@@ -369,6 +378,15 @@ export async function sessionScreen(el, params) {
       },
       onCommit: (result) => {
         if (s.answered[q.qid]) return;               // double-registration guard
+        if (result === 'skip') {                     // 後回し: nothing is recorded; the question moves to the end of the session
+          if (!s.queue.some((x, i) => i !== idx && !s.answered[x.qid] && words[x.wordId])) { toast('最後の1問なので後回しにできません', 1400); show(); return; }
+          const [it] = s.queue.splice(idx, 1); s.queue.push(it);
+          undoStack.push({ skip: true, qid: q.qid, from: idx });
+          $('#last', el).innerHTML = answerStripHTML('skip', esc(w.headword), esc(meanings.join('、')), true);
+          s.updatedAt = Date.now(); busy = busy.then(() => db.put('sessions', s)).catch((e) => toast('保存に失敗: ' + e.message));
+          idx = s.queue.findIndex((x) => !s.answered[x.qid] && words[x.wordId]);
+          show(); return;
+        }
         const ms = Math.round(performance.now() - st.t0);
         const correct = result !== 'dont', hint = result === 'vague';
         s.answered[q.qid] = { correct, near: false, hint, answer: { know: 'わかる', vague: '曖昧', dont: 'わからない' }[result], grade: result, revealed: st.revealed, ms, at: Date.now() };
@@ -397,6 +415,11 @@ export async function sessionScreen(el, params) {
   async function flashUndo() {
     const e = undoStack.pop(); if (!e) return;
     await busy;
+    if (e.skip) {
+      const at = s.queue.findIndex((x) => x.qid === e.qid); if (at >= 0) s.queue.splice(e.from, 0, s.queue.splice(at, 1)[0]);
+      s.updatedAt = Date.now(); await db.put('sessions', s);
+      idx = e.from; $('#fstage', el).innerHTML = ''; $('#last', el).innerHTML = ''; show(); toast('取り消しました', 1000); return;
+    }
     if (e.snap) await undoAnswer(e.wordId, e.snap, e.attemptIds);
     delete s.answered[e.qid];
     s.activeMs -= Math.min(e.ms, 120000);
@@ -469,6 +492,7 @@ export async function sessionScreen(el, params) {
       const opts = [w];
       for (const x of pool) { if (opts.length >= 4) break; const l = label(x); if (!seen.has(l)) { seen.add(l); opts.push(x); } }
       shuffle(opts);
+      ans.classList.add('dock');   // 1.12: choices sit low, where the thumb reaches (undocked after answering)
       ans.innerHTML = `<div class="choices">${opts.map((x, i) => `<button class="choice ${toEn ? 'en' : ''}" data-id="${x.id}"><span class="cn">${i + 1}</span><span class="ctx">${esc(label(x))}</span></button>`).join('')}</div>`;
       ans.addEventListener('click', (e) => {
         const b = e.target.closest('.choice'); if (!b || revealed) return;
@@ -552,7 +576,9 @@ export async function sessionScreen(el, params) {
         </div>
         <button class="btn primary" id="next">${last ? '結果を見る' : '次へ'}</button>`;
       $('#say2', el).onclick = () => speak(w.headword);
+      $('#ans', el)?.classList.remove('dock');
       const next = $('#next', el);
+      next.classList.add('dockbtn'); next.insertAdjacentHTML('afterend', '<div class="dockspace"></div>');
       next.onclick = () => (last ? go(`#result?id=${s.id}`) : show());
       next.focus({ preventScroll: true });
       $('#fb', el).scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' });

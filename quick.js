@@ -6,7 +6,7 @@ import { LEVEL_LABELS, SKILL_LABELS, effLevel, filterLevel, loadAllMastery } fro
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
 import { shuffle, allMeanings } from './study.js';
 import { toggleBookmark } from './words.js';
-import { makeSwipeCard, swipeCardHTML, answerStripHTML } from './swipecard.js';
+import { makeSwipeCard, swipeCardHTML, answerStripHTML, swipeMap, isOneHand, swipeHint, oneHandPadHTML, fitStage } from './swipecard.js';
 import { icon } from './icons.js';
 
 import { L, curLang, langOf, numToMarks, isZh } from './langs.js';
@@ -41,7 +41,7 @@ const counts = (s) => {
 async function activeQuick() {
   return (await db.byIndex('sessions', 'status', 'active')).filter((x) => x.mode === 'quick' && (x.lang || 'en') === curLang()).sort((a, b) => b.updatedAt - a.updatedAt)[0] || null;
 }
-export const getSwipe = () => getSetting('swipeKnow', 'right');
+export const getSwipe = () => getSetting('swipeKnow', 'up');
 async function loadCfg() { return { ...QUICK_DEFAULTS, ...(await getSetting('quickCfg', {})) }; }
 
 // ---------- word list for a range + order ----------
@@ -159,7 +159,7 @@ export async function quickRun(el, params) {
   if (!s || s.status !== 'active') { go(s ? `#quick-result?id=${s.id}` : '#quick'); return; }
   if (!s.units) { s.status = 'done'; await db.put('sessions', s); go(`#quick-result?id=${s.id}`); return; }   // pre-v0.9 session
   const words = Object.fromEntries((await db.all('words')).map((w) => [w.id, w]));
-  const knowRight = (await getSwipe()) === 'right';
+  const swipeSet = await getSwipe(), map = swipeMap(swipeSet), oneHand = isOneHand(map), knowRight = swipeSet === 'right';
   const cfg = s.config;
   const skill = QDIRS[cfg.direction].skill;
   const undo = [];
@@ -190,7 +190,7 @@ export async function quickRun(el, params) {
   }
 
   el.innerHTML = `
-    <div class="qrun">
+    <div class="qrun ${oneHand ? 'onehand' : ''}">
     <header class="qhead"><button class="xbtn" id="quit" aria-label="終了">${icon('close', 18)}</button>
       <span class="qcenter"><b id="pos"></b><small id="clock"></small></span>
       <button class="xbtn" id="gear" aria-label="設定">${icon('gear', 18)}</button>
@@ -202,18 +202,20 @@ export async function quickRun(el, params) {
     <div class="laststrip" id="last"></div>
     <div class="player">
       <button class="repeat-btn" id="repeat" aria-label="リピート設定">${icon('review', 20)}<span id="replbl"></span></button>
-      <span class="hint">タップで答え・${knowRight ? '←わからない →わかる' : '←わかる →わからない'}・↑曖昧</span>
+      <span class="hint">${oneHand ? swipeHint(map) : `タップで答え・${knowRight ? '←わからない →わかる' : '←わかる →わからない'}・↑曖昧`}</span>
     </div>
     <div class="qbtns3">
       <button class="btn qb ${knowRight ? 'dont' : 'know'}" data-r="${knowRight ? 'dont' : 'know'}"><b>←</b>${knowRight ? 'わからない' : 'わかる'}</button>
       <button class="btn qb vague" data-r="vague"><b>↑</b>曖昧</button>
       <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}"><b>→</b>${knowRight ? 'わかる' : 'わからない'}</button>
-      <button class="btn qb" id="undo" aria-label="取り消し">${icon('undo', 20)}</button>
+      ${oneHand ? '' : `<button class="btn qb" id="undo" aria-label="取り消し">${icon('undo', 20)}</button>`}
     </div>
+    ${oneHand ? oneHandPadHTML({ undoHTML: icon('undo', 20) }) : ''}
     <div class="pauseov" id="pov" hidden><div class="card center stack"><b>一時停止中</b><button class="btn primary" id="resume">再開</button><button class="btn" id="quit2">終了して結果へ</button></div></div>
     </div>`;
   document.body.classList.add('noscroll');
-  const stage = $('#stage', el);
+  const stage = $('#stage', el), pad = $('#qpad', el);
+  if (pad) fitStage(stage, pad);
 
   function updateTop() {
     const c = counts(s), unit = unitOf();
@@ -250,22 +252,36 @@ export async function quickRun(el, params) {
     const entry = reuse || { qid: uid('q_'), wordId, direction: cfg.direction, skill, unit: s.checked[s.play.u], pos: s.play.pos };
     if (!reuse) s.queue.push(entry);
     const f = faces(w);
-    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(f.front, knowRight, bmBtn(w.bookmarked)));
+    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(f.front, map, bmBtn(w.bookmarked)));
     const card = stage.firstElementChild;
     const st = { card, entry, flipped: false, revealed: false };
     const setFace = (back) => { st.flipped = back; card.classList.add('flipping'); setTimeout(() => { $('.face', card).innerHTML = back ? f.back : f.front; card.classList.remove('flipping'); }, 90); if (back) { st.revealed = true; speak(w.headword); } };
     st.flip = () => setFace(!st.flipped);
     st.autoFlip = () => { if (!st.flipped) setFace(true); };
-    st.ctl = makeSwipeCard(card, { knowRight, canInteract: () => running && !ended, onTap: st.flip, onCommit: (r) => answer(st, r), revealOnCommit: () => f.back });
+    st.ctl = makeSwipeCard(card, { map, pads: pad ? [pad] : [], canInteract: () => running && !ended, onTap: st.flip, onCommit: (r) => answer(st, r), revealOnCommit: () => f.back });
     const bmb = $('.cardbm', card);
     bmb.onclick = async (e) => { e.stopPropagation(); const on = await toggleBookmark(w.id); w.bookmarked = on; bmb.classList.toggle('on', on); toast(on ? 'ブックマークしました' : 'ブックマークを外しました', 1000); };
     cur = st; cardMs = 0;
     updateTop();
   }
 
+  // 後回し (one-handed mode, swipe →): nothing is recorded; the word moves to the end of its unit (or its block of 5)
+  function postpone(st) {
+    const q = st.entry, unit = unitOf(), ids = unit.ids, pos = s.play.pos;
+    const end = cfg.repeat === 'five' ? Math.min(Math.floor(pos / 5) * 5 + 5, ids.length) : ids.length;
+    if (end - pos <= 1) { toast('最後の1語なので後回しにできません', 1400); stage.innerHTML = ''; s.queue.pop(); showCard(); return; }
+    ids.splice(end - 1, 0, ids.splice(pos, 1)[0]);
+    s.queue.pop();                              // this card was shown but not answered
+    undo.push({ skip: true, u: s.checked[s.play.u], from: pos, to: end - 1, play: { ...s.play }, laps: s.laps });
+    $('#last', el).innerHTML = answerStripHTML('skip', esc(words[q.wordId].headword), esc(allMeanings(words[q.wordId]).join('、')), true);
+    s.updatedAt = Date.now(); busy = busy.then(() => db.put('sessions', s)).catch((e) => toast('保存に失敗: ' + e.message));
+    showCard();
+  }
+
   function answer(st, result) {
     const q = st.entry;
     if (ended || s.answered[q.qid]) return;
+    if (result === 'skip') return postpone(st);
     const w = words[q.wordId];
     const ms = Math.round(cardMs);
     s.answered[q.qid] = { result, ms, revealed: st.revealed, at: Date.now() };
@@ -290,6 +306,12 @@ export async function quickRun(el, params) {
   async function doUndo() {
     const e = undo.pop(); if (!e) return;
     await busy;
+    if (e.skip) {                                // put the postponed word back where it was
+      const ids = s.units[e.u].ids; ids.splice(e.from, 0, ids.splice(e.to, 1)[0]);
+      const lastQ = s.queue[s.queue.length - 1]; if (lastQ && !s.answered[lastQ.qid]) s.queue.pop();
+      s.play = { ...e.play }; s.laps = e.laps; s.updatedAt = Date.now(); await db.put('sessions', s);
+      stage.innerHTML = ''; $('#last', el).innerHTML = ''; showCard(); toast('取り消しました', 900); return;
+    }
     if (e.snap) await undoAnswer(e.q.wordId, e.snap, e.attemptIds);
     if (e.result !== 'timeout') s.activeMs -= e.ms;
     delete s.answered[e.q.qid];
@@ -380,6 +402,7 @@ export async function quickRun(el, params) {
   $('#gear', el).onclick = openSheet;
   $('#repeat', el).onclick = openSheet;
   el.querySelectorAll('.qb[data-r]').forEach((b) => (b.onclick = () => { if (running && cur && !cur.ctl.done) cur.ctl.commit(b.dataset.r); }));
+  $('[data-flip]', el)?.addEventListener('click', () => { if (running && cur && !cur.ctl.done) cur.flip(); });
 
   // resume: if the last queued card was not answered, show it again; otherwise show the play head
   const lastQ = s.queue[s.queue.length - 1];

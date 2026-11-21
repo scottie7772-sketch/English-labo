@@ -41,7 +41,7 @@ export function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = 
 // ---------- candidate selection ----------
 export async function selectWords(cfg) {
   const [words0, mastery, attempts, decks] = await Promise.all([db.all('words'), loadAllMastery(), attemptsSince(Date.now() - 7 * 86400000), db.all('decks')]);
-  const words = words0.filter((w) => langOf(w) === curLang());
+  const words = words0.filter((w) => !w.slim && langOf(w) === curLang());
   const skills = basisSkills(cfg.direction, cfg.format);
   const needMeaning = cfg.direction !== 'audio2en';
   const weekAgo = Date.now() - 7 * 86400000;

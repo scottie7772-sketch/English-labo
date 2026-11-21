@@ -47,7 +47,7 @@ async function loadCfg() { return { ...QUICK_DEFAULTS, ...(await getSetting('qui
 // ---------- word list for a range + order ----------
 async function buildList(cfg, extra = {}) {
   const [words0, mastery] = await Promise.all([db.all('words'), loadAllMastery()]);
-  const words = words0.filter((w) => langOf(w) === curLang());
+  const words = words0.filter((w) => !w.slim && langOf(w) === curLang());
   const skill = QDIRS[cfg.direction].skill;
   const lv = (w) => filterLevel(effLevel(mastery[w.id]?.[skill]));
   const attempts = (w) => mastery[w.id]?.[skill]?.stats?.attempts || 0;

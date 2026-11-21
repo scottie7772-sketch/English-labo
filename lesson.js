@@ -63,7 +63,7 @@ function chooseFormat(w, rec, review, canSwipe, avoid) {
 
 async function buildLesson(lang, size, onlyReview, tag = null) {
   const [words0, revs, mastery] = await Promise.all([db.all('words'), db.all('reviews'), loadAllMastery()]);
-  const words = words0.filter((w) => langOf(w) === lang && allMeanings(w).length && (!tag || (w.tags || []).includes(tag)));
+  const words = words0.filter((w) => !w.slim && langOf(w) === lang && allMeanings(w).length && (!tag || (w.tags || []).includes(tag)));
   const R = Object.fromEntries(revs.map((r) => [r.id, r]));
   const now = Date.now();
   const sets = lang === 'en' ? await swipeSets().catch(() => null) : null;

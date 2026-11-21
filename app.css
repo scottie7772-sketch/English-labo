@@ -1,14 +1,4 @@
-:root {
-  --bg: #f6f5f2; --surface: #ffffff; --text: #1d1f24; --muted: #6b6f78; --line: #e4e2dc;
-  --accent: #2f5bd3; --accent-text: #fff; --danger: #c93a3a; --warn-bg: #fff4d6; --warn-text: #7a5300;
-  --radius: 14px; --tabh: 58px;
-  color-scheme: light;
-}
-[data-theme="dark"] {
-  --bg: #16181d; --surface: #21242b; --text: #eceef2; --muted: #9aa0ab; --line: #333740;
-  --accent: #6d8ff0; --accent-text: #0e1220; --danger: #ef6b6b; --warn-bg: #3a3018; --warn-text: #f3d48a;
-  color-scheme: dark;
-}
+:root { --bg: #16181d; --surface: #21242b; --text: #eceef2; --muted: #9aa0ab; --line: #333740; --accent: #6d8ff0; --accent-text: #0e1220; --danger: #ef6b6b; --warn-bg: #3a3018; --warn-text: #f3d48a; --radius: 14px; --tabh: 58px; color-scheme: dark; }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; background: var(--bg); color: var(--text); }
 body {
@@ -270,24 +260,13 @@ body.noscroll { overflow: hidden; overscroll-behavior: none; }
 /* =====================================================================
    v0.6 Visual refresh: unified type scale, larger text, clear emphasis
    ===================================================================== */
-:root {
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
-  --fs-hero: 46px;   /* 出題中の英単語 */
-  --fs-h1: 26px;     /* 画面タイトル・出題中の日本語 */
-  --fs-l: 20px;      /* 一覧の見出し語・選択肢 */
-  --fs-m: 17px;      /* 本文・ボタン（iOS標準） */
-  --fs-s: 15px;      /* 補足 */
-  --fs-xs: 13px;     /* ラベル */
-  --radius: 18px;
-  --bg: #f3f4f6; --surface: #ffffff; --surface2: #eceef1; --text: #15171c; --muted: #6a707b; --line: #dfe2e7;
-  --accent: #2563eb; --accent-text: #fff;
-  --ok: #22a06b; --ng: #e5484d; --mid: #d99211;
-}
-[data-theme="dark"] {
-  --bg: #17181c; --surface: #24262b; --surface2: #2e3036; --text: #f3f4f6; --muted: #9ca3af; --line: #393c43;
-  --accent: #5b8cff; --accent-text: #0b1020;
-  --ok: #3ccf8e; --ng: #ff6b6f; --mid: #f0b33a;
-}
+:root { --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif; --fs-hero: 46px; /* 出題中の英単語 */
+  --fs-h1: 26px; /* 画面タイトル・出題中の日本語 */
+  --fs-l: 20px; /* 一覧の見出し語・選択肢 */
+  --fs-m: 17px; /* 本文・ボタン（iOS標準） */
+  --fs-s: 15px; /* 補足 */
+  --fs-xs: 13px; /* ラベル */
+  --radius: 18px; --bg: #17181c; --surface: #24262b; --surface2: #2e3036; --text: #f3f4f6; --muted: #9ca3af; --line: #393c43; --accent: #5b8cff; --accent-text: #0b1020; --ok: #3ccf8e; --ng: #ff6b6f; --mid: #f0b33a; }
 html, body { font-family: var(--font); font-size: var(--fs-m); -webkit-font-smoothing: antialiased; }
 body { line-height: 1.6; }
 b, strong { font-weight: 700; }
@@ -423,16 +402,7 @@ p.small.muted.center, #pos { font-size: var(--fs-s); font-weight: 700; }
    v0.8 UI/UX: one design system (dark first). Roles: blue=操作 green=正解/習得
    red=不正解 amber=復習/注意 gray=未選択/補助
    ===================================================================== */
-:root {
-  --fs-hero: 34px; --fs-h1: 22px; --fs-l: 18px; --fs-m: 16px; --fs-s: 14px; --fs-xs: 13px;
-  --radius: 16px; --r-sm: 12px;
-  --bg: #f3f4f6; --surface: #ffffff; --surface2: #eef0f3; --text: #14161a; --muted: #5f6672; --line: #dde1e6;
-  --accent: #2f6bed; --accent-text: #fff; --ok: #1f9d60; --ng: #d93f45; --mid: #c27d0e; --gray: #8a919c;
-}
-[data-theme="dark"] {
-  --bg: #121418; --surface: #1c1f25; --surface2: #262a31; --text: #eef0f3; --muted: #a3aab5; --line: #323741;
-  --accent: #5d8dff; --accent-text: #0b1020; --ok: #3cc98a; --ng: #ff6b70; --mid: #f0b440; --gray: #7d8592;
-}
+:root { --fs-hero: 34px; --fs-h1: 22px; --fs-l: 18px; --fs-m: 16px; --fs-s: 14px; --fs-xs: 13px; --radius: 16px; --r-sm: 12px; --bg: #121418; --surface: #1c1f25; --surface2: #262a31; --text: #eef0f3; --muted: #a3aab5; --line: #323741; --accent: #5d8dff; --accent-text: #0b1020; --ok: #3cc98a; --ng: #ff6b70; --mid: #f0b440; --gray: #7d8592; }
 html, body { overflow-x: hidden; overflow-x: clip; }   /* clip: no sideways scroll, and position: sticky keeps working */
 body { font-size: var(--fs-m); line-height: 1.6; }
 b, strong { font-weight: 600; }
@@ -980,8 +950,7 @@ body.focus .vp-root.v112 { padding-bottom: 0; }
 .vsteps span.hover { background: var(--accent); color: var(--accent-text); }
 
 /* ===== look 1.8: Claude-like — warm neutral colours, seamless (surfaces instead of hard borders), slightly rounded ===== */
-:root { --radius: 14px; --bg: #f2f3f8; --surface: #ffffff; --surface2: #e6e8f1; --text: #23263a; --muted: #6a6e85; --line: #dcdfea; --accent: #3a9474; --accent-text: #fff; --accent2: #e8863a; }
-[data-theme="dark"] { --bg: #1e2236; --surface: #282d46; --surface2: #333955; --text: #eef0f8; --muted: #a3a8c3; --line: #3b4161; --accent: #5cc49a; --accent-text: #14172a; --accent2: #f5a25d; }   /* navy × green, orange as a small accent (1.8.4) */
+:root { --radius: 14px; --bg: #1e2236; --surface: #282d46; --surface2: #333955; --text: #eef0f8; --muted: #a3a8c3; --line: #3b4161; --accent: #5cc49a; --accent-text: #14172a; --accent2: #f5a25d; }
 .card, .stat, .tile, .wcard, .choice, .subbox:not(.vp-root .subbox) { border-color: transparent; }
 .btn { border-color: transparent; background: var(--surface2); border-radius: 12px; }
 .btn.primary { background: var(--accent); color: var(--accent-text); }
@@ -1024,11 +993,6 @@ dialog { border-radius: 16px; }
 .vkids > summary { font-size: 13px; color: var(--muted); padding: 4px 6px; cursor: pointer; }
 .vkid { background: color-mix(in srgb, var(--surface) 70%, var(--bg)); }
 /* palette: フォレスト (deep green, like a forest trail) — chosen in 設定; dark first (saves power on OLED) */
-/* 1.10: values from the design brief; every text/background pair checked ≥ 4.5:1 */
-[data-palette="forest"] { --bg: #f3f6f2; --surface: #ffffff; --surface2: #e4ece6; --text: #16241d; --muted: #55685d; --line: #d5e0d8; --accent: #2e6b4c; --accent-text: #fff; --accent2: #b85a17; --deep: #dcebe1; }
-[data-palette="forest"][data-theme="dark"] { --bg: #101a17; --surface: #202d27; --surface2: #2a3a33; --text: #f0f3ee; --muted: #9db0a5; --line: #2e3f37; --accent: #a9d5b7; --accent-text: #101a17; --accent2: #f2a25c; --deep: #173f30; }
-/* deep green: the line being played, selected rows */
-[data-palette="forest"] .cue.cur { background: var(--deep); }
 /* selected state is shown by more than colour: bold text */
 .chips button.on, .tgl.on, .seg button.on { font-weight: 700; }
 .seg button.on { box-shadow: inset 0 0 0 1.5px var(--accent); }
@@ -1183,8 +1147,7 @@ body:has(.vp-root.v114) { background: #0c0e11; }
 .v114 .vs-ab, .v114 #sClear { color: var(--muted); }
 
 /* ================= 1.15 brown × blue zone (home, word lists, data pages) ================= */
-[data-theme="dark"] body[data-zone="brown"] { --bg: #1b1310; --surface: #281e19; --surface2: #33271f; --text: #f3ece6; --muted: #b6a79c; --line: rgba(255,232,214,.10); --accent: #6fb0de; --accent-text: #0c1922; --accent2: #e8a46a; --deep: #2c3f4f; }
-[data-theme="light"] body[data-zone="brown"] { --bg: #f6f1ec; --surface: #fffdfb; --surface2: #efe6de; --text: #2a1d16; --muted: #6e5d52; --line: #e5d9cf; --accent: #2f6f9e; --accent-text: #fff; --accent2: #b4601f; }
+body[data-zone="brown"] { --bg: #1b1310; --surface: #281e19; --surface2: #33271f; --text: #f3ece6; --muted: #b6a79c; --line: rgba(255,232,214,.10); --accent: #6fb0de; --accent-text: #0c1922; --accent2: #e8a46a; --deep: #2c3f4f; }
 body[data-zone="brown"] #tabs a.on { color: var(--accent); }
 
 /* ================= 1.15 home ================= */
@@ -1215,7 +1178,6 @@ body[data-zone="brown"] #tabs a.on { color: var(--accent); }
 .hresume svg:first-child { color: var(--text); }
 .hresume b { display: block; font-size: 15px; } .hresume small { display: block; font-size: 12px; color: var(--muted); }
 .hhero { display: grid; gap: 6px; padding: 18px 18px 16px; border-radius: 20px; background: #35617f; color: #fff; text-decoration: none; }
-[data-theme="light"] body[data-zone="brown"] .hhero { background: #2f6f9e; }
 .hh-t { display: flex; align-items: center; justify-content: space-between; } .hh-t b { font-size: 20px; }
 .hh-t svg { background: rgba(0,0,0,.25); border-radius: 50%; padding: 6px; width: 32px; height: 32px; box-sizing: border-box; }
 .hhero small { font-size: 13px; color: rgba(255,255,255,.85); }
@@ -1223,3 +1185,28 @@ body[data-zone="brown"] #tabs a.on { color: var(--accent); }
 .hh-n { font-size: 12px; color: rgba(255,255,255,.8); text-align: right; font-variant-numeric: tabular-nums; }
 .hweak { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 0; border-radius: 14px; background: transparent; color: var(--muted); font-size: 14px; text-align: left; }
 .hweak:disabled { opacity: .5; }
+
+/* 1.16 compression dialog (deep green, calm) */
+.cmpdlg { --g-bg: #12201a; --g-card: #1a2c24; --g-line: rgba(169,213,183,.18); --g-acc: #a9d5b7; background: var(--g-bg); color: #eef3ee; border: 1px solid var(--g-line); border-radius: 18px; padding: 0; width: min(92vw, 420px); }
+.cmpdlg::backdrop { background: rgba(0,0,0,.55); }
+.cmpdlg .dlg { padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+.cmpdlg h3 { margin: 0; font-size: 18px; }
+.cmp-tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.cmp-t { display: flex; flex-direction: column; gap: 2px; align-items: center; padding: 10px 4px; border-radius: 14px; border: 1px solid var(--g-line); background: var(--g-card); color: #eef3ee; }
+.cmp-t b { font-size: 15px; } .cmp-t small { font-size: 11px; color: rgba(238,243,238,.65); text-align: center; }
+.cmp-t.on { border-color: var(--g-acc); box-shadow: inset 0 0 0 1px var(--g-acc); } .cmp-t.on b { color: var(--g-acc); }
+.cmp-t:disabled { opacity: .4; }
+.cmpdlg .btn.primary { background: var(--g-acc); color: #10201a; }
+.cmpdlg .btn.ghost { color: rgba(238,243,238,.75); }
+.cmpdlg audio { width: 100%; height: 40px; }
+.cmpdlg .bar { height: 6px; border-radius: 99px; background: rgba(255,255,255,.12); overflow: hidden; margin: 4px 0; } .cmpdlg .bar i { display: block; height: 100%; background: var(--g-acc); transition: width .2s; }
+.cmpdlg .hint { color: rgba(238,243,238,.6); font-size: 12px; }
+/* 1.16 word list: choosing and lightening */
+.wselbar { position: fixed; left: 8px; right: 8px; bottom: calc(var(--tabh) + env(safe-area-inset-bottom) + 8px); z-index: 30; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 10px; border-radius: 16px; background: #173f30; color: #eef3ee; box-shadow: 0 6px 24px rgba(0,0,0,.35); }
+.wselbar .btn { background: rgba(255,255,255,.08); color: #eef3ee; } .wselbar .btn.primary { background: #a9d5b7; color: #10201a; } .wselbar .btn:disabled { opacity: .4; }
+body.selecting #list { padding-bottom: 130px; }
+.wcard { position: relative; } .wcard .wsel { position: absolute; left: 10px; top: 14px; width: 22px; height: 22px; accent-color: #a9d5b7; }
+.wcard:has(.wsel) .wmain { padding-left: 40px; } .wcard.picked { box-shadow: inset 0 0 0 2px #a9d5b7; }
+.tagp.slim { background: rgba(169,213,183,.15); color: #a9d5b7; }
+.wselbar .btn { width: auto; flex: 0 0 auto; margin: 0; min-height: 36px; padding: 6px 12px; font-size: 13px; display: inline-flex; }
+.wselbar > span { margin-right: 4px; }

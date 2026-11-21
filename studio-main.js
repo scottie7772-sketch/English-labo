@@ -1,7 +1,7 @@
 // 教材スタジオ（制作）: standalone page studio.html now; later mounted inside Englabo with mount(el, { base: 'studio/' }).
 // Rules: does not import learning modules and never touches the learning database (ell-db).
 import { $, $$, esc, toast, confirmDialog, swipeToDelete } from './ui.js';
-import { sdb, newId, commit, undo, redo, saveVersion, restoreVersion, liveBlocks, allBlocksMap, sourcesMap, newBlock, tokensOf, blockDur } from './studio-db.js';
+import { sdb, newId, commit, undo, redo, saveVersion, restoreVersion, liveBlocks, allBlocksMap, sourcesMap, newBlock, tokensOf, blockDur, linkToLab } from './studio-db.js';
 import { parseScript, SUB_EXT, isJa, langFromName, autoPair, alignJa } from './studio-subs.js';
 import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
@@ -11,9 +11,10 @@ import { findCandidates, applySpans } from './studio-names.js';
 import { alignScript, scriptToLines } from './studio-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
+import { TIERS, bytesPerMin, compressAudio, estimate } from './compress.js';
 
-export const STUDIO_VERSION = '0.16.1';
-const LIMIT = { video: 15 * 60, audio: 75 * 60 };   // one import: video up to 15 min, audio up to 75 min in total (user decisions)
+export const STUDIO_VERSION = '0.17.0';
+const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
 const urlCache = new Map();
@@ -124,7 +125,7 @@ async function setsScreen(el) {
   };
   const rowHTML = (s) => {
       const src = srcs[s.sourceId];
-      const info = `<span class="grow"><b>${esc(s.title)}</b> ${cutInfo[s.id] || ''}<small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${src.stored ? (src.derived === 'audio16k' ? `節約保存（${src.codec === 'wav' ? '非圧縮' : '圧縮'}・${fmtSize(src.blob?.size || 0)}）` : '端末に保存') : '保存しない'}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
+      const info = `<span class="grow"><b>${esc(s.title)}</b> ${cutInfo[s.id] || ''}${s.importing ? `<span class="tagp warn">取り込み途中 ${s.importing.done}/${s.importing.total}</span>` : ''}<small class="muted">${src ? `${src.kind === 'audio' ? '🎧' : '🎬'} ${fmt(src.duration)}・${srcState(src)}` : '音声なし'}・${s.order.length}項目・更新 ${new Date(s.updatedAt).toLocaleString('ja-JP')}</small></span>`;
       return editing ? `<label class="st-setrow"><input type="checkbox" class="st-cb" data-id="${s.id}" ${chosen.has(s.id) ? 'checked' : ''}>${info}</label>` : `<a class="st-setrow" href="#${BASE}set?id=${s.id}">${info}›</a>`;
   };
   // folder = one material: the script (lines without sound) is the parent; the sound of the other sets goes into it and is aligned
@@ -197,15 +198,25 @@ async function checkUpdate() {
   location.replace(location.pathname + '?v=' + Date.now() + location.hash);
 }
 
+// how a source is kept (for lists)
+function srcState(src) {
+  if (src.labRef) return 'ラボの音声を使用（重複なし）';
+  if (!src.stored) return '保存しない';
+  const sz = fmtSize(src.blob?.size || src.size || 0);
+  if (src.derived === 'aac') return `圧縮済み（${TIERS[src.tier]?.label || 'AAC'}・${sz}）`;
+  if (src.derived === 'audio16k') return `節約保存（${src.codec === 'wav' ? '非圧縮' : '圧縮'}・${sz}）`;
+  return `端末に保存（${sz}）`;
+}
+
 // ================= bulk import =================
 async function importScreen(el, params) {
   const files = { media: [], subs: [] };   // analysed entries
-  let sets = null, storeMode = 'store', groupMode = 'file', videoQ = 'audio', autoTrimOn = true;
+  let sets = null, storeMode = 'store', groupMode = 'file', videoQ = (() => { try { return localStorage.getItem('st-quality') || 'std'; } catch { return 'std'; } })(), autoTrimOn = true;
   const toSet = params?.get('to') ? await sdb.get('sets', params.get('to')) : null;   // add to an existing set
   el.innerHTML = `${head(toSet ? `「${toSet.title}」に追加` : '一括登録', toSet ? `set?id=${toSet.id}` : 'sets')}
     ${toSet ? `<div class="notice stack small"><b>教材「${esc(toSet.title)}」に追加します。</b>同じ教材の続きの音声や、スクリプト（時刻なしのテキスト）を選んでください。追加したあと「文字起こし→照合」で、音声とスクリプトの位置を合わせます。</div>` : ''}
     <div class="card stack">
-      <p class="small">動画・音声と、英語・日本語の字幕（SRT・VTT・TXT・CSV）をまとめて選びます。ファイル名・言語・長さから自動で組み合わせます。<b>1回の取り込みは合計で、動画15分・音声75分まで</b>。</p>
+      <p class="small">動画・音声と、英語・日本語の字幕（SRT・VTT・TXT・CSV）をまとめて選びます。ファイル名・言語・長さから自動で組み合わせます。<b>1回の取り込みは合計で、動画15分・音声100分まで</b>。</p>
       <label class="btn" for="fz">📦 ZIPを選ぶ（フォルダを圧縮したもの）</label><input type="file" id="fz" hidden>
       <label class="btn" for="fm">🎬 動画・音声を選ぶ（複数可）</label><input type="file" id="fm" multiple hidden>
       <label class="btn" for="fs">📄 字幕・スクリプトを選ぶ（複数可）</label><input type="file" id="fs" multiple hidden>
@@ -281,7 +292,7 @@ async function importScreen(el, params) {
       <h2 class="sec">組み合わせ（${sets.length}件）</h2>
       <div class="row"><button class="btn sm" id="incAll">すべて入れる</button><button class="btn sm" id="incNone">すべて外す</button></div>
       ${tv || !ta ? meter(tv, LIMIT.video, '🎬 動画', overV) : ''}${ta ? meter(ta, LIMIT.audio, '🎧 音声', overA) : ''}
-      ${over ? `<p class="warn-text small">${overV ? '動画の合計が15分' : '音声の合計が75分'}を超えています。いくつかのチェックを外してください。</p>` : ''}
+      ${over ? `<p class="warn-text small">${overV ? '動画の合計が15分' : '音声の合計が100分'}を超えています。いくつかのチェックを外してください。</p>` : ''}
       ${sets.map((s, i) => `<div class="card stack st-pair ${s.confidence}">
         <div class="row"><label class="chk grow"><input type="checkbox" data-inc="${i}" ${s.include ? 'checked' : ''}> <input class="st-title" data-title="${i}" value="${esc(s.title)}"></label>
           <span class="tagp">${s.confidence === 'high' ? '確か' : s.confidence === 'mid' ? 'たぶん' : '要確認'}</span></div>
@@ -292,10 +303,11 @@ async function importScreen(el, params) {
       <div class="card stack"><span class="small">動画・音声の保存</span>
         <label class="chk"><input type="radio" name="sm" value="store" ${storeMode === 'store' ? 'checked' : ''}> 端末に保存（おすすめ・すぐ再生できる）</label>
         <label class="chk"><input type="radio" name="sm" value="ref" ${storeMode === 'ref' ? 'checked' : ''}> 保存しない（開くたびに同じファイルを選び直す）</label>
-        ${storeMode === 'store' ? `<span class="small">保存する質</span>
-        <label class="chk"><input type="radio" name="vq" value="audio" ${videoQ === 'audio' ? 'checked' : ''}> 節約（おすすめ）：音声だけ・低音質（動画は映像を捨てる）</label>
-        <label class="chk"><input type="radio" name="vq" value="orig" ${videoQ === 'orig' ? 'checked' : ''}> 元のまま（映像も見る教材・高音質）</label>` : ''}
-        ${needBytes ? `<small class="muted">必要な容量：約${fmtSize(storeMode === 'store' && videoQ === 'audio' ? inc.reduce((a, x) => a + Math.min(x.media.file.size, (x.media.duration || 0) * (typeof AudioEncoder !== 'undefined' ? 4000 : 32000)), 0) : needBytes)}</small>` : ''}</div>
+        ${storeMode === 'store' ? `<span class="small">保存する質（音声ファイル・ZIPの中の音声・動画の音声に共通）</span>
+        ${Object.entries(TIERS).map(([k, t]) => `<label class="chk"><input type="radio" name="vq" value="${k}" ${videoQ === k ? 'checked' : ''}> ${t.label}：AAC ${t.kbps}kbps・約${(bytesPerMin(k) / 1e6).toFixed(2)}MB/分（${t.note}）${k === 'std' ? '・おすすめ' : ''}</label>`).join('')}
+        <label class="chk"><input type="radio" name="vq" value="orig" ${videoQ === 'orig' ? 'checked' : ''}> 元のまま（動画の映像も残す・圧縮しない）</label>
+        <small class="muted">圧縮すると動画は音声だけになります。圧縮できなかったファイルは元のまま保存し、結果に表示します。</small>` : ''}
+        ${needBytes ? `<small class="muted">必要な容量：約${fmtSize(storeMode === 'store' && TIERS[videoQ] ? inc.reduce((a, x) => a + Math.min(x.media.file.size, (x.media.duration || 0) * bytesPerMin(videoQ) / 60), 0) : needBytes)}</small>` : ''}</div>
       <label class="chk"><input type="checkbox" id="atr" ${autoTrimOn ? 'checked' : ''}> 前後の画面収録音・無音を自動でカット</label>
       ${autoTrimOn ? `<label class="chk"><input type="checkbox" id="drc" ${dropCutSetting() ? 'checked' : ''}> カットした部分（元の前後）は保存しない（容量節約・元に戻せません）</label>` : ''}
       <button class="btn primary" id="go" ${over || !sets.some((s) => s.include) ? 'disabled' : ''}>${toSet ? '追加する' : '登録する'}</button>
@@ -311,13 +323,13 @@ async function importScreen(el, params) {
       draw();
     }));
     $$('input[name=sm]', el).forEach((r) => (r.onchange = () => { storeMode = r.value; draw(); }));
-    $$('input[name=vq]', el).forEach((r) => (r.onchange = () => { videoQ = r.value; draw(); }));
+    $$('input[name=vq]', el).forEach((r) => (r.onchange = () => { videoQ = r.value; try { localStorage.setItem('st-quality', videoQ); } catch {} draw(); }));
     $('#atr', el).onchange = (e) => { autoTrimOn = e.target.checked; draw(); };
     $('#drc', el)?.addEventListener('change', (e) => setDropCut(e.target.checked));
     $('#gm', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { groupMode = v; draw(); } };
     $('#incAll', el).onclick = () => { sets.forEach((s) => (s.include = true)); draw(); };
     $('#incNone', el).onclick = () => { sets.forEach((s) => (s.include = false)); draw(); };
-    $('#go', el).onclick = () => { const inc = sets.filter((s) => s.include); if (toSet) return runAppend(inc, storeMode === 'store' && videoQ === 'audio' ? 'store-audio' : storeMode); runImport(groupMode === 'folder' ? groupsOf(inc) : inc.map((s) => ({ title: s.title, items: [s], folder: groupsOf([s])[0]?.title || '' })), storeMode === 'store' && videoQ === 'audio' ? 'store-audio' : storeMode); };
+    $('#go', el).onclick = () => { const inc = sets.filter((s) => s.include); const mode = storeMode === 'store' && TIERS[videoQ] ? `store-c:${videoQ}` : storeMode; if (toSet) return runAppend(inc, mode); runImport(groupMode === 'folder' ? groupsOf(inc) : inc.map((s) => ({ title: s.title, items: [s], folder: groupsOf([s])[0]?.title || '' })), mode); };
   }
   async function runAppend(list, mode) {
     const prog = $('#prog', el); $('#go', el).disabled = true; running('追加');
@@ -328,6 +340,14 @@ async function importScreen(el, params) {
   }
   async function runImport(list, mode) {
     const prog = $('#prog', el);
+    // the same data imported before (or stopped halfway): continue it and overwrite the rows of the same files
+    const reuseOf = new Map();
+    const existing = (await sdb.all('sets')).filter((x) => x.importKey);
+    const hits = list.map((g) => [importKeyOf(g), existing.find((x) => x.importKey === importKeyOf(g))]).filter(([, x]) => x);
+    if (hits.length) {
+      const ok = await confirmDialog({ title: '同じ教材がすでにあります', body: `<p>${hits.map(([, x]) => `${esc(x.title)}${x.importing ? `（取り込み途中 ${x.importing.done}/${x.importing.total}）` : ''}`).join('<br>')}</p><p class="hint">続きを取り込み、同じファイルから作った行は新しい内容で上書きします（行は増えません）。「別の教材にする」を選ぶと新しく作ります。</p>`, okLabel: '上書きして続ける', cancelLabel: '別の教材にする' });
+      if (ok) hits.forEach(([k, x]) => reuseOf.set(k, x));
+    }
     const lock = await navigator.wakeLock?.request?.('screen').catch(() => null);
     navigator.storage?.persist?.().catch(() => {});
     $('#go', el).disabled = true;
@@ -336,13 +356,14 @@ async function importScreen(el, params) {
     for (let i = 0; i < list.length; i++) {
       const s = list[i];
       prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}</p>`;
-      try { results.push({ s, id: await createSet(s, mode, autoTrimOn, (k, n, t = '') => (prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}（${k} / ${n}）${t ? `<br>${esc(t)}` : ''}</p>`)) }); }
+      const reuse = reuseOf.get(importKeyOf(s)) || null;
+      try { const r = await createSet(s, mode, autoTrimOn, (k, n, t = '') => (prog.innerHTML = `<p class="small">登録中 ${i + 1} / ${list.length}：${esc(s.title)}（${k} / ${n}）${t ? `<br>${esc(t)}` : ''}</p>`), reuse); results.push({ s, id: r.id, notes: r.notes, again: !!reuse }); }
       catch (e) { results.push({ s, err: (e?.message || String(e)) }); }
     }
     lock?.release?.(); running(null);
     files.media = []; files.subs = []; sets = null; listFiles();   // the next files start from empty (not mixed with these)
     prog.innerHTML = `<div class="card stack"><b>登録 ${results.filter((r) => r.id).length}セット・失敗 ${results.filter((r) => r.err).length}</b>
-      ${results.map((r) => `<div class="small">${r.id ? `✓ <a class="link" href="#${BASE}set?id=${r.id}">${esc(r.s.title)}</a>` : `✕ ${esc(r.s.title)}：${esc(r.err)}`}</div>`).join('')}
+      ${results.map((r) => `<div class="small">${r.id ? `✓ <a class="link" href="#${BASE}set?id=${r.id}">${esc(r.s.title)}</a>${r.again ? '（上書き・続き）' : ''}${(r.notes || []).map((t) => `<br><span class="warn-text">${esc(t)}</span>`).join('')}` : `✕ ${esc(r.s.title)}：${esc(r.err)}<br><span class="muted">途中までのファイルは保存されています。同じデータをもう一度取り込むと続きから入ります。</span>`}</div>`).join('')}
       <a class="btn" href="#${BASE}sets">一覧へ</a></div>`;
   }
 }
@@ -536,8 +557,8 @@ async function shrinkAudio({ audio, duration }, name, isVideo, say = () => {}) {
   let peak = 0; for (let i = 0; i < audio.length; i += 160) peak = Math.max(peak, Math.abs(audio[i]));
   if (peak < 0.001) throw new Error('音声が無音のまま取り出されました（この動画からは音声を取り出せません）');
   say('小さくしています…');
-  const a = localStorage.getItem('st-noaac2') ? null : await withTimeout(aac16(audio).catch(() => null), 15000 + duration * 300);
-  if (!a && typeof AudioEncoder !== 'undefined') try { localStorage.setItem('st-noaac2', '1'); } catch {}   // do not try again on this device
+  const a = await withTimeout(aac16(audio).catch(() => null), 15000 + duration * 300);   // 1.16: tried every time (a failure no longer turns it off for good)
+  try { localStorage.removeItem('st-noaac2'); } catch {}
   if (a) { const f = new File([await a.arrayBuffer()], name.replace(/\.[^.]+$/, '') + '.m4a', { type: 'audio/mp4' }); const m = await readDuration(f); if (m.playable && m.duration && Math.abs(m.duration - duration) < Math.max(2, duration * 0.03)) return { file: f, duration, codec: 'm4a' }; }
   if (isVideo) return { file: new File([wav16(audio)], name.replace(/\.[^.]+$/, '') + '.wav', { type: 'audio/wav' }), duration, codec: 'wav' };
   return null;
@@ -569,26 +590,55 @@ async function putSource(media, mode, say = () => {}) {
   }
   const src = exist || { id: media.fp.id, kind: media.kind, name: media.name.split('/').pop(), size: media.file.size, mime: media.file.type, duration: media.duration, playable: media.playable, head: media.fp.head, tail: media.fp.tail, addedAt: Date.now(), stored: false };
   if (!src.audio && media.kind !== 'audio' || (!src.audio && isContainer(src, media.file))) { try { src.audio = await decideTrack(src, media.file, say); } catch (e) { src.audioError = e.message; } }
-  let a16 = null;
-  const small = mode === 'store-audio' && !src.stored ? await sourceAudio16k(src, media.file, { say }).then((a) => { a16 = a.audio; say('小さくしています…'); return shrinkAudio(a, src.name, media.kind !== 'audio', say); }).catch((e) => { src.audioError = e.message; return null; }) : null;
-  if (small && small.file.size < media.file.size) {   // data saver: sound only, low quality
-    Object.assign(src, { stored: true, blob: small.file, kind: 'audio', mime: small.file.type, derived: 'audio16k', codec: small.codec, origSize: media.file.size, duration: small.duration || src.duration });
+  let a16 = null, small = null;
+  const tier = mode.startsWith('store-c:') ? mode.slice(8) : mode === 'store-audio' ? 'strong' : null;
+  if (tier && !src.stored) {   // 1.16: AAC at the chosen quality, read in pieces (long files too); failure → the file is kept as it is
+    const est = estimate(media.file.size, media.duration || 0, tier);
+    if (media.kind === 'audio' && !est.worth) src.compressNote = 'すでに小さいので、そのまま保存しました';
+    else small = await compressAudio(media.file, { tier, name: src.name, duration: media.duration || 0, trackIndex: src.audio?.index ?? null, onProgress: (r, t) => say(t) })
+      .catch((e) => { src.compressError = e.message; return null; });
+  }
+  if (small && small.file.size < media.file.size) {   // sound only, AAC
+    Object.assign(src, { stored: true, blob: small.file, kind: 'audio', mime: small.file.type, derived: 'aac', codec: 'm4a', tier: small.tier, origSize: media.file.size, size: small.file.size, duration: small.duration || src.duration });
+    delete src.audio;
   } else if (mode.startsWith('store') && !src.stored) { src.stored = true; src.blob = media.file.size <= 300 * 1024 * 1024 ? await copyBlob(media.file, say) : media.file; }
   else if (!src.stored) sessionFiles.set(src.id, media.file);
   await sdb.put('sources', src);   // a big file is written from disk; may take a while
   return { src, a16 };
 }
 // group = { title, items: [{ media, en, ja, title }] } → one set; items keep their order
-async function createSet(group, mode, trimEdges = false, onStep = () => {}) {
-  const setId = newId('set_');
-  const { blocks, tracks, firstSrc } = await buildItems(setId, group, mode, trimEdges, onStep);
-  const set = { id: setId, title: group.title || firstSrc?.name || '無題', ...(group.folder && group.folder !== 'まとめ' ? { folder: group.folder } : {}), sourceId: firstSrc?.id || null, order: [], undo: [], redo: [],
-    display: { show: 'both', opEn: 1, opJa: 0.8, pos: 'below', order: 'en' }, createdAt: Date.now(), updatedAt: Date.now() };
-  await sdb.tx(['sets', 'tracks'], 'readwrite', (t) => { t.objectStore('sets').put(set); tracks.forEach((x) => t.objectStore('tracks').put(x)); });
-  await commit(set, '取り込み', { blocks, order: blocks.map((b) => b.id) });
-  set.undo = []; await sdb.put('sets', set);   // the import itself is not undoable (delete the set instead)
-  await saveVersion(set, '取り込み直後', true);
-  return setId;
+// 1.16: the set is saved after every file. If the app stops halfway, the files done so far stay (marked "取り込み途中");
+// importing the same data again continues it: rows that came from the same file are replaced (not doubled).
+const importKeyOf = (group) => `${group.folder || ''}/${group.title || ''}`;
+async function createSet(group, mode, trimEdges = false, onStep = () => {}, reuse = null) {
+  let set = reuse;
+  const fresh = !set;
+  if (fresh) {
+    set = { id: newId('set_'), title: group.title || group.items[0]?.media?.name || '無題', ...(group.folder && group.folder !== 'まとめ' ? { folder: group.folder } : {}), sourceId: null, order: [], undo: [], redo: [],
+      display: { show: 'both', opEn: 1, opJa: 0.8, pos: 'below', order: 'en' }, createdAt: Date.now(), updatedAt: Date.now() };
+  }
+  set.importKey = importKeyOf(group); set.importing = { done: 0, total: group.items.length, at: Date.now() };
+  await sdb.put('sets', set);
+  const n = group.items.length, notes = [];
+  for (let i = 0; i < n; i++) {
+    const { blocks, tracks, firstSrc } = await buildItems(set.id, { items: [group.items[i]] }, mode, trimEdges, (_k, _n, t = '') => onStep(i + 1, n, t));
+    if (firstSrc?.compressError) notes.push(`${firstSrc.name}：圧縮できず元のまま（${firstSrc.compressError}）`);
+    if (!set.sourceId && firstSrc) set.sourceId = firstSrc.id;
+    const imp = blocks[0]?.imp || tracks[0]?.imp || '';
+    const live = await liveBlocks(set);
+    const old = imp ? live.filter((b) => b.imp === imp || (firstSrc && !b.imp && b.segments?.some((g) => g.sourceId === firstSrc.id))) : [];
+    let order = set.order.slice(), at = order.length;
+    if (old.length) { const ids = new Set(old.map((b) => b.id)); at = order.findIndex((id) => ids.has(id)); order = order.filter((id) => !ids.has(id)); }
+    order.splice(at, 0, ...blocks.map((b) => b.id));
+    const oldTracks = imp ? (await sdb.byIndex('tracks', 'setId', set.id)).filter((x) => x.imp === imp) : [];
+    await sdb.tx(['tracks'], 'readwrite', (t) => { oldTracks.forEach((x) => t.objectStore('tracks').delete(x.id)); tracks.forEach((x) => t.objectStore('tracks').put(x)); });
+    await commit(set, old.length ? '取り込み（上書き）' : '取り込み', { blocks: [...blocks, ...old.map((b) => ({ ...b, deleted: true }))], order });
+    set.undo = []; set.importing = { done: i + 1, total: n, at: Date.now() }; await sdb.put('sets', set);   // the import itself is not undoable
+  }
+  delete set.importing; if (notes.length) set.importNotes = notes; else delete set.importNotes;
+  await sdb.put('sets', set);
+  await saveVersion(set, fresh ? '取り込み直後' : '取り込み（上書き）', true);
+  return { id: set.id, notes };
 }
 // add files to an existing set (script / audio of the same material, added later): one undoable step
 async function appendToSet(setId, groups, mode, trimEdges = false, onStep = () => {}) {
@@ -609,7 +659,9 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
     crumb(`登録 ${n}/${group.items.length}：${s.media?.name || ''}`);
     firstSrc ||= src;
     const dur = src?.duration || 0;
-    const mkTrack = (sub, lang) => sub && { id: newId('tr_'), setId, lang, fileName: sub.name.split('/').pop(), format: sub.parsed.format, raw: sub.text, offset: 0, cues: sub.parsed.cues };
+    const imp = s.media?.fp?.id || s.en?.name || s.ja?.name || '';   // 1.16: which imported file these rows came from (re-import overwrites them)
+    const tag = (list) => list.forEach((b) => (b.imp = imp));
+    const mkTrack = (sub, lang) => sub && { id: newId('tr_'), setId, imp, lang, fileName: sub.name.split('/').pop(), format: sub.parsed.format, raw: sub.text, offset: 0, cues: sub.parsed.cues };
     const en = mkTrack(s.en, 'en'), ja = mkTrack(s.ja, 'ja');
     if (en) tracks.push(en); if (ja) tracks.push(ja);
     const seg = (a, b) => (src && a != null ? [{ sourceId: src.id, start: Math.max(0, a), end: Math.min(src.duration || dur || b, Math.max(b, a + 0.2)) }] : []);
@@ -629,7 +681,7 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
           if (trimEdges && dur > 4) { try { onStep(n, group.items.length, '前後の音を調べています…'); const r = await findEdges(src, src.stored ? src.blob : sessionFiles.get(src.id), dur, a16); a = r.start; b = r.end; } catch { /* whole file */ } }
           part.push(newBlock(setId, { segments: seg(a, b), label: src.name.replace(/\.[^.]+$/, ''), sync: 'auto' }));
         }
-        blocks.push(...part); a16 = null; await new Promise((r) => setTimeout(r, 250));
+        tag(part); blocks.push(...part); a16 = null; await new Promise((r) => setTimeout(r, 250));
         continue;
       }
       const { map, extra } = ja && s.ja.parsed.timed && !enCues[0]?.est ? alignJa(enCues, ja.cues) : { map: new Map(), extra: [] };
@@ -654,7 +706,7 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
       }
       part.push(newBlock(setId, { segments: seg(a, b), label: src.name.replace(/\.[^.]+$/, ''), sync: dur ? 'auto' : 'estimated', ...(trimNote ? { trimNote } : {}) }));
     }
-    blocks.push(...part);
+    tag(part); blocks.push(...part);
     a16 = null; await new Promise((r) => setTimeout(r, 250));   // let the phone free the decoded sound before the next file
   }
   return { blocks, tracks, firstSrc };
@@ -1621,19 +1673,37 @@ async function cleanScreen(el) {
   const names = (await caches.keys().catch(() => [])) || [];
   const model = names.filter((n) => /transformers|onnx|huggingface/i.test(n));
   let mSize = 0; for (const n of model) { try { const c = await caches.open(n); for (const r of await c.keys()) { const res = await c.match(r); mSize += +res.headers.get('content-length') || 0; } } catch {} }
-  const sz = (x) => x.blob?.size || 0;
+  const sz = (x) => (x.labRef ? 0 : x.blob?.size || 0);   // shared with the learning app: counted there, not here
+  const dupes = srcs.filter((x) => x.stored && !x.labRef && x.kind === 'audio' && x.blob);   // candidates (checked when the button is pressed)
   el.innerHTML = `${head('容量の整理', 'sets')}
     <div class="card stack"><b>このスタジオが使っている容量：${fmtSize(est?.usage || 0)}</b>
       <span class="small">・動画・音声：${fmtSize(srcs.reduce((a, x) => a + sz(x), 0))}（${srcs.length}ファイル）<br>・音声認識モデル：${fmtSize(mSize)}<br>・編集の履歴：${oplogN}件の操作・${revN}件の過去の状態</span></div>
     <div class="card stack">
       <div class="row between"><span><b>どの教材にも使われていないファイル</b><br><small class="muted">${orphans.length}件・${fmtSize(orphans.reduce((a, x) => a + sz(x), 0))}</small></span><button class="btn sm" id="cOrph" ${orphans.length ? '' : 'disabled'}>削除</button></div>
+      <div class="row between"><span><b>英語ラボとの重複をまとめる</b><br><small class="muted">ラボに送った音声と同じファイルを、スタジオからは外してラボの音声を使います（字幕・編集はそのまま）</small></span><button class="btn sm" id="cDup" ${dupes.length ? '' : 'disabled'}>まとめる</button></div>
       <div class="row between"><span><b>編集の履歴を整理</b><br><small class="muted">↶で戻せる操作と、保存した版に必要な分だけ残します</small></span><button class="btn sm" id="cHist">整理</button></div>
       <div class="row between"><span><b>音声認識モデル</b><br><small class="muted">次に文字起こしするとき再ダウンロード</small></span><button class="btn sm" id="cModel" ${model.length ? '' : 'disabled'}>${fmtSize(mSize)} 削除</button></div>
     </div>
     <h2 class="sec">ファイル（大きい順）</h2>
-    <div class="card list">${srcs.sort((a, b) => sz(b) - sz(a)).map((x) => `<div class="st-setrow"><span class="grow"><b>${esc(x.name)}</b><small class="muted">${x.stored ? fmtSize(sz(x)) : '保存なし'}・${x.derived === 'audio16k' ? '節約保存' : x.kind === 'audio' ? '音声' : '動画'}・${used[x.id] ? `使用：${esc([...used[x.id]].join('、'))}` : '未使用'}</small></span>
-      ${x.stored && x.kind !== 'audio' ? `<button class="btn sm" data-small="${x.id}">音声だけに</button>` : ''}</div>`).join('') || '<p class="empty">ファイルはありません</p>'}</div>
-    <p class="hint">動画を「音声だけに」すると、映像を捨てて小さな音声にします（字幕・編集はそのまま）。教材ごとの削除は一覧の「選んで削除」から。</p>`;
+    <div class="card list">${srcs.sort((a, b) => sz(b) - sz(a)).map((x) => `<div class="st-setrow"><span class="grow"><b>${esc(x.name)}</b><small class="muted">${srcState(x)}・${used[x.id] ? `使用：${esc([...used[x.id]].join('、'))}` : '未使用'}</small></span>
+      ${x.stored && !x.labRef && x.blob ? `<button class="btn sm" data-comp="${x.id}">圧縮</button>` : ''}</div>`).join('') || '<p class="empty">ファイルはありません</p>'}</div>
+    <p class="hint">「圧縮」は試聴してから置き換えます（動画は音声だけになります。字幕・編集・時刻はそのまま）。ラボと共有している音声は、英語ラボの動画ラボ（一覧で長押し）から圧縮すると両方に効きます。教材ごとの削除は一覧の「選んで削除」から。</p>`;
+  $('#cDup', el).onclick = async () => {
+    let n = 0, freed = 0; toast('調べています…', 3000);
+    for (const x of dupes) { const size = x.blob.size; try { if (await linkToLab(x)) { n++; freed += size; } } catch {} }
+    toast(n ? `${n}件をまとめました（スタジオ側 ${fmtSize(freed)} を解放）` : '英語ラボと同じファイルはありませんでした', 3500); cleanScreen(el);
+  };
+  $$('[data-comp]', el).forEach((b) => (b.onclick = async () => {
+    const x = await sdb.get('sources', b.dataset.comp); if (!x?.blob) return;
+    const { compressDialog, TIERS: TT } = await import('./compress.js');
+    const r = await compressDialog({ blob: x.blob, name: x.name, duration: x.duration || 0, trackIndex: x.audio?.index ?? null, lossy: !/wav/.test(x.mime || ''), note: x.kind !== 'audio' ? '動画は音声だけになります。' : '' });
+    if (!r) return;
+    const before = x.blob.size;
+    Object.assign(x, { blob: r.file, kind: 'audio', mime: 'audio/mp4', derived: 'aac', codec: 'm4a', tier: r.tier, origSize: x.origSize || before, size: r.file.size });
+    delete x.audio; probeCache.delete(x.id); URL.revokeObjectURL(urlCache.get(x.id) || ''); urlCache.delete(x.id);
+    await sdb.put('sources', x);
+    toast(`圧縮しました：${fmtSize(before)} → ${fmtSize(r.file.size)}（${TT[r.tier].label}）`, 3000); cleanScreen(el);
+  }));
   $('#cOrph', el).onclick = async () => { if (!(await confirmDialog({ title: '使われていないファイルを削除', body: `<p>${orphans.map((x) => esc(x.name)).join('<br>')}</p>`, okLabel: '削除' }))) return; for (const x of orphans) await sdb.del('sources', x.id); toast('削除しました'); cleanScreen(el); };
   $('#cModel', el).onclick = async () => { for (const n of model) await caches.delete(n); toast('削除しました'); cleanScreen(el); };
   $('#cHist', el).onclick = async () => {
@@ -1720,6 +1790,9 @@ async function sendToLab(set) {
     toast('送っています…', 10000);
     const byId = Object.fromEntries(media.map((m) => [m.id, m]));
     const id = await HOST.sendToLab(manifest, material, async (m) => { const s = byId[m.id]; return s ? (s.stored ? s.blob : sessionFiles.get(s.id)) : null; });
+    // 1.16: the learning app now holds an identical copy of each sound file → the studio keeps only a reference (no double storage)
+    let linked = 0; for (const m of media) { try { if (await linkToLab(await sdb.get('sources', m.id))) linked++; } catch {} }
+    if (linked) toast(`送りました（音声${linked}件はラボと共有にして、容量の重複をなくしました）`, 3000);
     if (id) location.hash = `#video-play?id=${id}`;
   } catch (e) { toast('送れませんでした：' + (e?.message || e), 5000); }
 }

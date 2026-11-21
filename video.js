@@ -149,6 +149,31 @@ export function displayName(n) {
   const t = String(n || '').replace(/^(subtitles|media)\//, '').replace(/^tr_[a-z0-9]+-/i, '').replace(/^fp_[0-9a-f]+(_\d+)?/i, '').replace(/\.(srt|vtt|txt|csv|mp4|m4a|mov|mp3|wav)$/i, '').replace(/^[\s_-]+/, '').trim();
   return t || String(n || '無題');
 }
+// ---- 1.16: compress a stored sound (choose → convert → listen → replace). Cues keep their times; the original stays on failure ----
+export async function compressVideoAudio(id) {
+  const v = await db.get('videos', id); if (!v || v.kind === 'multi') return false;
+  const blob = await videoBlob(v); if (!blob) { toast('音声ファイルがありません'); return false; }
+  const { compressDialog, checkPlayable, TIERS } = await import('./compress.js');
+  const lossy = !/wav/.test(v.mime || blob.type || '');
+  const r = await compressDialog({ blob, name: displayName(v.name), duration: v.duration || 0, trackIndex: v.audioTrack ?? null, lossy, note: v.kind !== 'audio' && !/^audio/.test(v.mime || '') ? '動画は音声だけになります。' : '' });
+  if (!r) return false;
+  try {
+    // write a test copy first: replace only when the saved copy reads back and plays
+    await db.put('vblobs', { id: `${id}@new`, blob: r.file, size: r.file.size, at: Date.now() });
+    const back = await db.get('vblobs', `${id}@new`);
+    const ok = back?.blob && (await checkPlayable(back.blob, r.duration)).ok;
+    await db.delete('vblobs', `${id}@new`);
+    if (!ok) { toast('保存した圧縮音声を確認できなかったため、元のまま残しました', 4000); return false; }
+    const old = blob.size;
+    await putVideoBlob(id, r.file);   // the File from the conversion (never a blob read back from the database)
+    const cur = await db.get('videos', id);
+    Object.assign(cur, { mime: 'audio/mp4', size: r.file.size, compressed: { tier: r.tier, label: TIERS[r.tier].label, from: old, at: Date.now() }, audioChecked: true, audioFixed: true });
+    delete cur.audioTrack; delete cur.audioInfo;
+    await saveVideoMeta(cur);
+    toast(`圧縮しました：${fmtSize(old)} → ${fmtSize(r.file.size)}`, 3000); return true;
+  } catch (e) { toast('置き換えできませんでした（元のまま）：' + (e?.message || e), 4000); return false; }
+}
+
 // ---- media files live in their own store ('vblobs') and are written once ----
 // (iPhone: putting a file that was read from the database back into it — e.g. with the play position — made it unreadable after reopening)
 export async function videoBlob(v) { if (!v) return null; return (await db.get('vblobs', v.id))?.blob || v.blob || null; }
@@ -228,10 +253,11 @@ export async function videoList(el) {
       lpUsed = true; try { navigator.vibrate?.(10); } catch {}
       const v = vids.find((x) => x.id === a.dataset.id); if (!v) return;
       const dlg = $('#dialog');
-      dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(displayName(v.name))}</h3><button class="btn" value="rename">名前を変更</button><button class="btn danger" value="del">削除</button><button class="btn ghost" value="cancel">閉じる</button></form>`;
+      dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(displayName(v.name))}</h3><button class="btn" value="rename">名前を変更</button>${v.kind === 'multi' ? '' : `<button class="btn" value="comp">音声を圧縮${v.compressed ? `（${v.compressed.label}済み）` : ''}</button>`}<button class="btn danger" value="del">削除</button><button class="btn ghost" value="cancel">閉じる</button></form>`;
       dlg.returnValue = ''; dlg.showModal(); await new Promise((q) => (dlg.onclose = q));
       if (dlg.returnValue === 'rename') { await new Promise((r) => setTimeout(r, 60)); const name = prompt('教材の名前', displayName(v.name)); if (name?.trim()) { const cur = await db.get('videos', v.id); cur.name = name.trim(); await saveVideoMeta(cur); videoList(el); } }
       if (dlg.returnValue === 'del') { await new Promise((r) => setTimeout(r, 60)); if (await removeVideos([v.id])) videoList(el); }
+      if (dlg.returnValue === 'comp') { await new Promise((r) => setTimeout(r, 60)); if (await compressVideoAudio(v.id)) videoList(el); }
     }, 550);
   });
   const lpEnd = () => clearTimeout(lpT);
@@ -259,6 +285,7 @@ export async function videoList(el) {
     const names = vids.filter((v) => ids.includes(v.id)).map((v) => v.name);
     if (!(await confirmDialog({ title: `${ids.length}件を削除`, body: `<p>${names.slice(0, 8).map(esc).join('<br>')}${names.length > 8 ? `<br>ほか${names.length - 8}件` : ''}</p><p class="hint">動画・音声と字幕・穴埋めを消します（元に戻せません）。この動画から登録した単語は残ります。</p>`, okLabel: '削除', danger: true }))) return false;
     const cues = (await Promise.all(ids.map((id) => db.byIndex('cues', 'videoId', id)))).flat();
+    const kept = await (await import('./studio-db.js')).releaseLabRefs(ids).catch(() => 0);   // the studio's sets that use these sounds keep their own copy
     await db.tx(['videos', 'vblobs', 'cues'], 'readwrite', (t) => { for (const id of ids) { t.objectStore('videos').delete(id); t.objectStore('vblobs').delete(id); } cues.forEach((c) => t.objectStore('cues').delete(c.id)); });
     toast(`${ids.length}件を削除しました`); return true;
   }
@@ -1144,6 +1171,7 @@ export async function videoPlay(el, params) {
       } else if (r === 'del') {
         if (!(await confirmDialog({ title: '動画を削除', body: '<p>動画と字幕を削除します。この動画から登録した単語は残りますが、動画へのリンクは使えなくなります。</p>', okLabel: '削除', danger: true }))) return;
         const old = await db.byIndex('cues', 'videoId', v.id);
+        const kept = await (await import('./studio-db.js')).releaseLabRefs([v.id]).catch(() => 0);   // the studio's sets that use these sounds keep their own copy
         await db.tx(['videos', 'cues', 'vblobs'], 'readwrite', (t) => { t.objectStore('videos').delete(v.id); t.objectStore('vblobs').delete(v.id); old.forEach((c) => t.objectStore('cues').delete(c.id)); });
         toast('削除しました'); go('#video');
       }

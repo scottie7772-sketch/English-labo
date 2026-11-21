@@ -15,6 +15,31 @@ export const sdb = makeDB('ell-studio', 1, {
 });
 export { newId };
 
+// ---- 1.16: one copy of each sound. After a set is sent to the learning app, an audio source keeps only
+// labRef = { videoId } and its sound is read from the learning app's store (ell-db / vblobs). The blob is never saved twice.
+import { db as labDb } from './db.js';
+const fromLab = new WeakSet();   // blobs that were read from the learning app (not to be saved here)
+async function hydrate(src) {
+  if (src && src.labRef && !src.blob) {
+    try { const r = await labDb.get('vblobs', src.labRef.videoId); if (r?.blob) { src.blob = r.blob; fromLab.add(r.blob); } else src.labMissing = true; } catch { src.labMissing = true; }
+  }
+  return src;
+}
+const strip = (v) => {
+  if (!v || !v.labRef) return v;
+  const { blob, labMissing, labRef, ...rest } = v;
+  if (blob && !fromLab.has(blob)) return { ...rest, blob };   // the sound was changed here (cut, converted): it is the studio's own again
+  return { ...rest, labRef };
+};
+{
+  const { get, all, byIndex, put } = sdb;
+  sdb.get = async (s, k) => { const v = await get(s, k); return s === 'sources' ? hydrate(v) : v; };
+  sdb.all = async (s) => { const v = await all(s); return s === 'sources' ? Promise.all(v.map(hydrate)) : v; };
+  sdb.byIndex = async (s, i, x) => { const v = await byIndex(s, i, x); return s === 'sources' ? Promise.all(v.map(hydrate)) : v; };
+  sdb.put = (s, v) => put(s, s === 'sources' ? strip(v) : v);
+}
+export const sourceStripped = strip;
+
 export const UNDO_MAX = 200;
 const revId = (b) => `${b.id}@${b.rev}`;
 const snap = (b) => ({ ...structuredClone(b), id: revId(b), blockId: b.id });
@@ -123,3 +148,37 @@ export async function liveBlocks(set) {
 }
 export async function allBlocksMap(setId) { return Object.fromEntries((await sdb.byIndex('blocks', 'setId', setId)).map((b) => [b.id, b])); }
 export async function sourcesMap() { return Object.fromEntries((await sdb.all('sources')).map((s) => [s.id, s])); }
+
+const sameEnds = async (a, b) => {
+  const n = Math.min(65536, a.size);
+  const [x, y, z, w] = await Promise.all([a.slice(0, n).arrayBuffer(), b.slice(0, n).arrayBuffer(), a.slice(a.size - n).arrayBuffer(), b.slice(b.size - n).arrayBuffer()]);
+  const eq = (p, q) => { const u = new Uint8Array(p), v = new Uint8Array(q); if (u.length !== v.length) return false; for (let i = 0; i < u.length; i++) if (u[i] !== v[i]) return false; return true; };
+  return eq(x, y) && eq(z, w);
+};
+// an audio source whose identical copy is in the learning app: keep only the reference (frees the studio copy)
+export async function linkToLab(src) {
+  if (!src || src.labRef || !src.stored || src.kind !== 'audio' || !src.blob) return false;
+  const vids = (await labDb.all('videos')).filter((v) => v.from?.media === src.id).sort((a, b) => (b.from?.updatedAt || b.createdAt || 0) - (a.from?.updatedAt || a.createdAt || 0));
+  for (const v of vids) {
+    const r = await labDb.get('vblobs', v.id);
+    if (!r?.blob || r.blob.size !== src.blob.size) continue;
+    try { if (!(await sameEnds(r.blob, src.blob))) continue; } catch { continue; }
+    const { blob, ...rest } = src;
+    await sdb.put('sources', { ...rest, labRef: { videoId: v.id, at: Date.now() }, size: r.blob.size });   // saved without the studio's copy
+    src.labRef = { videoId: v.id }; src.blob = r.blob; fromLab.add(r.blob);
+    return true;
+  }
+  return false;
+}
+// before the learning app deletes sounds: studio sources that point at them get their own copy back (nothing is lost)
+export async function releaseLabRefs(videoIds = null) {
+  const all = await sdb.all('sources'); let n = 0;
+  for (const src of all) {
+    if (!src.labRef || (videoIds && !videoIds.includes(src.labRef.videoId))) continue;
+    const { labRef, labMissing, ...rest } = src;
+    if (src.blob) rest.blob = new File([await src.blob.arrayBuffer()], src.name || 'audio', { type: src.mime || src.blob.type || 'audio/mp4' });
+    else rest.stored = false;
+    await sdb.put('sources', rest); n++;
+  }
+  return n;
+}

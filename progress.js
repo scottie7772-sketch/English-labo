@@ -4,7 +4,7 @@ import { curLang, langOf } from './langs.js';
 
 export async function lessonStats(lang = curLang()) {
   const [words, revs] = await Promise.all([db.all('words'), db.all('reviews')]);
-  const ids = new Set(words.filter((w) => langOf(w) === lang).map((w) => w.id));
+  const ids = new Set(words.filter((w) => !w.slim && langOf(w) === lang).map((w) => w.id));   // 軽量化した語は出題しない
   const now = Date.now();
   const mine = revs.filter((r) => (r.lang || 'en') === lang && (r.kind === 'word' || !r.kind ? ids.has(r.id) : true) && r.kind !== 'speaking' && r.kind !== 'listening');
   return { due: mine.filter((r) => r.due <= now).length, scheduled: mine.length, fresh: (() => { const has = new Set(revs.map((r) => r.id)); return [...ids].filter((id) => !has.has(id)).length; })() };

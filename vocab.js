@@ -14,7 +14,7 @@ const POS_OPTIONS = ['', 'noun', 'verb', 'adjective', 'adverb', 'phrasal verb', 
 const posJa = (p) => POS_JA[p] || p || '';
 const SOURCE_JA = { manual: '手動', bulk: '一括登録', csv: 'CSV', ocr: 'OCR', video: '動画字幕', mistake: '学習中の誤答', paste: '英文から選択', seed: '初期データ' };
 
-const DEFAULT_FILTER = { q: '', bm: 'all', kind: 'all', levels: [], skill: 'overall', tag: '', deck: '', sort: 'new' };
+const DEFAULT_FILTER = { q: '', bm: 'all', kind: 'all', levels: [], skill: 'overall', tag: '', deck: '', sort: 'new', st: 'all' };
 let filter = null;
 async function getFilter() { if (!filter) filter = { ...DEFAULT_FILTER, ...(await getSetting('vocabFilter', {})), q: '' }; return filter; }
 const saveFilter = () => setSetting('vocabFilter', { ...filter, q: '' });
@@ -35,12 +35,13 @@ export async function vocabList(el) {
 
   el.innerHTML = `
     <header class="top"><h1>単語・熟語</h1><span class="grow"></span>
-      <button class="icon-btn" id="add" aria-label="追加">${icon('plus', 26)}</button></header>
+      <button class="btn sm ghost" id="selMode">選ぶ</button><button class="icon-btn" id="add" aria-label="追加">${icon('plus', 26)}</button></header>
     <div class="searchbar"><input id="q" type="search" placeholder="検索（${esc(L().name)}・日本語）" value="${esc(f.q)}" autocapitalize="off" autocorrect="off"></div>
     <details class="card filters" ${hasFilter(f) ? 'open' : ''}>
       <summary>絞り込み <span class="muted small" id="fsum"></span></summary>
       <div class="fgrp"><span>ブックマーク</span>${seg('bm', [['all', 'すべて'], ['yes', '済み'], ['no', '未']], f.bm)}</div>
       <div class="fgrp"><span>種類</span>${seg('kind', [['all', 'すべて'], ['word', '単語'], ['phrase', '熟語']], f.kind)}</div>
+      <div class="fgrp"><span>軽量化</span>${seg('st', [['all', 'すべて'], ['active', '出題する語'], ['slim', '軽量化済み']], f.st || 'all')}</div>
       <div class="fgrp"><span>習得度の基準</span>
         <select id="skill">${[['overall', '総合（最も低いスキル）'], ...SKILLS.map((s) => [s, SKILL_LABELS[s]])].map(([v, l]) => `<option value="${v}" ${f.skill === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="fgrp"><span>習得度（複数可）</span><div class="chips" id="levels">
@@ -66,6 +67,8 @@ export async function vocabList(el) {
       if (f.bm === 'no' && w.bookmarked) return false;
       if (f.kind === 'word' && w.isPhrase) return false;
       if (f.kind === 'phrase' && !w.isPhrase) return false;
+      if (f.st === 'slim' && !w.slim) return false;
+      if (f.st === 'active' && w.slim) return false;
       if (f.tag && !(w.tags || []).includes(f.tag)) return false;
       if (f.deck && !(w.deckIds || []).includes(f.deck)) return false;
       if (f.levels.length && !f.levels.includes(filterLevel(lvOf(mastery[w.id], f.skill)))) return false;
@@ -88,13 +91,14 @@ export async function vocabList(el) {
     const want = keep ? shown : 0; rowsNow = rows; shown = 0; listEl.innerHTML = ''; more(want);
   }
   const PAGE = 80;
-  let shown = 0, rowsNow = [];
+  let shown = 0, rowsNow = [], sel = null;   // sel: chosen word ids while in "選ぶ" mode
   const rowHTML = (w) => {
       const lv = lvOf(mastery[w.id], f.skill);
       return `
-      <div class="wcard" data-id="${w.id}">
+      <div class="wcard ${sel?.has(w.id) ? 'picked' : ''}" data-id="${w.id}">
+        ${sel ? `<input type="checkbox" class="wsel" data-sel="${w.id}" ${sel.has(w.id) ? 'checked' : ''} aria-label="選ぶ">` : ''}
         <a class="wmain" href="#word?id=${w.id}">
-          <b class="tl">${esc(w.headword)}</b>${w.ipa && isZh(langOf(w)) ? `<span class="small muted"> ${esc(numToMarks(w.ipa))}</span>` : ''}${w.review === 'unverified' ? '<span class="tagp ai">未検証</span>' : ''}${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}${headCount[headKey(w.headword)] > 1 ? '<span class="tagp">多義</span>' : ''}
+          <b class="tl">${esc(w.headword)}</b>${w.ipa && isZh(langOf(w)) ? `<span class="small muted"> ${esc(numToMarks(w.ipa))}</span>` : ''}${w.review === 'unverified' ? '<span class="tagp ai">未検証</span>' : ''}${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}${headCount[headKey(w.headword)] > 1 ? '<span class="tagp">多義</span>' : ''}${w.slim ? '<span class="tagp slim">軽量</span>' : ''}
           <span class="mean">${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>
         </a>
         <div class="wact">
@@ -131,8 +135,39 @@ export async function vocabList(el) {
   for (const k of ['skill', 'tag', 'deck', 'sort']) $('#' + k, el).addEventListener('change', (e) => { f[k] = e.target.value; saveFilter(); draw(); });
   $('#clear', el).onclick = () => { filter = { ...DEFAULT_FILTER }; saveFilter(); vocabList(el); };
   $('#add', el).onclick = addMenu;
+  // ---- 1.16: choose several words → lighten (remove examples etc.) / bring back ----
+  const isMastered = (w) => filterLevel(lvOf(mastery[w.id], 'overall')) === 5;
+  const selBar = () => {
+    let bar = $('#selbar', el);
+    if (!sel) { bar?.remove(); document.body.classList.remove('selecting'); return; }
+    document.body.classList.add('selecting');
+    if (!bar) { el.insertAdjacentHTML('beforeend', '<div class="wselbar" id="selbar"></div>'); bar = $('#selbar', el); }
+    const chosen = words.filter((w) => sel.has(w.id));
+    bar.innerHTML = `<span class="small"><b>${sel.size}</b>語</span>
+      <button class="btn sm" data-a="all">表示中を全部</button><button class="btn sm" data-a="done">習得済みだけ</button><button class="btn sm" data-a="none">解除</button>
+      <button class="btn sm primary" data-a="slim" ${chosen.some((w) => !w.slim) ? '' : 'disabled'}>軽量化</button>
+      <button class="btn sm" data-a="back" ${chosen.some((w) => w.slim) ? '' : 'disabled'}>出題に戻す</button><button class="btn sm ghost" data-a="end">終了</button>`;
+    bar.onclick = async (e) => {
+      const a = e.target.dataset.a; if (!a) return;
+      if (a === 'all') rowsNow.forEach((w) => sel.add(w.id));
+      if (a === 'done') { sel.clear(); rowsNow.filter(isMastered).forEach((w) => sel.add(w.id)); }
+      if (a === 'none') sel.clear();
+      if (a === 'end') { sel = null; $('#selMode', el).textContent = '選ぶ'; }
+      if (a === 'slim') { if (await slimWords(words.filter((w) => sel.has(w.id) && !w.slim), isMastered)) { vocabList(el); return; } }
+      if (a === 'back') { const list = words.filter((w) => sel.has(w.id) && w.slim); for (const w of list) { delete w.slim; await db.put('words', w); } toast(`${list.length}語を出題に戻しました（消した例文などは戻りません）`, 3000); }
+      draw(true); selBar();
+    };
+  };
+  $('#selMode', el).onclick = () => { sel = sel ? null : new Set(); $('#selMode', el).textContent = sel ? '終了' : '選ぶ'; draw(true); selBar(); };
 
   listEl.addEventListener('click', async (e) => {
+    if (sel) {   // choosing: a tap on the row ticks it
+      const card = e.target.closest('.wcard'); if (!card || e.target.closest('select, [data-say], [data-bm]')) return;
+      e.preventDefault(); const id = card.dataset.id;
+      sel.has(id) ? sel.delete(id) : sel.add(id);
+      card.classList.toggle('picked', sel.has(id)); const cb = card.querySelector('.wsel'); if (cb) cb.checked = sel.has(id);
+      selBar(); return;
+    }
     const bm = e.target.closest('[data-bm]');
     if (bm) {
       const id = bm.dataset.bm;
@@ -155,7 +190,47 @@ export async function vocabList(el) {
   });
 }
 
-function hasFilter(f) { return f.bm !== 'all' || f.kind !== 'all' || f.levels.length || f.tag || f.deck; }
+function hasFilter(f) { return f.bm !== 'all' || f.kind !== 'all' || f.levels.length || f.tag || f.deck || (f.st && f.st !== 'all'); }
+
+// 1.16: lighten mastered words. Keeps the headword, meanings, part of speech, mastery and (by default) every answer record;
+// removes examples, their translations, context notes and links to videos (the videos themselves stay).
+// The word leaves the normal question pool and can be seen with 絞り込み → 軽量化済み.
+const extraOf = (w) => ({ ex: (w.senses || []).flatMap((x) => x.examples || []), ctx: (w.senses || []).map((x) => x.context || '').filter(Boolean), refs: w.videoRefs || [], note: w.note || w.memo || '' });
+const bytesOf = (o) => new Blob([JSON.stringify(o)]).size;
+async function slimWords(list, isMastered) {
+  if (!list.length) return false;
+  const notDone = list.filter((w) => !isMastered(w)).length;
+  const extra = list.reduce((a, w) => a + bytesOf(extraOf(w)), 0);
+  const nAtt = Object.values(await db.countEach('attempts', 'wordId', list.map((w) => w.id))).reduce((a, n) => a + n, 0);
+  const ok = await confirmDialog({ title: `${list.length}語を軽量化`, okLabel: '軽量化する',
+    body: `<p class="small">消すもの：例文・例文の訳・文脈・補足・動画へのリンク（動画そのものは残ります）<br>残すもの：見出し語・意味・品詞・習得度・復習の記録</p>
+      ${notDone ? `<p class="warn-text small">うち${notDone}語は、まだ「習得済み」ではありません。</p>` : ''}
+      <p class="small">減る量の見込み：約${Math.max(1, Math.round(extra / 1024))}KB</p>
+      <label class="chk small"><input type="checkbox" id="slimHist"> 解答記録（${nAtt}件・約${Math.max(1, Math.round((nAtt * 150) / 1024))}KB）も要約にする（回数・正答数・最初と最後の日だけ残す。元に戻せません）</label>
+      <p class="hint">軽量化した語は、テスト・単語帳・レッスン・ゲームに出なくなります（「出題に戻す」でまた出せます。消した例文は戻りません）。念のため、先に設定からバックアップを作っておくと安心です。</p>` });
+  if (!ok) return false;
+  const hist = !!$('#slimHist')?.checked;
+  let n = 0, fail = 0;
+  for (const w0 of list) {
+    try {
+      const w = structuredClone(await db.get('words', w0.id)); if (!w) continue;
+      const removed = [];
+      for (const x of w.senses || []) { if (x.examples?.length) { x.examples = []; removed.push('例文'); } if (x.context) { x.context = ''; removed.push('文脈'); } }
+      if (w.videoRefs?.length) { w.videoRefs = []; removed.push('動画リンク'); }
+      for (const k of ['note', 'memo']) if (w[k]) { delete w[k]; removed.push('補足'); }
+      w.slim = { at: Date.now(), removed: [...new Set(removed)] };
+      if (hist) {   // one transaction per word: the word and its records change together or not at all
+        const atts = await db.byIndex('attempts', 'wordId', w.id);
+        const at = atts.map((a) => a.at).filter(Boolean);
+        w.slim.hist = { n: atts.length, ok: atts.filter((a) => a.correct).length, first: at.length ? Math.min(...at) : null, last: at.length ? Math.max(...at) : null };
+        await db.tx(['words', 'attempts'], 'readwrite', (t) => { t.objectStore('words').put(w); atts.forEach((a) => t.objectStore('attempts').delete(a.id)); });
+      } else await db.put('words', w);
+      n++;
+    } catch { fail++; }
+  }
+  toast(`${n}語を軽量化しました${fail ? `（${fail}語は失敗・そのまま）` : ''}`, 3000);
+  return true;
+}
 function seg(k, opts, cur) { return `<div class="seg" data-k="${k}">${opts.map(([v, l]) => `<button data-v="${v}" class="${cur === v ? 'on' : ''}">${l}</button>`).join('')}</div>`; }
 function bmIcon(on) { return `<svg viewBox="0 0 24 24" width="22" height="22"><path d="M6 3h12v18l-6-4.5L6 21z" fill="${on ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`; }
 

@@ -30,7 +30,7 @@ export async function gameItems(type) {
   if (type === 'puzzle') return puzzles();
   if (type === 'visual') return visuals();
   const sets = await swipeSets();
-  return (await db.all('words')).filter((w) => langOf(w) === 'en' && isSwipeable(w, sets));
+  return (await db.all('words')).filter((w) => !w.slim && langOf(w) === 'en' && isSwipeable(w, sets));
 }
 
 export async function gamesScreen(el) {

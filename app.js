@@ -6,7 +6,7 @@ import { loadLang, setLang, langSwitchHTML, enabledLangs, setEnabled, LANGS } fr
 import { seedContent } from './content.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.15.0';
+export const APP_VERSION = '1.16.0';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -26,14 +26,12 @@ function daysSince(ts) { return ts ? Math.floor((Date.now() - ts) / 86400000) : 
 function fmtDate(ts) { return ts ? new Date(ts).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'; }
 
 // ---------- Theme ----------
-async function applyTheme(mode) {
-  mode = mode || await getSetting('theme', 'dark');
-  const dark = mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
-  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-  const pal = await getSetting('palette', 'forest'); document.documentElement.dataset.palette = pal;   // colour set: navy / forest
-  $('meta[name=theme-color]')?.setAttribute('content', dark ? (pal === 'forest' ? '#101a17' : '#1e2236') : (pal === 'forest' ? '#f3f6f2' : '#f2f3f8'));
+// 1.16: dark only, one colour set (light mode and the forest set were removed to keep the app small)
+async function applyTheme() {
+  document.documentElement.dataset.theme = 'dark';
+  $('meta[name=theme-color]')?.setAttribute('content', '#1e2236');
 }
-matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => applyTheme());
+
 
 // ---------- Screens ----------
 const screens = {};
@@ -62,7 +60,6 @@ const LAZY = {
 for (const [file, map] of Object.entries(LAZY)) for (const [route, fn] of Object.entries(map)) screens[route] = async (el, params) => (await import(file))[fn](el, params);
 
 screens.settings = async (el) => {
-  const theme = await getSetting('theme', 'dark');
   const [{ getSwipe }, { exportJSON, exportCSV, validateBackup, restoreBackup, STORE_LABELS }] = await Promise.all([import('./quick.js'), import('./backup.js')]);
   const swipe = await getSwipe();
   const lastBackup = await getMeta('lastBackupAt', null);
@@ -73,16 +70,6 @@ screens.settings = async (el) => {
 
   el.innerHTML = `
     <header class="top"><h1>設定</h1></header>
-
-    <h2 class="sec">表示</h2>
-    <div class="card">
-      <div class="seg" id="theme">
-        ${[['dark', 'ダーク'], ['light', 'ライト'], ['system', '端末に合わせる']].map(([v, l]) => `<button data-v="${v}" class="${theme === v ? 'on' : ''}">${l}</button>`).join('')}
-      </div>
-      <div class="seg" id="palette" style="margin-top:8px">
-        ${[['navy', 'ネイビー'], ['forest', 'フォレスト（濃い緑）']].map(([v, l]) => `<button data-v="${v}" class="${(document.documentElement.dataset.palette || 'forest') === v ? 'on' : ''}">${l}</button>`).join('')}
-      </div>
-    </div>
 
     <h2 class="sec">学習する言語</h2>
     <div class="card stack"><span class="small muted">使う言語（画面上部の EN / ES / 華 で切り替え）。言語ごとに単語・習得度・復習予定は別々に管理されます。</span>
@@ -122,11 +109,6 @@ screens.settings = async (el) => {
 
     <p class="muted center small">v${APP_VERSION} / DB schema v${DB_VERSION}</p>`;
 
-  $('#palette', el).addEventListener('click', async (e) => { const v = e.target.dataset.v; if (!v) return; await setSetting('palette', v); await applyTheme(); render(); });
-  $('#theme', el).addEventListener('click', async (e) => {
-    const v = e.target.dataset.v; if (!v) return;
-    await setSetting('theme', v); await applyTheme(v); render();
-  });
   $('#langs', el).onclick = async (e) => { const v = e.target.dataset.v; if (!v || v === 'en') return; const cur = enabledLangs().filter((c) => c !== 'en'); await setEnabled(cur.includes(v) ? cur.filter((c) => c !== v) : [...cur, v]); render(); };
   $('#swipe', el).addEventListener('click', async (e) => { const v = e.target.dataset.v; if (!v) return; await setSetting('swipeKnow', v); toast('スワイプの向きを変更しました'); render(); });
   $('#bk-json', el).onclick = async () => {
@@ -165,6 +147,7 @@ screens.settings = async (el) => {
     if (!ok) return;
     const wordIds = new Set((await db.all('words')).map((w) => w.id));
     const notWord = (id) => !wordIds.has(id);
+    await (await import('./studio-db.js')).releaseLabRefs(null).catch(() => 0);   // studio sets keep their own copy of the sounds
     await db.clear('cues'); await db.clear('vblobs'); await db.clear('videos'); await db.clear('listening');
     const atts = (await db.all('attempts')).filter((a) => (a.mode === 'listening' || a.mode === 'video') && notWord(a.wordId));
     for (const a of atts) await db.delete('attempts', a.id);

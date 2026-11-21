@@ -3,13 +3,13 @@
 import { db, uid, getMeta, setMeta } from './db.js';
 import { $, $$, esc, toast, go, speak } from './ui.js';
 import { icon } from './icons.js';
-import { L, curLang, langOf, isZh, langAttr, numToMarks } from './langs.js';
+import { L, curLang, langOf, isZh, langAttr, numToMarks, COURSE_LANGS } from './langs.js';
 import { registerEntries, wordsByHead, findDuplicate, saveWord, meaningsOf } from './words.js';
 import { loadAllMastery, effLevel } from './mastery.js';
 import { playGameItem } from './games.js';
 import { startQuick } from './quick.js';
 
-export const COURSE_LANGS = ['es', 'zh-CN', 'zh-TW'];
+export { COURSE_LANGS };
 const tagOf = (u) => `入門U${u.no}`;
 const cache = {};
 export async function coursePack(lang) {

@@ -1,24 +1,12 @@
 import { openDB, db, getSetting, setSetting, getMeta, uid, storageInfo, requestPersist, DB_VERSION } from './db.js';
-import { exportJSON, exportCSV, validateBackup, restoreBackup, STORE_LABELS } from './backup.js';
 import { $, esc, toast, confirmDialog } from './ui.js';
-import { vocabList, wordDetail, vocabBulk, vocabCSV, vocabPaste, decksScreen } from './vocab.js';
 import { seedIfNeeded, splitSeedIfNeeded } from './words.js';
-import { studySetup, sessionScreen, resultScreen } from './study.js';
-import { quickSetup, quickRun, quickResult, getSwipe } from './quick.js';
-import { videoList, videoPlay } from './video.js';
 import { homeScreen, reviewScreen, grammarScreen, comingSoon } from './hub.js';
 import { loadLang, setLang, langSwitchHTML, enabledLangs, setEnabled, LANGS } from './langs.js';
 import { seedContent } from './content.js';
-import { speakingScreen, speakingRun } from './speaking.js';
-import { listeningScreen, listeningRun } from './listening.js';
-import { lessonScreen, lessonRun } from './lesson.js';
-import { gamesScreen, gameRun } from './games.js';
-import { dataCheckScreen, scanWords } from './datacheck.js';
-import { storageScreen } from './storage.js';
-import { courseScreen, courseUnit, coursePuzzle } from './course.js';
 import { icon } from './icons.js';
 
-export const APP_VERSION = '1.10.0';
+export const APP_VERSION = '1.11.0';
 
 const TABS = [
   { route: 'home', icon: 'home', label: 'ホーム' },
@@ -55,13 +43,27 @@ screens.review = reviewScreen;
 screens.log = reviewScreen;
 screens.grammar = grammarScreen;
 screens.toeic = grammarScreen;
-Object.assign(screens, { listening: listeningScreen, 'listening-run': listeningRun, speaking: speakingScreen, 'speaking-run': speakingRun, lesson: lessonScreen, 'lesson-run': lessonRun, games: gamesScreen, game: gameRun, datacheck: dataCheckScreen, storage: storageScreen, course: courseScreen, 'course-unit': courseUnit, 'course-puzzle': coursePuzzle });
 screens.import = comingSoon('Import', 'import', '画像やスクリーンショットから英語を取り込む機能は、まだ実装していません。今は単語帳の「まとめて追加」「CSV」「英文から選ぶ」が使えます。');
-Object.assign(screens, { quick: quickSetup, 'quick-run': quickRun, 'quick-result': quickResult, video: videoList, 'video-play': videoPlay, study: studySetup, session: sessionScreen, result: resultScreen, vocab: vocabList, word: wordDetail, 'vocab-bulk': vocabBulk, 'vocab-csv': vocabCSV, 'vocab-paste': vocabPaste, decks: decksScreen });
 const TAB_OF = { storage: 'settings', course: 'home', 'course-unit': 'home', 'course-puzzle': 'home', datacheck: 'settings', 'listening-run': 'home', 'speaking-run': 'home', lesson: 'home', 'lesson-run': 'home', games: 'home', game: 'home', log: 'review', grammar: 'home', toeic: 'home', listening: 'home', speaking: 'home', import: 'home', quick: 'study', 'quick-run': 'study', 'quick-result': 'study', video: 'home', 'video-play': 'home', session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
+// the other screens: their code is loaded the first time they are opened (then kept by the browser)
+const LAZY = {
+  './vocab.js': { vocab: 'vocabList', word: 'wordDetail', 'vocab-bulk': 'vocabBulk', 'vocab-csv': 'vocabCSV', 'vocab-paste': 'vocabPaste', decks: 'decksScreen' },
+  './study.js': { study: 'studySetup', session: 'sessionScreen', result: 'resultScreen' },
+  './quick.js': { quick: 'quickSetup', 'quick-run': 'quickRun', 'quick-result': 'quickResult' },
+  './video.js': { video: 'videoList', 'video-play': 'videoPlay' },
+  './speaking.js': { speaking: 'speakingScreen', 'speaking-run': 'speakingRun' },
+  './listening.js': { listening: 'listeningScreen', 'listening-run': 'listeningRun' },
+  './lesson.js': { lesson: 'lessonScreen', 'lesson-run': 'lessonRun' },
+  './games.js': { games: 'gamesScreen', game: 'gameRun' },
+  './datacheck.js': { datacheck: 'dataCheckScreen' },
+  './storage.js': { storage: 'storageScreen' },
+  './course.js': { course: 'courseScreen', 'course-unit': 'courseUnit', 'course-puzzle': 'coursePuzzle' },
+};
+for (const [file, map] of Object.entries(LAZY)) for (const [route, fn] of Object.entries(map)) screens[route] = async (el, params) => (await import(file))[fn](el, params);
 
 screens.settings = async (el) => {
   const theme = await getSetting('theme', 'dark');
+  const [{ getSwipe }, { exportJSON, exportCSV, validateBackup, restoreBackup, STORE_LABELS }] = await Promise.all([import('./quick.js'), import('./backup.js')]);
   const swipe = await getSwipe();
   const lastBackup = await getMeta('lastBackupAt', null);
   const st = await storageInfo();

@@ -1,6 +1,6 @@
 // Lessons (Duolingo-style): due reviews first, then new / learning items, in varying formats.
 // A wrong item comes back 3 questions later in a different format (once).
-import { db, uid, getSetting, setSetting, attemptDays } from './db.js';
+import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, go, speak } from './ui.js';
 import { icon } from './icons.js';
 import { L, curLang, langOf, numToMarks, isZh, langAttr } from './langs.js';
@@ -12,6 +12,7 @@ import { puzzles, visuals, swipeSets } from './content.js';
 import { isSwipeable } from './verbswipe.js';
 import { playGameItem } from './games.js';
 import { QUALITY_JA } from './srs.js';
+import { lessonStats, streakDays } from './progress.js';
 
 const DAY = 86400000;
 const FORMAT_JA = { mcR: '意味を選ぶ', mcP: '語句を選ぶ', type: '入力', audio: '聞いて意味', cloze: '穴埋め', swipe: 'Verb Swipe', puzzle: 'パズル', visual: '図解' };
@@ -19,20 +20,7 @@ const accepted = (w) => [...new Set((w.senses || []).flatMap((s) => s.accepted |
 const exampleOf = (w) => (w.senses || []).flatMap((s) => s.examples || []).find((x) => x.en || x.text);
 const exText = (ex) => ex?.text || ex?.en || '';
 
-export async function lessonStats(lang = curLang()) {
-  const [words, revs] = await Promise.all([db.all('words'), db.all('reviews')]);
-  const ids = new Set(words.filter((w) => langOf(w) === lang).map((w) => w.id));
-  const now = Date.now();
-  const mine = revs.filter((r) => (r.lang || 'en') === lang && (r.kind === 'word' || !r.kind ? ids.has(r.id) : true) && r.kind !== 'speaking' && r.kind !== 'listening');
-  return { due: mine.filter((r) => r.due <= now).length, scheduled: mine.length, fresh: [...ids].filter((id) => !revs.some((r) => r.id === id)).length };
-}
-export async function streakDays() {
-  const { days } = await attemptDays();
-  let n = 0; const d = new Date();
-  if (!days.has(d.toDateString())) d.setDate(d.getDate() - 1);   // today not yet studied: count up to yesterday
-  while (days.has(d.toDateString())) { n++; d.setDate(d.getDate() - 1); }
-  return { n, today: days.has(new Date().toDateString()) };
-}
+export { lessonStats, streakDays };
 
 export async function lessonScreen(el) {
   const lang = curLang();

@@ -3,11 +3,12 @@ import { db, getMeta, attemptsSince, attemptDays } from './db.js';
 import { $, esc, go } from './ui.js';
 import { icon } from './icons.js';
 import { overall, filterLevel, LEVEL_LABELS, loadAllMastery } from './mastery.js';
-import { startTest } from './study.js';
-import { startQuick } from './quick.js';
 import { curLang, langOf, L } from './langs.js';
-import { lessonStats, streakDays } from './lesson.js';
-import { COURSE_LANGS } from './course.js';
+import { lessonStats, streakDays } from './progress.js';
+import { COURSE_LANGS } from './langs.js';
+// the test / card screens are loaded only when a button starts them
+const startTest = async (o) => (await import('./study.js')).startTest(o);
+const startQuick = async (o) => (await import('./quick.js')).startQuick(o);
 
 const DAY = 86400000;
 const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };

@@ -2,7 +2,6 @@
 import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, speak, fmtDate } from './ui.js';
 import { SKILLS, SKILL_LABELS, LEVEL_LABELS, effLevel, status, source, overall, filterLevel, levelText, loadAllMastery, loadWordMastery, setManual, setLock, resetToAuto } from './mastery.js';
-import { videoNames } from './video.js';
 import { icon } from './icons.js';
 import { L, curLang, langOf, numToMarks, LANGS, isZh, langAttr } from './langs.js';
 import { setDue } from './srs.js';
@@ -60,7 +59,7 @@ export async function vocabList(el) {
   const headCount = {};
   words.forEach((w) => { const k = headKey(w.headword); headCount[k] = (headCount[k] || 0) + 1; });
   const listEl = $('#list', el);
-  function draw() {
+  function draw(keep) {
     const q = f.q.trim().toLowerCase();
     let rows = words.filter((w) => {
       if (f.bm === 'yes' && !w.bookmarked) return false;
@@ -85,7 +84,12 @@ export async function vocabList(el) {
     $('#count', el).textContent = `${rows.length} / ${words.length} 件`;
     $('#fsum', el).textContent = hasFilter(f) ? '（条件あり）' : '';
     if (!words.length) { listEl.innerHTML = `<div class="card center muted">まだ単語がありません。右上の＋から追加できます。</div>`; return; }
-    listEl.innerHTML = rows.map((w) => {
+    // long lists are drawn in steps: the first rows at once, more when the end comes near (less work and memory)
+    const want = keep ? shown : 0; rowsNow = rows; shown = 0; listEl.innerHTML = ''; more(want);
+  }
+  const PAGE = 80;
+  let shown = 0, rowsNow = [];
+  const rowHTML = (w) => {
       const lv = lvOf(mastery[w.id], f.skill);
       return `
       <div class="wcard" data-id="${w.id}">
@@ -104,8 +108,14 @@ export async function vocabList(el) {
           <button class="bm ${w.bookmarked ? 'on' : ''}" data-bm="${w.id}" aria-label="ブックマーク">${bmIcon(w.bookmarked)}</button>
         </div>
       </div>`;
-    }).join('');
+  };
+  function more(want = 0) {
+    listEl.querySelector('.wmore')?.remove();
+    const next = rowsNow.slice(shown, shown + Math.max(PAGE, want - shown)); shown += next.length;
+    listEl.insertAdjacentHTML('beforeend', next.map(rowHTML).join('') + (shown < rowsNow.length ? '<div class="wmore" aria-hidden="true"></div>' : ''));
+    const s = listEl.querySelector('.wmore'); if (s) io.observe(s);
   }
+  const io = new IntersectionObserver((es) => { if (es.some((x) => x.isIntersecting)) { io.disconnect(); more(); } }, { rootMargin: '1200px 0px' });
   draw();
 
   $('#q', el).addEventListener('input', (e) => { f.q = e.target.value; draw(); });
@@ -129,7 +139,7 @@ export async function vocabList(el) {
       const on = await toggleBookmark(id);
       const w = words.find((x) => x.id === id); w.bookmarked = on;
       bm.classList.toggle('on', on); bm.innerHTML = bmIcon(on);
-      if (f.bm !== 'all') draw();
+      if (f.bm !== 'all') draw(true);
       return;
     }
     const spk = e.target.closest('[data-say]');
@@ -141,7 +151,7 @@ export async function vocabList(el) {
     await setManual(id, SKILLS, l, { lock: false, reason: 'list' });
     Object.assign(mastery, { [id]: await loadWordMastery(id) });
     toast(`「${words.find((w) => w.id === id).headword}」を${LEVEL_LABELS[l]}に変更（4スキルすべて）`);
-    draw();
+    draw(true);
   });
 }
 
@@ -182,7 +192,7 @@ export async function wordDetail(el, params) {
   const ov = overall(mastery);
   const siblings = ((await wordsByHead(wl)).get(headKey(w.headword)) || []).filter((x) => x.id !== w.id);
   const vrefs = isNew ? [] : (w.videoRefs?.length ? w.videoRefs : w.source?.type === 'video' ? [w.source] : []);
-  const vnames = vrefs.length ? await videoNames() : {};
+  const vnames = vrefs.length ? await (await import('./video.js')).videoNames() : {};
 
   el.innerHTML = `
     <header class="top"><a href="${isNew ? '#vocab' : '#vocab'}" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>${isNew ? '単語を追加' : '単語の詳細'}</h1><span class="grow"></span>

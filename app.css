@@ -1031,3 +1031,4 @@ dialog { border-radius: 16px; }
 /* selected state is shown by more than colour: bold text */
 .chips button.on, .tgl.on, .seg button.on { font-weight: 700; }
 .seg button.on { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.wmore { height: 1px; }   /* end-of-list marker: more words are drawn when it comes near (1.11) */

@@ -1,5 +1,7 @@
 // Static content packs (JSON files in /content). Code and content are separate; packs are AI-made = 未検証.
 import { importPackWords } from './words.js';
+import { getMeta } from './db.js';
+import { COURSE_LANGS } from './langs.js';
 
 const cache = {};
 export async function loadPack(name) {
@@ -12,8 +14,12 @@ export async function seedContent() {
   for (const [file, key] of [['en-pack-v1', 'pack:en-v1'], ['es-v1', 'pack:es-v1'], ['zh-v1', 'pack:zh-v1']]) {
     try { n += await importPackWords(`./content-${file}.json`, key); } catch { /* offline first run: try next time */ }
   }
-  const { seedCourse, COURSE_LANGS } = await import('./course.js');
-  for (const l of COURSE_LANGS) { try { n += await seedCourse(l); } catch { /* next time */ } }
+  // the course code is loaded only while some course still has to be registered (normally just the first start)
+  const todo = []; for (const l of COURSE_LANGS) if (!(await getMeta(`course:${l}-v1`, false))) todo.push(l);
+  if (todo.length) {
+    const { seedCourse } = await import('./course.js');
+    for (const l of todo) { try { n += await seedCourse(l); } catch { /* next time */ } }
+  }
   return n;
 }
 // puzzles / visual items of the English pack, with stable ids

@@ -2,6 +2,8 @@
 // Words without `lang` are English (existing data is unchanged).
 import { getSetting, setSetting } from './db.js';
 
+export const COURSE_LANGS = ['es', 'zh-CN', 'zh-TW'];   // languages with the 入門コース
+
 export const LANGS = {
   en: { code: 'en', name: '英語', short: 'EN', ch: '英', speech: 'en-US', speechAlt: ['en-GB', 'en'], placeholder: '英語' },
   es: { code: 'es', name: 'スペイン語', short: 'ES', ch: '西', speech: 'es-MX', speechAlt: ['es-US', 'es-ES', 'es'], placeholder: 'スペイン語' },

@@ -13,7 +13,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.18.4';
+export const STUDIO_VERSION = '0.18.5';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -783,11 +783,11 @@ async function editorScreen(el, params) {
   // 1.17.4: the title bar (title・↶↷・⋯) stays on top too; the player controls stick right under it
   { const hd = $('header.top', el); hd?.classList.add('st-edhead'); const fit = () => el.style.setProperty('--edh', `${hd?.offsetHeight || 0}px`); fit(); try { new ResizeObserver(fit).observe(hd); } catch {} }
   // 1.17.4: show all / only the lines not matched to the script yet / only the matched lines
-  const VIEWS = { all: { t: '全', d: 'すべて表示' }, todo: { t: '未', d: '未照合だけ（照合済みはたたむ）' }, done: { t: '済', d: '照合済みだけ' } };
+  const VIEWS = { all: { t: '全', d: 'すべて表示' }, todo: { t: '未', d: '未照合だけ（照合済みはたたむ）' }, done: { t: '済', d: '照合済みだけ' }, rest: { t: '残', d: '照合できなかった文字起こし・文字にできなかった部分だけ' } };
   let view = (() => { try { return localStorage.getItem('st-view') || 'all'; } catch { return 'all'; } })(); if (!VIEWS[view]) view = 'all';
   const drawViewB = () => { const b = $('#viewB', el); b.innerHTML = `<span class="st-vico">☰</span><b>${VIEWS[view].t}</b>`; b.classList.toggle('on', view !== 'all'); b.title = VIEWS[view].d; };
   drawViewB();
-  $('#viewB', el).onclick = () => { view = { all: 'todo', todo: 'done', done: 'all' }[view]; try { localStorage.setItem('st-view', view); } catch {} drawViewB(); toast(VIEWS[view].d, 1500); drawList(); };
+  $('#viewB', el).onclick = () => { view = { all: 'todo', todo: 'done', done: 'rest', rest: 'all' }[view]; try { localStorage.setItem('st-view', view); } catch {} drawViewB(); toast(VIEWS[view].d, 1500); drawList(); };
   // play only the chosen sound track (screen recordings: app sound and microphone are separate tracks; never mixed)
   vid.addEventListener('loadedmetadata', () => { const at = vid.audioTracks, a = srcs[vid.dataset.src]?.audio; if (at && at.length > 1) { const k = a?.index ?? 0; for (let i = 0; i < at.length; i++) at[i].enabled = i === k; } });
   vid.addEventListener('error', () => { const s0 = srcs[vid.dataset.src]; logErr(`再生できません（コード${vid.error?.code}・${s0?.name}・${s0?.mime || '?'}・${s0?.codec || '元のまま'}）`); });
@@ -890,7 +890,8 @@ async function editorScreen(el, params) {
     $('#info', el).textContent = `${blocks.length}項目${selectMode ? `・選択 ${rs.length}範囲 ${sel.size}項目` : ''}${(set.undo || []).length ? `・元に戻せる操作 ${set.undo.length}` : ''}`;
     const base = onlySel ? blocks.filter((b) => sel.has(b.id)) : blocks;
     const filtering = view !== 'all' && !selectMode && !arrange;
-    const shown = !filtering ? base : view === 'done' ? base.filter((b) => b.aligned) : base.filter((b) => !b.aligned);
+    const isRest = (b) => !b.aligned && b.segments.length && (b.asr || !b.text.trim());   // left over from transcription / matching
+    const shown = !filtering ? base : view === 'done' ? base.filter((b) => b.aligned) : view === 'rest' ? base.filter(isRest) : base.filter((b) => !b.aligned);
     // "未" view: each run of matched lines becomes one folded line (tap = show all)
     const folds = new Map();
     if (filtering && view === 'todo') { let run = 0, first = null; const flush = (nextId) => { if (run) folds.set(nextId ?? '__end', { n: run, from: first }); run = 0; first = null; };
@@ -905,7 +906,16 @@ async function editorScreen(el, params) {
         <span class="grow st-txt" data-play="${b.id}"><small class="muted">${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)} ${badges}</small>
           ${b.label ? `<b class="small">${esc(b.label)}</b>` : ''}<span class="st-en2">${holeHTML(b) || `<span class="muted">（英文なし${b.label ? '・✎で追加' : ''}）</span>`}</span><span class="st-ja2">${esc(b.ja || '')}</span></span>
         ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
-    })()).join('') + (folds.has('__end') ? foldHTML(folds.get('__end')) : '') || `<p class="empty">${filtering ? (view === 'done' ? '照合済みの行はまだありません' : '未照合の行はありません（すべて照合済み）') : '項目がありません'}</p>`;
+    })()).join('') + (folds.has('__end') ? foldHTML(folds.get('__end')) : '') || `<p class="empty">${filtering ? (view === 'done' ? '照合済みの行はまだありません' : view === 'rest' ? '残っている文字起こしはありません' : '未照合の行はありません（すべて照合済み）') : '項目がありません'}</p>`;
+    if (filtering && view === 'rest' && shown.length) {
+      list.insertAdjacentHTML('afterbegin', `<div class="notice row small"><span class="grow">スクリプトと照合できなかった文字起こし・文字にできなかった部分：${shown.length}行</span><button class="btn sm danger" id="restDel">すべて削除</button></div>`);
+      $('#restDel', list).onclick = async () => {
+        if (!(await confirmDialog({ title: `${shown.length}行を削除`, body: '<p class="small">音声ファイル自体は消えません（ほかの行で使っていなければ「容量の整理」で消せます）。↶で戻せます。</p>', okLabel: '削除する', danger: true }))) return;
+        const ids = new Set(shown.map((b) => b.id));
+        await run('残りの文字起こしを削除', { blocks: shown.map((b) => ({ ...b, deleted: true })), order: set.order.filter((id) => !ids.has(id)) });
+        toast(`${ids.size}行を削除しました（↶で戻せます）`, 2500);
+      };
+    }
     $$('[data-unfold]', list).forEach((x) => (x.onclick = () => { view = 'all'; try { localStorage.setItem('st-view', view); } catch {} drawViewB(); drawList(); }));
     $('#undoB', el).disabled = !(set.undo || []).length; $('#redoB', el).disabled = !(set.redo || []).length;
     const nScript = scriptLines().length, nAudio = blocks.filter((b) => b.segments.length && !b.aligned).length;
@@ -1377,9 +1387,16 @@ async function editorScreen(el, params) {
     crumb(`照合：スクリプト${sl.length}行・音声の行${heard.length}`);
     const bySrc = new Map(); for (const b of heard) { const k = b.segments[0].sourceId; if (!bySrc.has(k)) bySrc.set(k, []); bySrc.get(k).push(b); }
     let remaining = sl.slice(); const changed = new Map(), del = new Set(); let matched = 0, total = 0;
+    // 1.17.5: the recording is matched against the WHOLE script, lines already matched included. A recording that overlaps
+    // what is already matched (recorded again from a bit earlier) used to find too few matching words and fail completely.
+    // Lines that already have their sound are only used as landmarks: they are not changed.
+    const isAnchor = (b) => b.aligned && b.text.trim() && b.segments.length;
     for (const [sid, list0] of bySrc) {
       const cues = list0.slice().sort((a, b) => a.segments[0].start - b.segments[0].start).map((b) => ({ id: b.id, start: b.segments[0].start, end: b.segments[0].end, text: b.text }));
-      const r = alignScript(remaining.map((b) => ({ id: b.id, text: b.text })), cues);
+      const rem = new Set(remaining.map((b) => b.id));
+      const lines = set.order.map((id) => byId[id]).filter((b) => b && (rem.has(b.id) || (isAnchor(b) && !changed.has(b.id))));
+      const r = alignScript(lines.map((b) => ({ id: b.id, text: b.text })), cues);
+      for (const id of [...r.times.keys()]) if (!rem.has(id)) r.times.delete(id);   // landmark lines keep their sound
       matched += r.matched; total += r.total;
       for (const [id, t] of r.times) {
         const b = byId[id], n = tokensOf(b.text).length;
@@ -1388,8 +1405,16 @@ async function editorScreen(el, params) {
       r.covered.forEach((id) => del.add(id));
       remaining = remaining.filter((b) => !r.times.has(b.id));
     }
+    if (!changed.size && del.size) {   // everything heard is already matched (the same part recorded again)
+      if (await confirmDialog({ title: 'すでに照合済みの部分でした', body: `<p>この音声の文字起こしは、すでに音声の付いているスクリプトの行と同じ内容でした（重なり）。</p><p class="small">重なった文字起こし ${del.size}行を削除しますか？（↶で戻せます）</p>`, okLabel: '削除する' }))
+        await run('重なった文字起こしを削除', { blocks: [...del].map((id) => ({ ...byId[id], deleted: true })), order: set.order.filter((id) => !del.has(id)) });
+      return;
+    }
     if (!changed.size) {
-      return confirmDialog({ title: '照合できませんでした', body: `<p>音声の文字起こしと一致する部分が、スクリプトの中に見つかりませんでした。</p><p class="hint">別の教材の音声か、スクリプトの範囲外の音声かもしれません。文字起こしの精度が低すぎる場合も一致しません。</p>`, okLabel: '閉じる', cancelLabel: null });
+      crumb(`照合0行：認識語${total}・一致${matched}`);
+      return confirmDialog({ title: '照合できませんでした', body: `<p>音声の文字起こしと一致する部分が、スクリプトの中に見つかりませんでした。</p><p class="hint">別の教材の音声か、スクリプトの範囲外の音声かもしれません。文字起こしの精度が低すぎる場合も一致しません。</p>
+        <p class="small muted">調べた文字起こし（${heard.length}行・${[...new Set(heard.map((b) => srcs[b.segments[0].sourceId]?.name || '?'))].map(esc).join('、')}）：<br>「${esc(heard.slice(0, 4).map((b) => b.text).join(' / ').slice(0, 160))}…」</p>
+        <p class="hint">内容が英文になっていない・同じ短い言葉の繰り返しの場合は、別の音声トラック（マイク側など）を文字にしています。「⋯」→ 音声トラックの選択で切り替えてから、もう一度文字起こししてください。</p>`, okLabel: '閉じる', cancelLabel: null });
     }
     // recognised lines that overlap a timed script line (same file) for most of their length, or that repeat
     // script lines already timed by another recording, are not kept (no double lines like "Almost there?" / "Oh, most there?")

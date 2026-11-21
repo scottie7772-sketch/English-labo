@@ -104,3 +104,9 @@ header.top.st-edhead ~ .st-stick, header.top.st-edhead ~ * .st-stick { top: var(
 .st-trk .sel { position: absolute; top: 0; bottom: 0; background: rgba(240,190,60,.28); border-top: 3px solid #f0be3c; border-bottom: 3px solid #f0be3c; }
 .st-trk .h { position: absolute; top: -4px; width: 22px; height: 38px; margin-left: -11px; border-radius: 6px; background: #f0be3c; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
 .st-trk .h::after { content: ''; position: absolute; left: 9px; top: 11px; width: 4px; height: 16px; border-radius: 2px; background: rgba(0,0,0,.45); }
+/* 1.17.9: 前後をカット: big, evenly spaced buttons (taps were landing on the wrong button) */
+.st-cutrow { display: flex; flex-direction: column; gap: 8px; }
+.st-cutgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.st-cutgrid .btn, .st-cutrow .btn.sm { min-height: 42px; touch-action: manipulation; }
+.st-recrow { gap: 6px; padding-left: 28px; }
+.st-recrow .btn.xs { min-height: 34px; min-width: 52px; touch-action: manipulation; }

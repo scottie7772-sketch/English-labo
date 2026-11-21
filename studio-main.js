@@ -13,7 +13,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.18.8';
+export const STUDIO_VERSION = '0.18.9';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -218,8 +218,9 @@ async function importScreen(el, params) {
   let sets = null, storeMode = 'store', groupMode = 'file', videoQ = (() => { try { return localStorage.getItem('st-quality') || 'std'; } catch { return 'std'; } })(), autoTrimOn = (() => { try { return localStorage.getItem('st-autoTrim') !== '0'; } catch { return true; } })();
   // 1.17.8: the screen-recording start sound has its own cut (a fixed length from the start, measured 0.45 s), apart from the automatic cut
   let recOn = (() => { try { return localStorage.getItem('st-recOn') !== '0'; } catch { return true; } })();
-  let recCut = (() => { try { const v = +localStorage.getItem('st-recCut'); return v > 0 ? v : 0.45; } catch { return 0.45; } })();
-  const trimOpt = () => (autoTrimOn || recOn ? { auto: autoTrimOn, rec: recOn ? recCut : 0 } : false);   // both off → the file as it is
+  // 1.17.9: start and end are set separately (defaults measured by the user: 0.52 s / 0.30 s)
+  let recCut = recCutGet('S'), recEnd = recCutGet('E');
+  const trimOpt = () => (autoTrimOn || recOn ? { auto: autoTrimOn, rec: recOn ? recCut : 0, recE: recOn ? recEnd : 0 } : false);   // both off → the file as it is
   const toSet = params?.get('to') ? await sdb.get('sets', params.get('to')) : null;   // add to an existing set
   el.innerHTML = `${head(toSet ? `「${toSet.title}」に追加` : '一括登録', toSet ? `set?id=${toSet.id}` : 'sets')}
     ${toSet ? `<div class="notice stack small"><b>教材「${esc(toSet.title)}」に追加します。</b>同じ教材の続きの音声や、スクリプト（時刻なしのテキスト）を選んでください。追加したあと「文字起こし→照合」で、音声とスクリプトの位置を合わせます。</div>` : ''}
@@ -341,7 +342,9 @@ async function importScreen(el, params) {
         <label class="chk"><input type="radio" name="vq" value="orig" ${videoQ === 'orig' ? 'checked' : ''}> 元のまま（動画の映像も残す・圧縮しない）</label>
         <small class="muted">圧縮すると動画は音声だけになります。圧縮できなかったファイルは元のまま保存し、結果に表示します。</small>` : ''}
         ${needBytes ? `<small class="muted">必要な容量：約${fmtSize(storeMode === 'store' && TIERS[videoQ] ? inc.reduce((a, x) => a + Math.min(x.media.file.size, (x.media.duration || 0) * bytesPerMin(videoQ) / 60), 0) : needBytes)}</small>` : ''}</div>
-      <div class="row wrap"><label class="chk grow"><input type="checkbox" id="rec" ${recOn ? 'checked' : ''}> 画面収録音をカット（始め ${recCut.toFixed(2)}秒）</label>${recOn ? `<button type="button" class="btn xs" data-rc="-0.05">−0.05</button><button type="button" class="btn xs" data-rc="0.05">＋0.05</button>` : ''}</div>
+      <label class="chk"><input type="checkbox" id="rec" ${recOn ? 'checked' : ''}> 画面収録音をカット</label>
+      ${recOn ? `<div class="row wrap st-recrow"><span class="small">始め ${recCut.toFixed(2)}秒</span><button type="button" class="btn xs" data-rc="S:-0.01">−0.01</button><button type="button" class="btn xs" data-rc="S:0.01">＋0.01</button><button type="button" class="btn xs" data-rc="S:-0.05">−0.05</button><button type="button" class="btn xs" data-rc="S:0.05">＋0.05</button></div>
+      <div class="row wrap st-recrow"><span class="small">終わり ${recEnd.toFixed(2)}秒</span><button type="button" class="btn xs" data-rc="E:-0.01">−0.01</button><button type="button" class="btn xs" data-rc="E:0.01">＋0.01</button><button type="button" class="btn xs" data-rc="E:-0.05">−0.05</button><button type="button" class="btn xs" data-rc="E:0.05">＋0.05</button><button type="button" class="btn xs ghost" id="rcReset">初期値に戻す</button></div>` : ''}
       <label class="chk"><input type="checkbox" id="atr" ${autoTrimOn ? 'checked' : ''}> 前後の無音・音を自動でカット</label>
       ${!autoTrimOn && !recOn ? '<small class="muted">どちらも外すと、カットせずに元の長さのまま取り込みます。</small>' : ''}
       ${autoTrimOn || recOn ? `<label class="chk"><input type="checkbox" id="drc" ${dropCutSetting() ? 'checked' : ''}> カットした部分（元の前後）は保存しない（容量節約・元に戻せません）</label>` : ''}
@@ -361,7 +364,8 @@ async function importScreen(el, params) {
     $$('input[name=vq]', el).forEach((r) => (r.onchange = () => { videoQ = r.value; try { localStorage.setItem('st-quality', videoQ); } catch {} draw(); }));
     $('#atr', el).onchange = (e) => { autoTrimOn = e.target.checked; try { localStorage.setItem('st-autoTrim', autoTrimOn ? '1' : '0'); } catch {} draw(); };
     $('#rec', el).onchange = (e) => { recOn = e.target.checked; try { localStorage.setItem('st-recOn', recOn ? '1' : '0'); } catch {} draw(); };
-    $$('[data-rc]', el).forEach((b) => (b.onclick = () => { recCut = Math.max(0.05, Math.min(3, Math.round((recCut + +b.dataset.rc) * 100) / 100)); try { localStorage.setItem('st-recCut', String(recCut)); } catch {} draw(); }));
+    $$('[data-rc]', el).forEach((b) => (b.onclick = () => { const [k, d] = b.dataset.rc.split(':'); const v = Math.max(0, Math.min(3, Math.round(((k === 'S' ? recCut : recEnd) + +d) * 100) / 100)); if (k === 'S') recCut = v; else recEnd = v; recCutSet(k, v); draw(); }));
+    $('#rcReset', el)?.addEventListener('click', () => { recCut = REC_DEF.S; recEnd = REC_DEF.E; recCutSet('S', recCut); recCutSet('E', recEnd); draw(); });
     $('#drc', el)?.addEventListener('change', (e) => setDropCut(e.target.checked));
     $('#gm', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { groupMode = v; draw(); } };
     $('#incAll', el).onclick = () => { sets.forEach((s) => (s.include = true)); draw(); };
@@ -445,8 +449,14 @@ async function findEdges(src, blob, D, a16 = null, opt = null) {
   // (start only: the stop sound is not in the recording — on a real recording the speech runs to the very end)
   const rc = opt ? opt.rec || 0 : isScreenRec(src.name) ? dc : 0;   // import: the user's setting; elsewhere: screen recordings only
   if (rc > 0 && st.cut < rc) st = { cut: rc, why: `画面収録音 ${rc}秒` };
+  const re = opt?.recE || 0; if (re > 0 && en.cut < re) en = { cut: re, why: `画面収録音 ${re}秒` };
   return { start: +st.cut.toFixed(2), end: +(D - en.cut).toFixed(2), whyStart: st.why, whyEnd: en.why, duration: D };
 }
+// screen-recording sound: seconds cut at the start / end (import screen and the 前後をカット dialog share them)
+const REC_DEF = { S: 0.52, E: 0.30 };
+const fmt2 = (t) => { t = Math.max(0, +t || 0); return `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, '0')}`; };
+const recCutGet = (k) => { try { const v = localStorage.getItem('st-rec' + k); return v != null && v !== '' && !isNaN(+v) ? +v : REC_DEF[k]; } catch { return REC_DEF[k]; } };
+const recCutSet = (k, v) => { try { localStorage.setItem('st-rec' + k, String(v)); } catch {} };
 const dropCutSetting = () => { try { return localStorage.getItem('st-dropCut') === '1'; } catch { return false; } };
 const setDropCut = (v) => { try { localStorage.setItem('st-dropCut', v ? '1' : '0'); } catch {} };
 // Remove the parts outside [a, b] from the saved file itself (cannot be undone). Sound only: a video is turned into its sound.
@@ -703,8 +713,9 @@ async function appendToSet(setId, groups, mode, trimEdges = false, onStep = () =
 }
 // 1.17.8: trim = { auto, rec } from the import screen. auto: look for sounds / silence at both ends; rec: always cut that much at the start
 async function edgesFor(src, dur, a16, trim) {
-  if (trim.auto) return findEdges(src, src.stored ? src.blob : sessionFiles.get(src.id), dur, a16, { rec: trim.rec || 0 });
-  return trim.rec ? { start: Math.min(trim.rec, dur - 1), end: dur, whyStart: `画面収録音 ${trim.rec}秒`, whyEnd: '', duration: dur } : { start: 0, end: dur, whyStart: '', whyEnd: '', duration: dur };
+  if (trim.auto) return findEdges(src, src.stored ? src.blob : sessionFiles.get(src.id), dur, a16, { rec: trim.rec || 0, recE: trim.recE || 0 });
+  const a = Math.min(trim.rec || 0, dur - 1), b = +Math.max(a + 0.5, dur - (trim.recE || 0)).toFixed(2);
+  return { start: a, end: b, whyStart: a ? `画面収録音 ${a}秒` : '', whyEnd: b < dur ? `画面収録音 ${trim.recE}秒` : '', duration: dur };
 }
 async function buildItems(setId, group, mode, trimEdges = false, onStep = () => {}) {
   const blocks = [], tracks = [];
@@ -1617,21 +1628,28 @@ async function editorScreen(el, params) {
   }
   async function trimDialog() {
     const e = edgesOf(); if (!e) return toast('音声のある項目がありません');
-    let st = e.first.segments[0].start, en = e.last.segments.at(-1).end;
+    let st = e.first.segments[0].start, en = e.last.segments.at(-1).end; const st0 = st, en0 = en;   // reset = the position when the dialog opened
     const dlg = $('#dialog'); await new Promise((q) => setTimeout(q, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
     const draw = () => {
       dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>前後をカット</h3><p class="small">教材の始まりと終わりを決めます。元のファイルは変えません（↶で戻せます）。</p>
         <button type="button" class="btn" id="tAuto">自動で見つける（画面収録の音・無音）</button>
-        <div class="row"><span class="small grow">画面収録の始めで必ず切る長さ（録画開始の音）</span><button type="button" class="btn xs" id="tDef">${defaultCut() ? `始め${defaultCut()}秒` : '切らない'}</button></div>
-        <div class="st-segrow"><b>開始 ${fmt(st)}</b><div class="row"><button type="button" class="btn xs" data-d="s:-0.5">−0.5</button><button type="button" class="btn xs" data-d="s:-0.1">−0.1</button><button type="button" class="btn xs" data-d="s:0.1">＋0.1</button><button type="button" class="btn xs" data-d="s:0.5">＋0.5</button><button type="button" class="btn xs" id="sNow">今の位置</button></div><button type="button" class="btn sm" id="sPlay">▶︎ 開始から3秒聞く</button></div>
-        <div class="st-segrow"><b>終了 ${fmt(en)}</b><div class="row"><button type="button" class="btn xs" data-d="e:-0.5">−0.5</button><button type="button" class="btn xs" data-d="e:-0.1">−0.1</button><button type="button" class="btn xs" data-d="e:0.1">＋0.1</button><button type="button" class="btn xs" data-d="e:0.5">＋0.5</button><button type="button" class="btn xs" id="eNow">今の位置</button></div><button type="button" class="btn sm" id="ePlay">▶︎ 終了の3秒前から聞く</button></div>
+        <button type="button" class="btn" id="tRec">画面収録音の秒数で切る（始め ${recCutGet('S')}秒・終わり ${recCutGet('E')}秒）</button>
+        <div class="st-segrow st-cutrow"><div class="row"><b class="grow">開始 <span id="sLbl">${fmt2(st)}</span></b><button type="button" class="btn sm ghost" id="sReset">リセット</button></div>
+          <div class="st-cutgrid"><button type="button" class="btn sm" data-d="s:-0.5">−0.5</button><button type="button" class="btn sm" data-d="s:-0.1">−0.1</button><button type="button" class="btn sm" data-d="s:-0.01">−0.01</button><button type="button" class="btn sm" data-d="s:0.01">＋0.01</button><button type="button" class="btn sm" data-d="s:0.1">＋0.1</button><button type="button" class="btn sm" data-d="s:0.5">＋0.5</button></div>
+          <div class="row"><button type="button" class="btn sm" id="sNow">今の位置</button><button type="button" class="btn sm grow" id="sPlay">▶︎ 開始から3秒聞く</button></div></div>
+        <div class="st-segrow st-cutrow"><div class="row"><b class="grow">終了 <span id="eLbl">${fmt2(en)}</span></b><button type="button" class="btn sm ghost" id="eReset">リセット</button></div>
+          <div class="st-cutgrid"><button type="button" class="btn sm" data-d="e:-0.5">−0.5</button><button type="button" class="btn sm" data-d="e:-0.1">−0.1</button><button type="button" class="btn sm" data-d="e:-0.01">−0.01</button><button type="button" class="btn sm" data-d="e:0.01">＋0.01</button><button type="button" class="btn sm" data-d="e:0.1">＋0.1</button><button type="button" class="btn sm" data-d="e:0.5">＋0.5</button></div>
+          <div class="row"><button type="button" class="btn sm" id="eNow">今の位置</button><button type="button" class="btn sm grow" id="ePlay">▶︎ 終了の3秒前から聞く</button></div></div>
         <label class="chk"><input type="checkbox" id="tDrop" ${dropCutSetting() ? 'checked' : ''}> カットした部分は保存しない（元に戻せません）</label>
         <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">保存</button></div></form>`;
       $('#tDrop', dlg).onchange = (ev) => setDropCut(ev.target.checked);
-      $('#tDef', dlg).onclick = () => { const L = [0, 0.45, 0.5, 0.9, 1.2, 1.5, 2]; const nx = L[(L.indexOf(defaultCut()) + 1) % L.length]; try { localStorage.setItem('st-defCut2', String(nx)); } catch {} draw(); };
-      $$('[data-d]', dlg).forEach((b) => (b.onclick = () => { const [k, d] = b.dataset.d.split(':'); const maxEnd = srcs[e.last.segments.at(-1).sourceId]?.duration || Infinity; if (k === 's') st = Math.min(en - 0.3, Math.max(0, +(st + +d).toFixed(2))); else en = Math.min(maxEnd, Math.max(st + 0.3, +(en + +d).toFixed(2))); draw(); }));
-      $('#sNow', dlg).onclick = () => { st = +vid.currentTime.toFixed(2); draw(); };
-      $('#eNow', dlg).onclick = () => { en = +vid.currentTime.toFixed(2); draw(); };
+      const fileEnd = srcs[e.last.segments.at(-1).sourceId]?.duration || en0;
+      $('#tRec', dlg).onclick = () => { st = Math.min(en - 0.3, recCutGet('S')); en = Math.max(st + 0.3, +(fileEnd - recCutGet('E')).toFixed(2)); upd(); };
+      $('#sReset', dlg).onclick = () => { st = st0; upd(); }; $('#eReset', dlg).onclick = () => { en = en0; upd(); };
+      const upd = () => { $('#sLbl', dlg).textContent = fmt2(st); $('#eLbl', dlg).textContent = fmt2(en); };
+      $$('[data-d]', dlg).forEach((b) => (b.onclick = () => { const [k, d] = b.dataset.d.split(':'); const maxEnd = srcs[e.last.segments.at(-1).sourceId]?.duration || Infinity; if (k === 's') st = Math.min(en - 0.3, Math.max(0, +(st + +d).toFixed(2))); else en = Math.min(maxEnd, Math.max(st + 0.3, +(en + +d).toFixed(2))); upd(); }));
+      $('#sNow', dlg).onclick = () => { st = +vid.currentTime.toFixed(2); upd(); };
+      $('#eNow', dlg).onclick = () => { en = +vid.currentTime.toFixed(2); upd(); };
       const sid = e.first.segments[0].sourceId;
       $('#sPlay', dlg).onclick = () => playBlock({ segments: [{ sourceId: sid, start: st, end: st + 3 }] });
       $('#ePlay', dlg).onclick = () => playBlock({ segments: [{ sourceId: e.last.segments.at(-1).sourceId, start: Math.max(0, en - 3), end: en }] });

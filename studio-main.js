@@ -13,7 +13,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.19.1';
+export const STUDIO_VERSION = '0.19.2';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -981,7 +981,8 @@ async function editorScreen(el, params) {
         ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
     })()).join('') + (folds.has('__end') ? foldHTML(folds.get('__end')) : '') || `<p class="empty">${filtering ? (view === 'done' ? '照合済みの行はまだありません' : view === 'rest' ? '残っている文字起こしはありません' : '未照合の行はありません（すべて照合済み）') : '項目がありません'}</p>`;
     if (filtering && view === 'rest' && shown.length) {
-      list.insertAdjacentHTML('afterbegin', `<div class="notice row small"><span class="grow">スクリプトと照合できなかった文字起こし・文字にできなかった部分：${shown.length}行</span><button class="btn sm danger" id="restDel">すべて削除</button></div>`);
+      list.insertAdjacentHTML('afterbegin', `<div class="notice row small"><span class="grow">スクリプトと照合できなかった文字起こし・文字にできなかった部分：${shown.length}行</span><button class="btn sm" id="restRedo">起こし直す→照合</button><button class="btn sm danger" id="restDel">すべて削除</button></div>`);
+      $('#restRedo', list).onclick = () => redoAsr(shown, { thenAlign: true });
       $('#restDel', list).onclick = async () => {
         if (!(await confirmDialog({ title: `${shown.length}行を削除`, body: '<p class="small">音声ファイル自体は消えません（ほかの行で使っていなければ「容量の整理」で消せます）。↶で戻せます。</p>', okLabel: '削除する', danger: true }))) return;
         const ids = new Set(shown.map((b) => b.id));
@@ -1388,7 +1389,7 @@ async function editorScreen(el, params) {
   }
 
   // ---------- re-transcribe chosen lines (e.g. with a more accurate model), then compare old / new line by line ----------
-  async function redoAsr(list0) {
+  async function redoAsr(list0, { thenAlign = false } = {}) {
     const targets = list0.filter((b) => b.segments.length);
     if (!targets.length) return toast('音声のある行を選んでください');
     const ids = [...new Set(targets.flatMap((b) => b.segments.map((g) => g.sourceId)))];
@@ -1457,6 +1458,8 @@ async function editorScreen(el, params) {
       .filter((x) => x.use === 'new' && x.t && x.t !== x.r.b.text).map((x) => ({ ...ops.editText(byId[x.r.b.id] || x.r.b, x.t, (byId[x.r.b.id] || x.r.b).ja || ''), asr: true }));
     if (!ch.length) return toast('変更はありません');
     await run(`${ch.length}行を起こし直し`, { blocks: ch });
+    // 1.18.2: lines left over from matching, transcribed again: match them to the script right away
+    if (thenAlign && blocks.some((b) => b.script && !b.segments.length)) { toast('スクリプトと照合します…', 1500); await reload(); await runAlign(); }
   }
 
   // ---------- transcription (Whisper in the browser; audio never leaves the device) ----------
@@ -1465,7 +1468,13 @@ async function editorScreen(el, params) {
   async function runAsr() {
     const pool = sel.size ? ordered() : blocks;
     const targets = pool.filter((b) => !b.text.trim() && b.segments.length === 1);
-    if (!targets.length) return toast(sel.size ? '選んだ項目に、英文のない音声がありません' : '英文のない音声項目がありません（文字起こしは英文が空の項目だけに行います）', 4000);
+    if (!targets.length) {
+      // 1.18.2: everything has text already — offer to transcribe the left-over lines again (another accuracy) and match again
+      const rest = pool.filter((b) => !b.aligned && b.segments.length && (b.asr || !b.text.trim()));
+      if (rest.length && await confirmDialog({ title: '照合できなかった行を起こし直す', body: `<p>英文のない音声はもうありません。スクリプトと照合できなかった文字起こし ${rest.length}行を、別の精度でもう一度文字にして、照合し直しますか？</p><p class="small muted">次の画面で精度を選べます。結果は今の文と並べて確認できます。</p>`, okLabel: '起こし直す' })) return redoAsr(rest, { thenAlign: true });
+      if (rest.length) return;
+      return toast(sel.size ? '選んだ項目に、英文のない音声がありません' : '英文のない音声項目がありません（文字起こしは英文が空の項目だけに行います）', 4000);
+    }
     const bySrc = new Map(); for (const b of targets) { const id = b.segments[0].sourceId; if (!bySrc.has(id)) bySrc.set(id, []); bySrc.get(id).push(b.id); }
     if ([...bySrc.keys()].some((id) => !(srcs[id]?.stored ? srcs[id].blob : sessionFiles.get(id)))) return toast('動画・音声ファイルを選び直してから実行してください', 4000);
     const total = targets.reduce((a, b) => a + blockDur(b), 0);

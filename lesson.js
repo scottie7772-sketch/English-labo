@@ -35,12 +35,14 @@ export async function lessonScreen(el) {
       <div class="kpi"><b>${icon('flame', 18)} ${sk.n}</b><span>連続日数</span></div>
     </section>
     <p class="hint">復習期限が来た語を先に出し、残りを新しい語・学習中の語で埋めます。形式（意味を選ぶ・語句を選ぶ・穴埋め・聞いて意味・入力${lang === 'en' ? '・パズル・Verb Swipe・図解' : ''}）は習得の段階に合わせて変わり、まちがえた語は数問後に別の形式でもう一度出ます。</p>
-    <button class="btn primary big" id="go">${icon('lesson', 20)} レッスンを始める（${size}問）</button>
-    <button class="btn" id="rev" ${st.due ? '' : 'disabled'} style="margin-top:8px">復習だけ（${st.due}件）</button>
     <details class="card details"><summary>設定</summary>
       <div class="fgrp"><span>1レッスンの問題数</span><div class="seg" id="sz">${[8, 12, 15, 20].map((v) => `<button data-v="${v}" class="${size === v ? 'on' : ''}">${v}問</button>`).join('')}</div></div>
       <p class="hint">復習の間隔：まちがえた→当日中、正解→1日→3日→前回×2.5前後（ヒント・曖昧・遅い正解は短め）。予定日は単語の詳細画面で変更できます。</p>
-    </details>`;
+    </details>
+    <div class="actbar stack">
+      <button class="btn" id="rev" ${st.due ? '' : 'disabled'}>復習だけ（${st.due}件）</button>
+      <button class="btn primary big" id="go">${icon('lesson', 20)} レッスンを始める（${size}問）</button>
+    </div>`;
   $('#go', el).onclick = () => go('#lesson-run');
   $('#rev', el).onclick = () => go('#lesson-run?only=review');
   $('#sz', el).onclick = async (e) => { const v = +e.target.dataset.v; if (!v) return; await setSetting('lessonSize', v); lessonScreen(el); };
@@ -111,7 +113,7 @@ export async function lessonRun(el, params) {
   let i = 0, combo = 0;
 
   const frame = () => {
-    el.innerHTML = `<div class="qrun">
+    el.innerHTML = `<div class="qrun eye">
       <header class="qhead"><button class="xbtn" id="quit" aria-label="終了">${icon('close', 18)}</button><span class="qcenter"><b>${Math.min(res.length + 1, queue.length)} / ${queue.length}</b><small id="fmt"></small></span><span class="combo" id="combo">${combo >= 3 ? `${icon('flame', 16)}${combo}` : ''}</span></header>
       <div class="progress"><i style="width:${(res.length / queue.length) * 100}%"></i></div>
       <div id="q"></div><div id="fb"></div></div>`;
@@ -170,7 +172,7 @@ export async function lessonRun(el, params) {
         }, () => resolve(correct));
       };
       const choiceUI = (promptHTML, opts, lab, isRight, skills) => {
-        host.innerHTML = `<div class="lq">${promptHTML}<div class="choices">${opts.map((o, k) => `<button class="choice" data-k="${k}"><span class="ctx ${lab === 'head' ? 'tl' : ''}">${esc(lab === 'head' ? o.headword : allMeanings(o).join('、'))}</span></button>`).join('')}</div></div>`;
+        host.innerHTML = `<div class="lq lq-choice">${promptHTML}<div class="choices">${opts.map((o, k) => `<button class="choice" data-k="${k}"><span class="ctx ${lab === 'head' ? 'tl' : ''}">${esc(lab === 'head' ? o.headword : allMeanings(o).join('、'))}</span></button>`).join('')}</div></div>`;
         host.querySelector('.choices').onclick = (e) => {
           const b = e.target.closest('.choice'); if (!b || b.disabled) return;
           const o = opts[+b.dataset.k], correct = o === w;
@@ -220,7 +222,7 @@ export async function lessonRun(el, params) {
       <div class="donemark">${icon('check', 30)}<span>${res.length}問 ・ 1回目の正解 ${first.filter((r) => r.ok).length}/${first.length}</span></div>
       <section class="kpis"><div class="kpi"><b class="up">${ok}</b><span>正解</span></div><div class="kpi"><b class="down">${res.length - ok}</b><span>まちがい</span></div><div class="kpi"><b>${icon('flame', 18)} ${sk.n}</b><span>連続日数</span></div></section>
       <div class="card list">${res.map((r) => `<div class="rrow"><span class="mk ${r.ok ? 'ok' : 'ng'}">${r.ok ? '○' : '✕'}</span><span class="grow small">${esc(label(r.it))}${r.it.retry ? ' <span class="muted">（再出題）</span>' : ''}</span><span class="small muted">${FORMAT_JA[r.it.type === 'word' ? r.it.format : r.it.type]}</span></div>`).join('')}</div>
-      <div class="row" style="margin-top:12px"><a class="btn grow" href="#home">ホーム</a><a class="btn primary grow" href="#lesson-run?r=${Date.now()}">次のレッスン</a></div>`;
+      <div class="row actbar"><a class="btn grow" href="#home">ホーム</a><a class="btn primary grow" href="#lesson-run?r=${Date.now()}">次のレッスン</a></div>`;
   }
   next();
 }

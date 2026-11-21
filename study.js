@@ -3,7 +3,7 @@ import { db, uid, getSetting, setSetting, attemptsSince } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, speak, toEyeLine } from './ui.js';
 import { SKILL_LABELS, LEVEL_LABELS, effLevel, filterLevel, levelText, loadAllMastery, loadWordMastery } from './mastery.js';
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
-import { makeSwipeCard, swipeCardHTML, answerStripHTML, swipeMap, isOneHand, swipeHint, oneHandPadHTML, fitStage, fc2FaceHTML, fc2CardHTML, fitBig, fc2Setup, fc2Fit, fc2Voice } from './swipecard.js';
+import { makeSwipeCard, swipeCardHTML, answerStripHTML, swipeMap, isOneHand, swipeHint, oneHandPadHTML, fitStage } from './swipecard.js';
 import { icon } from './icons.js';
 import { L, curLang, langOf, compareAnswer, numToMarks, isZh } from './langs.js';
 
@@ -334,7 +334,7 @@ export async function sessionScreen(el, params) {
         <div class="qstage" id="fstage"></div>
         <div class="laststrip" id="last"></div>
         <p class="hint center">${oneHand ? swipeHint(map) : `タップで答え ・ ${knowRight ? '← わからない ・ → わかる' : '← わかる ・ → わからない'} ・ ↑曖昧`}</p>
-        ${oneHand ? '<button id="undo" hidden></button>' : `<div class="qbtns3">
+        ${oneHand ? oneHandPadHTML() : `<div class="qbtns3">
           <button class="btn qb ${knowRight ? 'dont' : 'know'}" data-r="${knowRight ? 'dont' : 'know'}"><b>←</b>${knowRight ? 'わからない' : 'わかる'}</button>
       <button class="btn qb vague" data-r="vague"><b>↑</b>曖昧</button>
       <button class="btn qb ${knowRight ? 'know' : 'dont'}" data-r="${knowRight ? 'know' : 'dont'}"><b>→</b>${knowRight ? 'わかる' : 'わからない'}</button>
@@ -350,12 +350,6 @@ export async function sessionScreen(el, params) {
       el.querySelectorAll('.qb[data-r]').forEach((b) => (b.onclick = () => { const c = el._flashCur; if (c && !c.ctl.done) c.ctl.commit(b.dataset.r); }));
       $('[data-flip]', el)?.addEventListener('click', () => { const c = el._flashCur; if (c && !c.ctl.done) c.flip(); });
       if ($('#qpad', el)) fitStage($('#fstage', el), $('#qpad', el));
-      if (oneHand) {   // 1.14 single-card design
-        const qr = $('.qrun', el);
-        el._voice = fc2Voice(qr, (t) => speak(t));
-        fc2Setup(qr, { info: () => $('#left', el).textContent, items: [{ label: '直前の回答を取り消す', run: () => flashUndo(), disabled: () => !undoStack.length }] });
-        fc2Fit($('#fstage', el));
-      }
       $('#say', el)?.addEventListener('click', () => speak(words[s.queue[idx]?.wordId]?.headword));
     }
     $('#left', el).textContent = `残り ${left}`;
@@ -363,11 +357,9 @@ export async function sessionScreen(el, params) {
     $('#pos', el).textContent = `${answeredN + 1} / ${s.queue.length}`;
     $('#undo', el).disabled = !undoStack.length;
     const stage = $('#fstage', el);
-    const fc2 = oneHand, voice = el._voice;
-    stage.insertAdjacentHTML('afterbegin', fc2 ? fc2CardHTML(fc2FaceHTML(w, q.direction, meanings)) : swipeCardHTML(front, knowRight));
+    stage.insertAdjacentHTML('afterbegin', swipeCardHTML(front, knowRight));
     const card = stage.firstElementChild;
     const st = { flipped: false, revealed: false, t0: performance.now() };
-    if (fc2) fitBig(card);
     st.flip = () => {
       st.flipped = !st.flipped;
       card.classList.add('flipping');
@@ -375,18 +367,16 @@ export async function sessionScreen(el, params) {
       if (st.flipped) { st.revealed = true; if (q.direction === 'ja2en') speak(w.headword); }
     };
     const qpad = $('#qpad', el);
-    if (fc2) st.flip = () => { st.flipped = !st.flipped; card.classList.toggle('revealed', st.flipped); if (st.flipped) { st.revealed = true; if (q.direction === 'ja2en') voice.tap(w.headword); } };
     st.ctl = makeSwipeCard(card, {
-      map, pads: fc2 ? [$('.qrun', el)] : qpad ? [qpad] : [], paper: fc2,
+      map, pads: qpad ? [qpad] : [],
       revealOnCommit: () => back,
-      onTap: fc2 ? (t) => { const sayEl = t?.closest?.('[data-say]'); if (sayEl) voice.tap(sayEl.classList.contains('fc2-audio') ? w.headword : sayEl.textContent); else st.flip(); } : () => {
+      onTap: () => {
         st.flipped = !st.flipped;
         card.classList.add('flipping');
         setTimeout(() => { $('.face', card).innerHTML = st.flipped ? back : front; card.classList.remove('flipping'); }, 90);
         if (st.flipped) { st.revealed = true; if (q.direction === 'ja2en') speak(w.headword); }
       },
       onCommit: (result) => {
-        if (fc2) voice.stop();
         if (s.answered[q.qid]) return;               // double-registration guard
         if (result === 'skip') {                     // 後回し: nothing is recorded; the question moves to the end of the session
           if (!s.queue.some((x, i) => i !== idx && !s.answered[x.qid] && words[x.wordId])) { toast('最後の1問なので後回しにできません', 1400); show(); return; }
@@ -419,8 +409,7 @@ export async function sessionScreen(el, params) {
       },
     });
     el._flashCur = st;
-    if (fc2) { if (q.direction !== 'ja2en') voice.auto(w.headword); }
-    else if (isAudio) speak(w.headword);
+    if (isAudio) speak(w.headword);
   }
 
   async function flashUndo() {

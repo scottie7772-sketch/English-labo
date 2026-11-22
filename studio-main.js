@@ -16,7 +16,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.19.7';
+export const STUDIO_VERSION = '0.19.7-dialog-test';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -1021,10 +1021,28 @@ async function editorScreen(el, params) {
   };
   raf = requestAnimationFrame(tick);
   cleanup = () => { cancelAnimationFrame(raf); vid.pause(); };
+  // The highlight follows the media clock, not just the last requested block.
+  // Keep explicit single-block/loop playback pinned to its requested subtitle;
+  // continuous playback may move to a later subtitle as soon as its audio starts.
+  // Overlapping ASR/script records are retained; this only chooses a display row.
   function blockAtTime() {
-    if (playing) return playing.b;
     const t = vid.currentTime, sid = vid.dataset.src;
-    return blocks.find((b) => b.segments.some((s) => s.sourceId === sid && t >= s.start && t < s.end)) || null;
+    if (!sid || !Number.isFinite(t)) return playing?.b || null;
+    if (pendingSegmentSeek || vid.seeking || seeking) return playing?.b || curBlock || null;
+    if (playing && !playing.cont) return playing.b;
+    const candidates = [];
+    for (const b of blocks) for (const s of b.segments) {
+      if (s.sourceId === sid && t >= s.start && t < s.end) {
+        candidates.push({ b, start: s.start, end: s.end });
+      }
+    }
+    if (!candidates.length) return playing?.b || null;
+    // When multiple records overlap, prefer the latest onset. For an exact
+    // onset tie, prefer the current block, then a script-aligned record.
+    candidates.sort((a, b) => b.start - a.start ||
+      Number(b.b === playing?.b) - Number(a.b === playing?.b) ||
+      Number(Boolean(b.b.aligned)) - Number(Boolean(a.b.aligned)));
+    return candidates[0].b;
   }
   let lastSubId = null;
   function drawSub() {
@@ -1748,27 +1766,54 @@ async function editorScreen(el, params) {
   }
 
   // Stored in the existing block records; survives closing/reopening the studio.
+  // Saved-results dialog is independent of the shared menu dialog.
+  // On iOS Safari a pending close event on #dialog could close a newly opened
+  // view or invoke a stale onclose callback. Do not reuse that element here.
   async function showStructureSaved() {
     await reload();
     const saved=blocks.filter(b=>b.segments?.length && (b.lineage?.op==='structure-align' || b.structureAlign?.method==='speech-first' || (set.structureAlignReceipt?.blockIds||[]).includes(b.id)))
       .sort((a,b)=>a.segments[0].start-b.segments[0].start);
-    const dlg=$('#dialog');
     const lastReceipt=set.structureAlignReceipt;
     const draft=await sdb.get('sets',set.id).then(x=>x?.speechFirstDraft).catch(()=>null);
-    dlg.innerHTML=`<form method="dialog" class="dlg stack"><h3>発話区切りの保存結果（${saved.length}件）</h3>
-      <p class="small">${lastReceipt ? `前回の保存記録：${esc(new Date(lastReceipt.at).toLocaleString('ja-JP'))}・選択${lastReceipt.selected}件／書込${lastReceipt.written}件／確認${lastReceipt.verified}件。` : 'この教材の保存記録はありません。'} 現在この教材に保存されている照合済みの行です。▶で該当区間を再生し、「行へ」で一覧内の位置を表示します。元音声やスクリプトは変更しません。</p>
-      <div class="stack" style="max-height:57vh;overflow:auto">${draft?.length?`<p class="small">未確定の解析候補 ${draft.length}件があります。再解析せずに「⋯ → 発話区切りの候補を再表示」で確認できます。</p>`:''}${saved.length?saved.map((b,i)=>`<div class="card stack" style="padding:10px"><div>${esc(b.text)}</div><small class="muted">${fmt(b.segments[0].start)}〜${fmt(b.segments.at(-1).end)}・${esc(srcs[b.segments[0].sourceId]?.name||'音声ファイル')}</small><div class="row"><button type="button" class="btn sm" data-saved-play="${i}">▶ 再生</button><button class="btn sm ghost" value="jump:${i}">行へ移動</button></div></div>`).join(''):'<p class="muted">保存済みの発話区切り照合結果は見つかりません。以前の保存が反映されなかった可能性があります。</p>'}</div>
-      <button class="btn ghost" value="cancel">閉じる</button></form>`;
-    $$('[data-saved-play]',dlg).forEach(btn=>btn.onclick=()=>playBlock(saved[+btn.dataset.savedPlay]));
-    dlg.returnValue='';
-    dlg.onclose=()=>{
-      const v=dlg.returnValue;
-      if(!v.startsWith('jump:'))return;
-      const b=saved[Number(v.slice(5))];if(!b)return;
-      view='all';onlySel=false;drawList();
+    const dlg=document.createElement('dialog');
+    dlg.className='st-speech-pick';
+    dlg.style.cssText='max-width:min(94vw,700px);max-height:85dvh;overflow:auto;padding:20px;border:0;border-radius:18px;background:#292f49;color:#fff';
+    const norm=t=>(t||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+    const possibleDuplicates=new Map();
+    // A review hint only: never delete or merge a record automatically.
+    for(const b of saved){
+      const g=b.segments[0];
+      const matches=blocks.filter(x=>x.id!==b.id && x.segments?.length && norm(x.text)===norm(b.text) && norm(b.text) && x.segments.some(y=>y.sourceId===g.sourceId && Math.min(y.end,g.end)-Math.max(y.start,g.start)>0.12));
+      if(matches.length)possibleDuplicates.set(b.id,matches.length);
+    }
+    dlg.innerHTML=`<div class="dlg stack"><h3>発話区切りの保存結果（${saved.length}件）</h3>
+      <p class="small">${lastReceipt ? `前回の保存記録：${esc(new Date(lastReceipt.at).toLocaleString('ja-JP'))}・選択${lastReceipt.selected}件／書込${lastReceipt.written}件／確認${lastReceipt.verified}件。` : 'この教材の保存記録はありません。'} 保存済みの照合結果です。▶で再生し、「行へ」で一覧に戻ります。元音声やスクリプトは変更しません。</p>
+      <div class="stack" style="max-height:57vh;overflow:auto">${draft?.length?`<p class="small">未確定の解析候補 ${draft.length}件があります。「⋯ → 発話区切りの候補を再表示」で確認できます。</p>`:''}${saved.length?saved.map((b,i)=>`<div class="card stack" style="padding:10px"><div>${esc(b.text)}</div><small class="muted">${fmt(b.segments[0].start)}〜${fmt(b.segments.at(-1).end)}・${esc(srcs[b.segments[0].sourceId]?.name||'音声ファイル')}</small>${possibleDuplicates.has(b.id)?'<small class="muted">同じ文字列・重複区間の候補あり（復唱の可能性／削除しません）</small>':''}<div class="row"><button type="button" class="btn sm" data-saved-play="${i}">▶ 再生</button><button type="button" class="btn sm ghost" data-saved-jump="${i}">行へ移動</button></div></div>`).join(''):'<p class="muted">保存済みの発話区切り照合結果は見つかりません。</p>'}</div>
+      <button type="button" class="btn ghost" data-saved-close>閉じる</button></div>`;
+    document.body.appendChild(dlg);
+    let disposed=false;
+    const finish=()=>{
+      if(disposed)return;
+      disposed=true;
+      if(dlg.open)dlg.close();
+      dlg.remove();
+    };
+    dlg.addEventListener('close',finish,{once:true});
+    dlg.querySelector('[data-saved-close]').onclick=finish;
+    $$('[data-saved-play]',dlg).forEach(btn=>btn.onclick=()=>{
+      const b=saved[Number(btn.dataset.savedPlay)];
+      if(!b)return;
+      try { const result=playBlock(b); if(result?.catch)result.catch(e=>toast('再生できません：'+(e?.message||e))); }
+      catch(e){toast('再生できません：'+(e?.message||e));}
+    });
+    $$('[data-saved-jump]',dlg).forEach(btn=>btn.onclick=()=>{
+      const b=saved[Number(btn.dataset.savedJump)];
+      finish();
+      if(!b)return;
+      view='all';onlySel=false;drawViewB();drawList();
       const row=list.querySelector(`[data-id="${b.id}"]`);
       if(row){row.scrollIntoView({block:'center'});row.classList.add('cur');}
-    };
+    });
     dlg.showModal();
   }
 

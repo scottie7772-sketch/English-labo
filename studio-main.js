@@ -946,19 +946,37 @@ async function editorScreen(el, params) {
     return m;
   }
   let estMap = new Map();
+  // A no-audio script row is a navigation marker, not a reason to restart.
+  // Keep the original rows and their saved timestamps untouched.
+  function nextPlayableFrom(b) {
+    const ids = set.order.filter((id) => byId[id]);
+    const at = ids.indexOf(b?.id);
+    for (let k = Math.max(0, at + 1); k < ids.length; k++) {
+      const row = byId[ids[k]];
+      if (row?.segments.length) return row;
+    }
+    return null;
+  }
   function playBlock(b, loop = false, cont = false, from = null) {
     ++playbackRequest;
     pendingSegmentSeek = null;
-    if (!b.segments.length) { const e = estMap.get(b.id); if (e && attach(e.sid, e.t)) { vid.pause(); playing = null; return toast(`音声なし・推定位置 ≈${fmt(e.t)}`, 1800); } return toast('この項目には音声区間がありません'); }
+    if (!b.segments.length) {
+      if (cont) {
+        const next = nextPlayableFrom(b);
+        if (next) { toast('音声なしの行を飛ばして次を再生', 1400); return playBlock(next, false, true); }
+        vid.pause(); playing = null; return toast('これ以降に再生できる音声はありません');
+      }
+      const e = estMap.get(b.id);
+      if (e && attach(e.sid, e.t)) { vid.pause(); playing = null; return toast(`音声なし・推定位置 ≈${fmt(e.t)}`, 1800); }
+      return toast('この項目には音声区間がありません');
+    }
     let i = 0;
     if (from != null) { const k = b.segments.findIndex((x) => x.sourceId === vid.dataset.src && from >= x.start && from < x.end - 0.05); if (k >= 0) i = k; else from = null; }
     playing = { b, i, loop, cont, range: null }; curBlock = b;
     startSeg(from);
   }
   function nextPlayable(b) {
-    const ids = set.order.filter((id) => byId[id]); let k = ids.indexOf(b.id);
-    while (++k < ids.length) { const n = byId[ids[k]]; if (n?.segments.length) return n; }
-    return null;
+    return nextPlayableFrom(b);
   }
   function startSeg(from = null) {
     const p = playing; if (!p) return;
@@ -2280,15 +2298,19 @@ async function editorScreen(el, params) {
   $('#pp', el).onclick = () => {
     if (!vid.paused) return vid.pause();
     if (playing) { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} return vid.play().catch(() => {}); }   // resume where it stopped
-    const b = (vid.dataset.src && blockAtTime()) || blocks.find((x) => x.segments.length);
-    if (b) return playBlock(b, false, true, vid.dataset.src ? vid.currentTime : null);
+    const at = vid.dataset.src && blockAtTime();
+    const b = (at?.segments.length ? at : nextPlayableFrom(curBlock)) || blocks.find((x) => x.segments.length);
+    if (b) return playBlock(b, false, true, b === at && vid.dataset.src ? vid.currentTime : null);
     if (!vid.dataset.src && set.sourceId) attach(set.sourceId); vid.play().catch(() => {});
   };
   vid.onplay = () => ($('#pp', el).textContent = icon('pause')); vid.onpause = () => ($('#pp', el).textContent = icon('play'));
   // after a seek: follow from the line at the new position (or play freely if there is none)
   const syncAt = (t) => {
     if (!playing) return;
-    const sid = vid.dataset.src; const b = blocks.find((x) => x.segments.some((g) => g.sourceId === sid && t >= g.start && t < g.end));
+    const sid = vid.dataset.src;
+    const matches = blocks.filter((x) => x.segments.some((g) => g.sourceId === sid && t >= g.start && t < g.end));
+    // In overlaps prefer a script-aligned row, without removing ASR evidence.
+    const b = matches.find((x) => x.aligned) || matches[0];
     if (b) { const i = b.segments.findIndex((g) => g.sourceId === sid && t >= g.start && t < g.end); playing = { b, i, loop: false, cont: true }; curBlock = b; } else playing = null;
   };
   const jump = (d) => { ++playbackRequest; pendingSegmentSeek = null; const t = Math.max(0, Math.min(vid.duration || Infinity, vid.currentTime + d)); vid.currentTime = t; syncAt(t); };

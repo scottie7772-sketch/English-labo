@@ -1726,6 +1726,29 @@ async function editorScreen(el, params) {
     if (thenAlign && blocks.some((b) => b.script && !b.segments.length)) { toast('スクリプトと照合します…', 1500); await reload(); await runAlign(); }
   }
 
+  // Stored in the existing block records; survives closing/reopening the studio.
+  async function showStructureSaved() {
+    await reload();
+    const saved=blocks.filter(b=>b.lineage?.op==='structure-align' && b.segments?.length)
+      .sort((a,b)=>a.segments[0].start-b.segments[0].start);
+    const dlg=$('#dialog');
+    dlg.innerHTML=`<form method="dialog" class="dlg stack"><h3>発話区切りの保存結果（${saved.length}件）</h3>
+      <p class="small">現在この教材に保存されている照合済みの行です。▶で該当区間を再生し、「行へ」で一覧内の位置を表示します。元音声やスクリプトは変更しません。</p>
+      <div class="stack" style="max-height:57vh;overflow:auto">${saved.length?saved.map((b,i)=>`<div class="card stack" style="padding:10px"><div>${esc(b.text)}</div><small class="muted">${fmt(b.segments[0].start)}〜${fmt(b.segments.at(-1).end)}・${esc(srcs[b.segments[0].sourceId]?.name||'音声ファイル')}</small><div class="row"><button type="button" class="btn sm" data-saved-play="${i}">▶ 再生</button><button class="btn sm ghost" value="jump:${i}">行へ移動</button></div></div>`).join(''):'<p class="muted">保存済みの発話区切り照合結果は見つかりません。以前の保存が反映されなかった可能性があります。</p>'}</div>
+      <button class="btn ghost" value="cancel">閉じる</button></form>`;
+    $$('[data-saved-play]',dlg).forEach(btn=>btn.onclick=()=>playBlock(saved[+btn.dataset.savedPlay]));
+    dlg.returnValue='';
+    dlg.onclose=()=>{
+      const v=dlg.returnValue;
+      if(!v.startsWith('jump:'))return;
+      const b=saved[Number(v.slice(5))];if(!b)return;
+      view='all';onlySel=false;drawList();
+      const row=list.querySelector(`[data-id="${b.id}"]`);
+      if(row){row.scrollIntoView({block:'center'});row.classList.add('cur');}
+    };
+    dlg.showModal();
+  }
+
   // Opt-in: boundaries first, independent ASR per utterance, then monotone script alignment.
   // Preview only: no ASR rows or script changes are persisted before explicit approval.
   async function importBySpeechStructure() {
@@ -1766,15 +1789,37 @@ async function editorScreen(el, params) {
     finally{tr?.close();lock?.release?.();if(dlg.open){dlg.onclose=null;dlg.close();}}
     if(cancelled)return toast('中止しました（データ変更なし）');
     if(!result.length)return confirmDialog({title:'安全な一致候補がありません',body:'発話区間は検出しましたが、認識結果とスクリプトの強い一致が得られませんでした。字幕は変更していません。短い単語や重複する例文は誤対応防止のため保留します。',okLabel:'閉じる',cancelLabel:null});
-    let selectedIds=null;
-    dlg.addEventListener('close',()=>{selectedIds=new Set([...dlg.querySelectorAll('.structPick:checked')].map(x=>x.value));},{once:true});
-    const confirmed=await confirmDialog({title:`照合候補 ${result.length}件（冒頭30発話）`,body:`<p>強く一致した候補だけを表示しています。未一致・繰り返し例文は変更しません。対応する英文をコピーして「⋯ → スクリプト全文を見る」の検索欄で探せます。</p><div class="stack" style="max-height:45vh;overflow:auto">${result.map(x=>`<label class="chk"><input type="checkbox" class="structPick" value="${esc(x.b.id)}" checked> ${esc(x.b.text.slice(0,85))}<br><small>${fmt(x.u.start)}〜${fmt(x.u.end)}・一致度 ${Math.round(x.score*100)}%</small></label>`).join('')}</div>`,okLabel:'選択した候補を保存',cancelLabel:'保存しない'});
-    if(!confirmed)return;
-    const ids=selectedIds||new Set();
-    // Capture checkbox selection on the dialog close event; never default to applying all.
-    if(!ids.size)return toast('選択を取得できなかったため変更しませんでした',4000);
-    const changes=result.filter(x=>ids.has(x.b.id)&&!byId[x.b.id]?.segments.length).map(({b,u})=>({ ...byId[b.id],segments:[{sourceId:chosen.id,start:u.start,end:u.end}],aligned:true,sync:'auto',lineage:{op:'structure-align',from:[`${b.id}@${b.rev}`],at:Date.now()} }));
-    if(changes.length)await run('発話区切りから照合', {blocks:changes});
+    // Read selections inside the dialog close handler, before another dialog can replace its DOM.
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>照合候補 ${result.length}件（冒頭30発話）</h3>
+      <p class="small">一致率は文字列の一致度です。保存後、実際の再生位置を確認してください。既存の音声付き行は変更しません。</p>
+      <div class="stack" style="max-height:48vh;overflow:auto">${result.map(x=>`<label class="chk"><input type="checkbox" class="structPick" value="${esc(x.b.id)}" checked> <span>${esc(x.b.text.slice(0,85))}<br><small>${fmt(x.u.start)}〜${fmt(x.u.end)}・一致度 ${Math.round(x.score*100)}%</small></span></label>`).join('')}</div>
+      <div class="row end"><button class="btn ghost" value="cancel">保存しない</button><button class="btn primary" value="apply">選択した候補を保存</button></div></form>`;
+    dlg.returnValue='';
+    const ids=await new Promise(resolve=>{
+      dlg.onclose=()=>resolve(dlg.returnValue==='apply' ? new Set([...dlg.querySelectorAll('.structPick:checked')].map(x=>x.value)) : null);
+      dlg.showModal();
+    });
+    if(!ids)return;
+    if(!ids.size)return toast('候補が選択されていません',3500);
+    // Verify the latest record, not a stale preview reference. Preserve every other field.
+    await reload();
+    const changes=result.filter(x=>ids.has(x.b.id)).map(({b,u,score})=>{
+      const latest=byId[b.id];
+      if(!latest || latest.segments.length || !set.order.includes(b.id))return null;
+      return {...latest,segments:[{sourceId:chosen.id,start:u.start,end:u.end}],aligned:true,sync:'auto',
+        lineage:{op:'structure-align',from:[`${latest.id}@${latest.rev}`],at:Date.now(),score}};
+    }).filter(Boolean);
+    if(!changes.length)return toast('保存できる未照合行がありません（既存の行は変更しません）',4500);
+    try {
+      await commit(set,'発話区切りから照合',{blocks:changes},srcs);
+      await reload();drawList();
+      const verified=changes.filter(x=>{
+        const b=byId[x.id],a=b?.segments?.[0],g=x.segments[0];
+        return b?.lineage?.op==='structure-align' && a?.sourceId===g.sourceId && Math.abs(a.start-g.start)<.01 && Math.abs(a.end-g.end)<.01;
+      });
+      await confirmDialog({title:'照合結果の保存確認',body:`<p><strong>${verified.length}/${changes.length}件</strong>を教材「${esc(set.title)}」のスクリプト行に保存し、再読み込みして確認しました。</p><p>「⋯ → 発話区切りの保存結果を見る」で保存した行と音声時刻を確認・再生できます。</p>${verified.length!==changes.length?'<p class="warn-text">一部を確認できませんでした。再処理せず保存結果一覧を確認してください。</p>':''}`,okLabel:'閉じる',cancelLabel:null});
+    }catch(e){toast('照合結果の保存失敗：'+(e?.message||String(e)),6500);}
+
   }
 
   // ---------- transcription (Whisper in the browser; audio never leaves the device) ----------
@@ -2134,6 +2179,7 @@ async function editorScreen(el, params) {
       <button class="btn" value="refine">音声位置を一括自動調整（試験版）</button>
       <button class="btn" value="realign">構造を使った再照合（プレビュー）</button>
       <button class="btn" value="structImport">発話を先に区切って照合（試験版）</button>
+      <button class="btn" value="structSaved">発話区切りの保存結果を見る</button>
       <button class="btn" value="mergeset">別の教材をこの教材にまとめる</button>
       <button class="btn" value="names">固有名詞をまとめて直す</button>
       <button class="btn" value="words">単語リストを作る</button>
@@ -2166,6 +2212,7 @@ async function editorScreen(el, params) {
       if (v === 'refine') refineBoundaries();
       if (v === 'realign') previewStructuralRealign();
       if (v === 'structImport') importBySpeechStructure();
+      if (v === 'structSaved') showStructureSaved();
       if (v === 'mergeset') mergeSets();
       if (v === 'txt') exportText();
       if (v === 'toaudio') toAudio();

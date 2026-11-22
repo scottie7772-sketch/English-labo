@@ -6,6 +6,7 @@ import { overall, filterLevel, LEVEL_LABELS, loadAllMastery } from './mastery.js
 import { curLang, langOf, L } from './langs.js';
 import { lessonStats, streakDays } from './progress.js';
 import { COURSE_LANGS } from './langs.js';
+import { APP_VERSION, BUILD_LABEL } from './app-version.js';
 // the test / card screens are loaded only when a button starts them
 const startTest = async (o) => (await import('./study.js')).startTest(o);
 const startQuick = async (o) => (await import('./quick.js')).startQuick(o);
@@ -115,6 +116,7 @@ export async function homeScreen(el) {
         <span class="hh-n">学習済み ${learned} / ${total}</span>
       </a>
       <button class="hweak" id="goWeak" ${st.weak.length ? '' : 'disabled'}>${icon('review', 18)}<span class="grow">${st.weak.length ? `苦手を復習（${st.weak.length}語）` : '苦手な単語はありません'}</span>${icon('chevron', 16)}</button>
+      <div class="home-build">v${APP_VERSION} · ${BUILD_LABEL}</div>
     </section>
     </div>`;
   $('#goWeak', el)?.addEventListener('click', () => startTest({ levels: [1, 2], bookmarkedOnly: false, recentWrong: false, phraseOnly: false, lowAcc: false, tag: '', deck: '', count: 'all' }));

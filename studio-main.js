@@ -16,7 +16,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.19.7-dialog-test';
+export const STUDIO_VERSION = '0.19.8-playback-range-ui-test';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -1072,10 +1072,8 @@ async function editorScreen(el, params) {
     const row = b && list.querySelector(`[data-id="${b.id}"]`);
     if (!row) return;
     row.classList.add('cur');
-    if (!vid.paused && !selectMode) {   // keep the current line visible below the (sticky) player
-      const ph = el.querySelector('.st-stick')?.getBoundingClientRect().bottom || 0, r = row.getBoundingClientRect();
-      if (r.top < ph || r.bottom > innerHeight) { row.style.scrollMarginTop = `${ph + 8}px`; row.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
-    }
+    // iPad stability test: keep subtitle highlighting, but do not auto-scroll the page during playback.
+    // Frequent overlapping subtitle transitions can otherwise queue competing smooth scroll animations.
   }
 
   // ---------- list ----------

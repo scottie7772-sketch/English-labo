@@ -1164,6 +1164,64 @@ async function editorScreen(el, params) {
     catch (e) { toast(e?.message || String(e), 3500); }
   }
 
+  // Conservative, offline bulk boundary refinement. No ASR, no new subtitles, no new media.
+  // Speech activity alone cannot distinguish adjacent spoken words: leave ambiguous boundaries unchanged.
+  async function refineBoundaries() {
+    const eligible = blocks.filter((b) => b.text.trim() && b.segments.length === 1 && b.sync !== 'manual');
+    if (!eligible.length) return toast('自動調整できる字幕がありません（手動調整済みは保護）', 4000);
+    if (!(await confirmDialog({ title: '音声位置を一括自動調整（試験版）', body: `<p>${eligible.length}行の音声の前後を、音量と無音区間から最大0.35秒だけ補正します。</p><p>単語の発音を認識して照合する機能ではありません。連続した発話・曖昧な境界は変更しません。削除済み字幕は復元せず、手動調整済みの行も変更しません。</p><p>変更は1回の↶で元に戻せます。元音声は変更しません。</p>`, okLabel: '解析する' }))) return;
+    const bySource = new Map();
+    for (const b of eligible) { const sid = b.segments[0].sourceId; if (!bySource.has(sid)) bySource.set(sid, []); bySource.get(sid).push(b); }
+    const updates = [], skipped = [];
+    try {
+      for (const [sid, items] of bySource) {
+        const src = srcs[sid], blob = src?.stored ? src.blob : sessionFiles.get(sid);
+        // decodeTo16k decodes the whole file; cap the input to avoid iPhone memory exhaustion.
+        if (!blob || blob.size > 25 * 1024 * 1024 || (src.duration || 0) > 12 * 60) { skipped.push(`${src?.name || sid}：ファイル未接続・容量または長さの制限`); continue; }
+        toast(`音声を解析中：${src.name}`, 2500);
+        const { audio } = await decodeTo16k(blob);
+        const sr = 16000, hop = 160, frame = 320;
+        const n = Math.floor(Math.max(0, audio.length - frame) / hop) + 1;
+        const rms = new Float32Array(n);
+        for (let i = 0; i < n; i++) { let e = 0; const off = i * hop; for (let j = 0; j < frame; j += 2) e += audio[off+j] ** 2; rms[i] = Math.sqrt(e / (frame / 2)); }
+        // Dynamic floor estimate, avoids a hard-coded volume threshold.
+        const sampled = []; for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 4000))) sampled.push(rms[i]);
+        sampled.sort((a,b)=>a-b);
+        const noise = sampled[Math.floor(sampled.length * .2)] || 0;
+        const peak = sampled[Math.floor(sampled.length * .9)] || 0;
+        const threshold = Math.max(.0015, noise * 3, peak * .13);
+        const voiced = (i) => i >= 0 && i < n && rms[i] >= threshold;
+        const at = (t) => Math.max(0, Math.min(n-1, Math.round(t * 100)));
+        for (const b of items) {
+          const g = b.segments[0], a = at(g.start), z = at(g.end);
+          if (z <= a + 10) continue;
+          // Find silence immediately near the edges. Never extend into another retained block.
+          const neighbours = blocks.filter((x) => x.id !== b.id && x.segments.some((q) => q.sourceId === sid));
+          const leftLimit = Math.max(0, ...neighbours.flatMap((x) => x.segments.filter((q) => q.sourceId === sid && q.end <= g.start + .02).map((q) => q.end)));
+          const rightLimit = Math.min(src.duration || audio.length / sr, ...neighbours.flatMap((x) => x.segments.filter((q) => q.sourceId === sid && q.start >= g.end - .02).map((q) => q.start)));
+          const l = at(Math.max(leftLimit, g.start - .35)), r = at(Math.min(rightLimit, g.end + .35));
+          let start = g.start, end = g.end;
+          // Only move a boundary if a stable quiet-to-voiced transition exists nearby.
+          const transitions = (lo, hi, opening) => { const out = []; for (let i = Math.max(4,lo); i < Math.min(n-5,hi); i++) {
+            const before = [i-4,i-3,i-2,i-1].filter(voiced).length;
+            const after = [i+1,i+2,i+3,i+4].filter(voiced).length;
+            if (opening ? before === 0 && after >= 3 : before >= 3 && after === 0) out.push(i);
+          } return out; };
+          const starts = transitions(l, Math.min(z-8,a+35), true);
+          const ends = transitions(Math.max(a+8,z-35), r, false);
+          const choose = (arr, old) => arr.length === 1 && Math.abs(arr[0]/100 - old) <= .35 ? arr[0]/100 : old;
+          start = choose(starts, g.start); end = choose(ends, g.end);
+          if (end - start < .12) continue;
+          if (Math.abs(start-g.start) < .025 && Math.abs(end-g.end) < .025) continue;
+          updates.push({ ...b, segments: [{ ...g, start: +start.toFixed(2), end: +end.toFixed(2) }], sync: 'estimated' });
+        }
+      }
+      if (!updates.length) return toast(`安全に補正できる境界はありませんでした${skipped.length ? '（一部のファイルは対象外）' : ''}`, 5500);
+      const ok = await confirmDialog({ title: '一括補正の確認', body: `<p>${eligible.length}行のうち<strong>${updates.length}行</strong>に補正候補があります。${skipped.length ? `${skipped.length}ファイルは解析対象外です。` : ''}</p><p>補正は音量に基づく推定です。確定後は各行を再生して確認してください。↶でこの操作全体を取り消せます。</p>`, okLabel: `${updates.length}行を適用` });
+      if (ok) await run('音声位置の一括自動調整', { blocks: updates });
+    } catch (e) { toast(`自動調整できませんでした：${e?.message || e}`, 6000); }
+  }
+
   // ---------- actions (each = one undoable operation) ----------
   const ordered = () => ops.orderedSelection(set.order, sel).map((id) => byId[id]).filter(Boolean);
   async function run(label, changes) {
@@ -1834,6 +1892,7 @@ async function editorScreen(el, params) {
       <button class="btn" value="asr">文字起こし（端末内・試験的）</button>
       <button class="btn" value="add">スクリプト・音声を追加</button>
       <button class="btn" value="align">スクリプトと照合</button>
+      <button class="btn" value="refine">音声位置を一括自動調整（試験版）</button>
       <button class="btn" value="mergeset">別の教材をこの教材にまとめる</button>
       <button class="btn" value="names">固有名詞をまとめて直す</button>
       <button class="btn" value="words">単語リストを作る</button>
@@ -1863,6 +1922,7 @@ async function editorScreen(el, params) {
       if (v === 'names') fixNames();
       if (v === 'add') nav(`import?to=${set.id}`);
       if (v === 'align') runAlign();
+      if (v === 'refine') refineBoundaries();
       if (v === 'mergeset') mergeSets();
       if (v === 'txt') exportText();
       if (v === 'toaudio') toAudio();

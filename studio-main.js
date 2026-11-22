@@ -934,9 +934,9 @@ async function editorScreen(el, params) {
         else if (playing.cont) {
           const n = nextPlayable(playing.b), s1 = n?.segments[0];
           if (!n) { vid.pause(); playing = null; }
-          // 1.17: the next row of the same file starts at / after the current point → keep playing (no seek): pauses between rows
-          // and sounds no row covers (e.g. the 2nd reading of "×2") are heard as they are, nothing is skipped
-          else if (s1.sourceId === s.sourceId && s1.start >= vid.currentTime - 0.3 && s1.start - vid.currentTime < 15) { playing = { b: n, i: 0, loop: false, cont: true }; curBlock = n; }
+          // Play only the time ranges assigned to surviving subtitle blocks.
+          // A removed block must not be heard as the gap between its neighbours.
+          // Always seek to the next block's exact start, even for nearby ranges.
           else { playing = { b: n, i: 0, loop: false, cont: true }; curBlock = n; startSeg(); }
         }
         else { vid.pause(); playing = null; }

@@ -126,7 +126,7 @@ async function setsScreen(el) {
     el.innerHTML = `${head('教材スタジオ', HOST ? '__exit' : null, `<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#${BASE}clean">容量</a>`)}
     <div class="row"><a class="btn primary grow" href="#${BASE}import">＋ 一括登録（動画・音声・字幕）</a><a class="btn" href="#${BASE}io">読み込み</a></div>
     ${est ? `<p class="small muted">端末の保存量：${fmtSize(est.usage || 0)}${est.quota ? ` / 目安の上限 ${fmtSize(est.quota)}` : ''}</p>` : ''}
-    ${sets.length ? `<div class="row"><span class="grow small muted">${sets.length}セット・左スワイプで削除・長押しで名前変更</span><button class="btn sm" id="edit">${editing ? '完了' : '選ぶ（フォルダ・削除）'}</button></div>
+    ${sets.length ? `<div class="row"><span class="grow small muted">${sets.length}セット・左スワイプで削除・教材／フォルダを長押しで名前変更</span><button class="btn sm" id="edit">${editing ? '完了' : '選ぶ（フォルダ・削除）'}</button></div>
     ${editing ? `<div class="row wrap"><button class="btn sm" id="eAll">すべて選ぶ</button><button class="btn sm danger" id="eDel" ${chosen.size ? '' : 'disabled'}>削除（${chosen.size}）</button><button class="btn sm" id="eNone">解除</button><button class="btn sm" id="eRen" ${chosen.size === 1 ? '' : 'disabled'}>名前を変える</button><button class="btn sm grow" id="eFold" ${chosen.size ? '' : 'disabled'}>📁 フォルダへ</button></div>` : ''}
     ${[...folders, ''].map((f) => { const inF = sets.filter((s) => (s.folder || '') === f); if (!inF.length) return '';
       const rows = inF.map(rowHTML).join('');
@@ -135,6 +135,18 @@ async function setsScreen(el) {
     $$('.st-fold', el).forEach((d) => d.addEventListener('toggle', () => { if (editing) return; d.open ? openF.add(d.dataset.f) : openF.delete(d.dataset.f); try { localStorage.setItem('st-openF', JSON.stringify([...openF])); } catch {} }));
     $('#eFold', el)?.addEventListener('click', () => toFolder(sets.filter((x) => chosen.has(x.id))));
     $$('[data-fmerge]', el).forEach((b) => (b.onclick = () => mergeFolder(b.dataset.fmerge)));
+    if (!editing) $$('.st-fold > summary', el).forEach((summary) => {
+      let timer = 0, held = false, x0 = 0, y0 = 0;
+      const stop = () => { clearTimeout(timer); timer = 0; };
+      summary.addEventListener('touchstart', (e) => {
+        held = false; stop(); x0 = e.touches[0]?.clientX || 0; y0 = e.touches[0]?.clientY || 0;
+        timer = setTimeout(() => { held = true; renameFolder(summary.parentElement.dataset.f); }, 650);
+      }, { passive: true });
+      summary.addEventListener('touchmove', (e) => { if (Math.abs((e.touches[0]?.clientX || 0) - x0) > 10 || Math.abs((e.touches[0]?.clientY || 0) - y0) > 10) stop(); }, { passive: true });
+      ['touchend', 'touchcancel'].forEach((ev) => summary.addEventListener(ev, stop, { passive: true }));
+      summary.addEventListener('click', (e) => { if (held) { e.preventDefault(); e.stopPropagation(); held = false; } }, true);
+      summary.addEventListener('contextmenu', (e) => { e.preventDefault(); stop(); renameFolder(summary.parentElement.dataset.f); });
+    });
     bind();
   };
   const rowHTML = (s) => {
@@ -167,6 +179,23 @@ async function setsScreen(el) {
     await commit(P, `📁${f} の音声をまとめる`, { blocks: copies, order: [...P.order, ...copies.map((c) => c.id)] });
     if (del) for (const k of kids) await deleteSet(await sdb.get('sets', k.s.id));
     nav(`set?id=${P.id}&align=1`);
+  }
+  async function renameFolder(oldName) {
+    if (!oldName) return;
+    const name = (await askText('フォルダの名前を変更', oldName))?.trim();
+    if (!name || name === oldName) return;
+    if (folders.includes(name)) return toast('同じ名前のフォルダがあります。別の名前を指定してください');
+    const members = sets.filter((x) => x.folder === oldName);
+    for (const x of members) {
+      const current = await sdb.get('sets', x.id);
+      if (!current || current.folder !== oldName) continue;
+      current.folder = name; // Folder is a grouping label, not a separate stored record.
+      await sdb.put('sets', current);
+      x.folder = name;
+    }
+    openF.delete(oldName); openF.add(name);
+    try { localStorage.setItem('st-openF', JSON.stringify([...openF])); } catch {}
+    toast(`フォルダ名を「${name}」に変更しました`); route();
   }
   async function toFolder(list) {
     const dlg = $('#dialog');
@@ -924,6 +953,7 @@ async function editorScreen(el, params) {
     try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
     vid.play().catch((e) => { if (e.name === 'NotAllowedError') toast('もう一度タップしてください'); });
   }
+  let editorPlayback = null;
   let raf = 0;
   const tick = () => {
     if (playing && !vid.paused) {
@@ -940,6 +970,24 @@ async function editorScreen(el, params) {
           else { playing = { b: n, i: 0, loop: false, cont: true }; curBlock = n; startSeg(); }
         }
         else { vid.pause(); playing = null; }
+      }
+    }
+    if (editorPlayback) {
+      const p = editorPlayback;
+      if (!p.dlg.open) editorPlayback = null;
+      else {
+        const end = p.segmentEnd();
+        if (p.kind === 'range' && !vid.paused && end != null && vid.currentTime >= end - 0.015) { vid.pause(); playing = null; p.done = true; }
+        if (p.kind === 'block' && p.started && !playing && vid.paused) p.done = true;
+        const state = p.dlg.querySelector('#ePlaybackState');
+        if (state) {
+          const active = !vid.paused && !p.done;
+          state.textContent = p.stopped ? '停止中' : p.done ? '再生終了' : active ? `再生中 ${fmt(vid.currentTime)} / ${fmt(end ?? vid.duration ?? 0)}` : p.started ? '一時停止中' : '未再生';
+          const main = p.dlg.querySelector('#ePlay');
+          if (main) main.innerHTML = active ? `${icon('pause')} 停止` : `${icon('play')} 再生`;
+          const loop = p.dlg.querySelector('#eLoop');
+          if (loop) loop.classList.toggle('on', active && p.loop);
+        }
       }
     }
     $('#tnow', el).textContent = fmt(vid.currentTime || 0);
@@ -1222,6 +1270,56 @@ async function editorScreen(el, params) {
     } catch (e) { toast(`自動調整できませんでした：${e?.message || e}`, 6000); }
   }
 
+  // Read-only, zero-cost structural re-alignment preview. Existing recognised cues only.
+  // No network, model download, or persistent cache; never resurrect deleted blocks.
+  async function previewStructuralRealign() {
+    const active = set.order.map(id => byId[id]).filter(b => b && b.text.trim() && b.segments.length === 1);
+    const cues = blocks.filter(b => b.asr && !b.aligned && b.segments.length === 1 && b.text.trim())
+      .map(b => ({ id:b.id, sourceId:b.segments[0].sourceId, start:b.segments[0].start, end:b.segments[0].end, text:b.text, tokens:tokensOf(b.text) }))
+      .sort((a,b)=>a.sourceId.localeCompare(b.sourceId)||a.start-b.start);
+    const dlg = $('#dialog');
+    if (!active.length) return toast('音声のある字幕がありません');
+    const profile = await new Promise(resolve => {
+      dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>構造を使った再照合（プレビュー）</h3><p class="small">既存の文字起こしデータだけで候補を探します。元の字幕や音声は変更しません。外部通信・課金なし。</p><label>教材の収録形式<select name="profile"><option value="vocab">単語 → 例文 → 例文の繰り返し</option><option value="conversation">会話・まとまった文章</option><option value="alternate">英語と日本語が交互</option><option value="generic">その他・形式不明</option></select></label><p class="small muted">認識結果が削除されている場合は再照合できません。誤った位置を正解として使わず、候補が不足することを表示します。</p><button class="btn primary" value="go">候補を調べる</button><button class="btn ghost" value="cancel">キャンセル</button></form>`;
+      dlg.onclose=()=>resolve(dlg.returnValue==='go'?dlg.querySelector('[name=profile]')?.value:null);
+      // capture selection before dialog closes (Safari dialog contents persist)
+      dlg.showModal();
+    });
+    if (!profile) return;
+    const normal = text => tokensOf(text).map(x => String(x).toLowerCase().replace(/[^a-z0-9']/g,''));
+    const proposals = [], missing=[];
+    const used = new Set();
+    // Exact whole-utterance matches only. A word inside a sentence is NEVER a headword candidate.
+    // Source and chronological order are hard constraints; missing/deleted utterances may be skipped.
+    const lastBySource = new Map();
+    for (const b of active) {
+      if (b.sync === 'manual') continue;
+      const g=b.segments[0], want=normal(b.text);
+      if (!want.length) continue;
+      const last=lastBySource.get(g.sourceId)??-Infinity;
+      const candidates=cues.filter(c=>c.sourceId===g.sourceId&&!used.has(c.id)&&c.start>=last-0.02&&
+        c.tokens.length===want.length&&normal(c.text).join(' ')===want.join(' '));
+      if (!candidates.length) { missing.push(b); continue; }
+      // Prefer an independently recognised, full utterance. Multiple identical readings
+      // cannot be safely disambiguated without additional evidence.
+      const ranked=candidates.map(c=>({c, distance:Math.abs(c.start-g.start)})).sort((a,b)=>a.distance-b.distance);
+      const best=ranked[0];
+      if (ranked.length>1 && ranked[1].distance-best.distance<1.5) { missing.push(b); continue; }
+      used.add(best.c.id); lastBySource.set(g.sourceId,best.c.end);
+      if (Math.abs(best.c.start-g.start)<.08&&Math.abs(best.c.end-g.end)<.08) continue;
+      proposals.push({b, g, c:best.c});
+    }
+    const desc = profile==='vocab'?'単語・例文（全文一致のみ）':profile==='conversation'?'会話（発話全文一致のみ）':profile==='alternate'?'英日交互（発話全文一致のみ）':'一般（発話全文一致のみ）';
+    dlg.innerHTML=`<form method="dialog" class="dlg stack"><h3>再照合の候補</h3><p class="small">${esc(desc)}。認識済み候補 ${cues.length}件、変更候補 ${proposals.length}件、照合不能 ${missing.length}件。<strong>元音声の再認識は行っていません。</strong></p>${!cues.length?'<p class="notice warn">照合に使える独立した文字起こしが残っていません。既存の誤対応をもとに再推定すると誤りを繰り返すため、変更しません。</p>':''}<div style="max-height:45vh;overflow:auto">${proposals.slice(0,80).map((x,i)=>`<label class="row small" style="padding:6px 0;border-bottom:1px solid #aaa4"><input type="checkbox" data-proposal="${i}" checked><span class="grow">${esc(x.b.text.slice(0,75))}<br><span class="muted">${fmt(x.g.start)}–${fmt(x.g.end)} → ${fmt(x.c.start)}–${fmt(x.c.end)}</span></span></label>`).join('')}</div>${proposals.length?'<p class="small muted">選択した候補のみ適用します。1回のUndoで取り消せます。音声は複製しません。</p><button class="btn primary" value="apply">選択分を適用</button>':''}<button class="btn ghost" value="cancel">閉じる</button></form>`;
+    const selected=await new Promise(resolve=>{
+      dlg.onclose=()=>resolve(dlg.returnValue==='apply'?[...dlg.querySelectorAll('[data-proposal]:checked')].map(x=>+x.dataset.proposal):null);
+      dlg.showModal();
+    });
+    if (!selected?.length) return;
+    const updates=selected.map(i=>proposals[i]).filter(Boolean).map(x=>({...x.b,segments:[{...x.g,start:x.c.start,end:x.c.end}],sync:'estimated',align:[]}));
+    if (updates.length) await run('構造を使った再照合', {blocks:updates});
+  }
+
   // ---------- actions (each = one undoable operation) ----------
   const ordered = () => ops.orderedSelection(set.order, sel).map((id) => byId[id]).filter(Boolean);
   async function run(label, changes) {
@@ -1335,7 +1433,7 @@ async function editorScreen(el, params) {
       dlg.close(); if (view !== 'all') setView('all'); setTimeout(() => goNear(id), 50); }));
   }
   async function editBlock(b) {
-    vid.pause(); playing = null;
+    vid.pause(); playing = null; editorPlayback = null;
     let mode = 'hole'; let work = structuredClone(b);
     // Keep the original positions visible while fine-tuning. No media is copied.
     const originalSegments = structuredClone(b.segments);
@@ -1343,7 +1441,7 @@ async function editorScreen(el, params) {
     let draw = () => {
       const toks = tokensOf(work.text);
       dlg.innerHTML = `<form method="dialog" class="dlg stack st-edit"><h3>項目の編集</h3>
-        <div class="row"><button type="button" class="btn sm" id="ePlay">${icon('play')} 再生</button><button type="button" class="btn sm" id="eLoop">ループ</button><span class="small muted">${fmt(blockDur(work))}・${work.segments.length}区間</span></div>
+        <div class="row"><button type="button" class="btn sm" id="ePlay">${icon('play')} 再生</button><button type="button" class="btn sm" id="eLoop">ループ</button><span id="ePlaybackState" class="small muted" role="status" aria-live="off">未再生</span><span class="small muted">${fmt(blockDur(work))}・${work.segments.length}区間</span></div>
         <label class="field"><span>英文</span><textarea id="eEn" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false">${esc(work.text)}</textarea></label>
         <div class="seg sm" id="eMode"><button type="button" data-v="hole" class="${mode === 'hole' ? 'on' : ''}">語をタップ＝穴埋め</button><button type="button" data-v="split" class="${mode === 'split' ? 'on' : ''}">語をタップ＝その前で分割</button></div>
         <div class="st-toks">${toks.map((w, i) => `<button type="button" class="st-tok ${(work.holes || []).some((h) => i >= h.s && i <= h.e) ? 'hole' : ''}" data-t="${i}">${esc(w)}</button>`).join('')}</div>
@@ -1355,8 +1453,13 @@ async function editorScreen(el, params) {
           <div class="row"><span class="small">開始 ${fmt(s.start)}</span><button type="button" class="btn xs" data-adj="${i}:start:-0.1">−0.1</button><button type="button" class="btn xs" data-adj="${i}:start:0.1">＋0.1</button><button type="button" class="btn xs" data-now="${i}:start">今の位置</button></div>
           <div class="row"><span class="small">終了 ${fmt(s.end)}</span><button type="button" class="btn xs" data-adj="${i}:end:-0.1">−0.1</button><button type="button" class="btn xs" data-adj="${i}:end:0.1">＋0.1</button><button type="button" class="btn xs" data-now="${i}:end">今の位置</button></div></div>`).join('')}</div>
         <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">保存</button></div></form>`;
-      $('#ePlay', dlg).onclick = () => { readText(); playBlock(work); };
-      $('#eLoop', dlg).onclick = () => { readText(); playBlock(work, true); };
+      $('#ePlay', dlg).onclick = () => {
+        readText();
+        if (editorPlayback && !vid.paused && !editorPlayback.done) { vid.pause(); playing = null; editorPlayback.started = true; editorPlayback.stopped = true; return; }
+        playBlock(work);
+        editorPlayback = { dlg, kind: 'block', loop: false, started: true, done: false, segmentEnd: () => work.segments.at(-1)?.end };
+      };
+      $('#eLoop', dlg).onclick = () => { readText(); playBlock(work, true); editorPlayback = { dlg, kind: 'block', loop: true, started: true, done: false, segmentEnd: () => work.segments.at(-1)?.end }; };
       $('#eMode', dlg).onclick = (e) => { const v = e.target.dataset.v; if (v) { readText(); mode = v; draw(); } };
       $$('[data-t]', dlg).forEach((t) => (t.onclick = async () => {
         readText(); const i = +t.dataset.t;
@@ -1460,11 +1563,16 @@ async function editorScreen(el, params) {
       if (nextB && n1.end !== s1.end) { const nf = nextB.segments[0]; if (nf.sourceId === n1.sourceId && (Math.abs(nf.start - s1.end) < 1.0 || nf.start < n1.end) && n1.end < nf.end - 0.1) out.push({ ...nextB, segments: [{ ...nf, start: n1.end }, ...nextB.segments.slice(1)], sync: 'manual', align: [] }); }
       return out;
     }
-    const playRange = (sid, from, to) => { readText(); if (!attach(sid, from)) return toast('ファイルを選んでください'); playing = null; vid.play().catch(() => {}); clearTimeout(playRange.t); playRange.t = setTimeout(() => vid.pause(), Math.max(0.1, to - from) * 1000 / (vid.playbackRate || 1)); };
+    const playRange = (sid, from, to) => {
+      readText(); if (!attach(sid, from)) return toast('ファイルを選んでください');
+      playing = null; vid.play().catch(() => {});
+      editorPlayback = { dlg, kind: 'range', loop: false, started: true, done: false, segmentEnd: () => to };
+    };
     const readText = () => { const en = $('#eEn', dlg)?.value, ja = $('#eJa', dlg)?.value; if (en != null && (en !== work.text || ja !== work.ja)) work = ops.editText(work, en.trim(), (ja || '').trim()); };
     draw();
     dlg.returnValue = '';
     dlg.onclose = async () => {
+      if (editorPlayback?.dlg === dlg) { editorPlayback = null; vid.pause(); playing = null; }
       if (dlg.returnValue !== 'ok') return;
       readText();
       if (JSON.stringify(work) === JSON.stringify(b)) return;
@@ -1946,6 +2054,7 @@ async function editorScreen(el, params) {
       <button class="btn" value="add">スクリプト・音声を追加</button>
       <button class="btn" value="align">スクリプトと照合</button>
       <button class="btn" value="refine">音声位置を一括自動調整（試験版）</button>
+      <button class="btn" value="realign">構造を使った再照合（プレビュー）</button>
       <button class="btn" value="mergeset">別の教材をこの教材にまとめる</button>
       <button class="btn" value="names">固有名詞をまとめて直す</button>
       <button class="btn" value="words">単語リストを作る</button>
@@ -1976,6 +2085,7 @@ async function editorScreen(el, params) {
       if (v === 'add') nav(`import?to=${set.id}`);
       if (v === 'align') runAlign();
       if (v === 'refine') refineBoundaries();
+      if (v === 'realign') previewStructuralRealign();
       if (v === 'mergeset') mergeSets();
       if (v === 'txt') exportText();
       if (v === 'toaudio') toAudio();

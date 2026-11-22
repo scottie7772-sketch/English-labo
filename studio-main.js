@@ -16,7 +16,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.19.8-playback-range-ui-test';
+export const STUDIO_VERSION = '0.20.1-post-align-state-test';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -997,7 +997,9 @@ async function editorScreen(el, params) {
   let editorPlayback = null;
   let raf = 0;
   const tick = () => {
-    if (playing && !vid.paused && !vid.seeking && !pendingSegmentSeek) {
+    // Continuous playback must not re-seek at every subtitle boundary.
+    // Subtitle highlighting is driven independently by the media clock.
+    if (playing && !playing.cont && !vid.paused && !vid.seeking && !pendingSegmentSeek) {
       const s = playing.b.segments[playing.i];
       if (vid.currentTime >= (playing.range?.end ?? s.end) - 0.02) {
         if (playing.i + 1 < playing.b.segments.length) { playing.i++; startSeg(); }
@@ -1054,7 +1056,7 @@ async function editorScreen(el, params) {
         candidates.push({ b, start: s.start, end: s.end });
       }
     }
-    if (!candidates.length) return playing?.b || null;
+    if (!candidates.length) return playing?.cont ? null : (playing?.b || null);
     // When multiple records overlap, prefer the latest onset. For an exact
     // onset tie, prefer the current block, then a script-aligned record.
     candidates.sort((a, b) => b.start - a.start ||
@@ -1063,17 +1065,53 @@ async function editorScreen(el, params) {
     return candidates[0].b;
   }
   let lastSubId = null;
+  let lastHighlightedRow = null;
+  let lastFollowAt = 0;
   function drawSub() {
-    const b = blockAtTime(); const id = b ? b.id + '@' + b.rev : null;
-    if (id === lastSubId) return; lastSubId = id;
-    const html = (b?.text ? `<div class="st-en">${esc(b.text)}</div>` : '') + (b?.ja ? `<div class="st-ja">${esc(b.ja)}</div>` : '');
-    $('#sub', el).innerHTML = html || '<span class="muted small">（字幕）</span>';
-    $$('.st-row.cur', list).forEach((r) => r.classList.remove('cur'));
-    const row = b && list.querySelector(`[data-id="${b.id}"]`);
-    if (!row) return;
-    row.classList.add('cur');
-    // iPad stability test: keep subtitle highlighting, but do not auto-scroll the page during playback.
-    // Frequent overlapping subtitle transitions can otherwise queue competing smooth scroll animations.
+    const b = blockAtTime();
+    const id = b ? b.id + '@' + b.rev : null;
+    if (id === lastSubId) return;
+    lastSubId = id;
+    // Keep subtitle elements mounted. Replacing innerHTML on each transition
+    // can flash the subtitle area on iPad WebKit, even without scrolling.
+    const sub = $('#sub', el);
+    if (sub) {
+      let en = sub.querySelector('.st-en');
+      let ja = sub.querySelector('.st-ja');
+      let empty = sub.querySelector('.st-sub-empty');
+      if (!en || !ja || !empty) {
+        sub.replaceChildren();
+        en = document.createElement('div'); en.className = 'st-en';
+        ja = document.createElement('div'); ja.className = 'st-ja';
+        empty = document.createElement('span'); empty.className = 'muted small st-sub-empty';
+        empty.textContent = '（字幕）';
+        sub.append(en, ja, empty);
+      }
+      const english = b?.text || '';
+      const japanese = b?.ja || '';
+      if (en.textContent !== english) en.textContent = english;
+      if (ja.textContent !== japanese) ja.textContent = japanese;
+      en.hidden = !english;
+      ja.hidden = !japanese;
+      empty.hidden = !!(english || japanese);
+    }
+    if (lastHighlightedRow?.isConnected) lastHighlightedRow.classList.remove('cur');
+    const row = b ? Array.from(list.querySelectorAll('.st-row')).find(r => r.dataset.id === b.id) : null;
+    if (row) row.classList.add('cur');
+    lastHighlightedRow = row || null;
+    // Follow only when the active row leaves a safe visible area; avoid stacked
+    // smooth-scroll animations and never seek audio as a result of scrolling.
+    if (row && !vid.paused && !seeking) {
+      const now = performance.now();
+      const rect = row.getBoundingClientRect();
+      const top = Math.min(innerHeight * 0.38, 260);
+      const bottom = innerHeight - Math.min(innerHeight * 0.22, 160);
+      if (now - lastFollowAt > 500 && (rect.top < top || rect.bottom > bottom)) {
+        lastFollowAt = now;
+        const delta = rect.top < top ? rect.top - top : rect.bottom - bottom;
+        window.scrollBy({ top: delta, behavior: 'instant' });
+      }
+    }
   }
 
   // ---------- list ----------
@@ -1397,8 +1435,24 @@ async function editorScreen(el, params) {
   // ---------- actions (each = one undoable operation) ----------
   const ordered = () => ops.orderedSelection(set.order, sel).map((id) => byId[id]).filter(Boolean);
   async function run(label, changes) {
-    try { await commit(set, label, changes, srcs); await reload(); drawList(); toast(`${label}しました`, 1200); }
-    catch (e) { toast((e?.message || String(e)), 3500); }
+    try {
+      await commit(set, label, changes, srcs);
+      // A successful edit/alignment replaces subtitle records and ordering.
+      // Clear ephemeral playback/highlight references before loading the new
+      // records, just as opening the material again would do. Never mutate
+      // saved audio boundaries or manually edited subtitle records here.
+      ++playbackRequest;
+      pendingSegmentSeek = null;
+      vid.pause();
+      playing = null;
+      curBlock = null;
+      lastSubId = null;
+      lastHighlightedRow = null;
+      await reload();
+      drawList();
+      drawSub();
+      toast(`${label}しました`, 1200);
+    } catch (e) { toast((e?.message || String(e)), 3500); }
   }
   async function action(a) {
     const list0 = ordered();

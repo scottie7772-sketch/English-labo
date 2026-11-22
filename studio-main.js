@@ -15,7 +15,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.19.4';
+export const STUDIO_VERSION = '0.19.5';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -1427,13 +1427,21 @@ async function editorScreen(el, params) {
     for (const id of ids) { const g = byId[id].segments[0]; if (!g) continue; if (g.sourceId === lastSid && g.start < last - 1) back.add(id); last = g.end; lastSid = g.sourceId; }
     const dlg = $('#dialog');
     dlg.innerHTML = `<form method="dialog" class="dlg stack st-full"><div class="row"><h3 class="grow">スクリプト全文（${ids.length}行）</h3><button type="button" class="btn sm" id="fRange">範囲を選ぶ</button><button class="btn sm ghost" value="x">閉じる</button></div>
-      <div id="fBar" class="row wrap small" hidden></div>
+      <label class="field"><span>スクリプト内を検索（英語・日本語、部分一致）</span><input id="fSearch" type="search" placeholder="例：presence / A seasonal menu" autocomplete="off" autocapitalize="off" spellcheck="false"></label><div class="row small muted" id="fSearchCount" aria-live="polite">検索語を入力すると一致行を絞り込みます</div><div id="fBar" class="row wrap small" hidden></div>
       <p class="small muted">✓ 照合済み　○ 音声なし　起 照合できなかった文字起こし　♪ 音声あり（未照合）　<b class="warn-text">↺</b> 時間が前に戻っている行（順番の入れ違い）</p>
       <ol class="st-fulllist">${ids.map((id, i) => { const b = byId[id], [m, c] = mark(b); return `<li class="${c}" data-go="${id}"><span class="st-fm">${m}</span><span class="st-ft">${tm(b)}${back.has(id) ? ' <b class="warn-text">↺</b>' : ''}</span><span class="st-fx">${esc(b.text || b.label || '（英文なし）')}</span></li>`; }).join('')}</ol></form>`;
     dlg.returnValue = ''; dlg.showModal();
     // 1.18.1: range: tap the first and the last line, then delete (the script lines only, or every line in the range)
     let picking = false, a0 = null, a1 = null;
-    const lis = $$('[data-go]', dlg), mark2 = () => { const i0 = ids.indexOf(a0), i1 = ids.indexOf(a1 ?? a0); lis.forEach((x, k) => x.classList.toggle('st-fsel', a0 != null && k >= Math.min(i0, i1) && k <= Math.max(i0, i1))); };
+    const lis = $$('[data-go]', dlg);
+    const search = $('#fSearch', dlg), searchCount = $('#fSearchCount', dlg);
+    const applySearch = () => {
+      const q = search.value.trim().toLocaleLowerCase(); let n = 0;
+      lis.forEach((x) => { const b = byId[x.dataset.go]; const found = !q || `${b?.text || ''} ${b?.ja || ''} ${b?.label || ''}`.toLocaleLowerCase().includes(q); x.hidden = !found; if(found)n++; });
+      searchCount.textContent = q ? `一致 ${n} / ${ids.length}行（タップで該当行へ移動）` : `全 ${ids.length}行`;
+    };
+    search.addEventListener('input', applySearch); applySearch();
+    const mark2 = () => { const i0 = ids.indexOf(a0), i1 = ids.indexOf(a1 ?? a0); lis.forEach((x, k) => x.classList.toggle('st-fsel', a0 != null && k >= Math.min(i0, i1) && k <= Math.max(i0, i1))); };
     const inRange = () => { const i0 = ids.indexOf(a0), i1 = ids.indexOf(a1 ?? a0); return ids.slice(Math.min(i0, i1), Math.max(i0, i1) + 1).map((id) => byId[id]); };
     const fBar = $('#fBar', dlg);
     const drawFB = () => { fBar.hidden = !picking;
@@ -1446,7 +1454,7 @@ async function editorScreen(el, params) {
         $('#fDelS', fBar).onclick = () => after(() => bulkDel(na, '選んだ範囲の音声のないスクリプト行'));
         $('#fDelA', fBar).onclick = () => after(() => bulkDel(r, '選んだ範囲の行')); }
       $('#fCancel', fBar).onclick = () => { picking = false; a0 = a1 = null; mark2(); drawFB(); }; };
-    $('#fRange', dlg).onclick = () => { picking = true; a0 = a1 = null; mark2(); drawFB(); };
+    $('#fRange', dlg).onclick = () => { search.value = ''; applySearch(); picking = true; a0 = a1 = null; mark2(); drawFB(); };
     lis.forEach((x) => (x.onclick = () => { const id = x.dataset.go;
       if (picking) { if (a0 == null || a1 != null) { a0 = id; a1 = null; } else a1 = id; mark2(); drawFB(); return; }
       dlg.close(); if (view !== 'all') setView('all'); setTimeout(() => goNear(id), 50); }));
@@ -1760,7 +1768,7 @@ async function editorScreen(el, params) {
     if(!result.length)return confirmDialog({title:'安全な一致候補がありません',body:'発話区間は検出しましたが、認識結果とスクリプトの強い一致が得られませんでした。字幕は変更していません。短い単語や重複する例文は誤対応防止のため保留します。',okLabel:'閉じる',cancelLabel:null});
     let selectedIds=null;
     dlg.addEventListener('close',()=>{selectedIds=new Set([...dlg.querySelectorAll('.structPick:checked')].map(x=>x.value));},{once:true});
-    const confirmed=await confirmDialog({title:`照合候補 ${result.length}件（冒頭30発話）`,body:`<p>強く一致した候補だけを表示しています。未一致・繰り返し例文は変更しません。</p><div class="stack" style="max-height:45vh;overflow:auto">${result.map(x=>`<label class="chk"><input type="checkbox" class="structPick" value="${esc(x.b.id)}" checked> ${esc(x.b.text.slice(0,85))}<br><small>${fmt(x.u.start)}〜${fmt(x.u.end)}・一致度 ${Math.round(x.score*100)}%</small></label>`).join('')}</div>`,okLabel:'選択した候補を保存',cancelLabel:'保存しない'});
+    const confirmed=await confirmDialog({title:`照合候補 ${result.length}件（冒頭30発話）`,body:`<p>強く一致した候補だけを表示しています。未一致・繰り返し例文は変更しません。対応する英文をコピーして「⋯ → スクリプト全文を見る」の検索欄で探せます。</p><div class="stack" style="max-height:45vh;overflow:auto">${result.map(x=>`<label class="chk"><input type="checkbox" class="structPick" value="${esc(x.b.id)}" checked> ${esc(x.b.text.slice(0,85))}<br><small>${fmt(x.u.start)}〜${fmt(x.u.end)}・一致度 ${Math.round(x.score*100)}%</small></label>`).join('')}</div>`,okLabel:'選択した候補を保存',cancelLabel:'保存しない'});
     if(!confirmed)return;
     const ids=selectedIds||new Set();
     // Capture checkbox selection on the dialog close event; never default to applying all.

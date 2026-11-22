@@ -9,6 +9,7 @@ import { decodeTo16k, openTranscriber, speechPieces, captureTo16k, QUALITY, reco
 import { extractPhrases, extractWords } from './studio-words.js';
 import { findCandidates, applySpans } from './studio-names.js';
 import { alignScript, scriptToLines } from './studio-align.js';
+import { speechRegions, regionStatistics, snapCueToRegion } from './studio-structure.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
@@ -1280,12 +1281,27 @@ async function editorScreen(el, params) {
     const dlg = $('#dialog');
     if (!active.length) return toast('音声のある字幕がありません');
     const profile = await new Promise(resolve => {
-      dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>構造を使った再照合（プレビュー）</h3><p class="small">既存の文字起こしデータだけで候補を探します。元の字幕や音声は変更しません。外部通信・課金なし。</p><label>教材の収録形式<select name="profile"><option value="vocab">単語 → 例文 → 例文の繰り返し</option><option value="conversation">会話・まとまった文章</option><option value="alternate">英語と日本語が交互</option><option value="generic">その他・形式不明</option></select></label><p class="small muted">認識結果が削除されている場合は再照合できません。誤った位置を正解として使わず、候補が不足することを表示します。</p><button class="btn primary" value="go">候補を調べる</button><button class="btn ghost" value="cancel">キャンセル</button></form>`;
+      dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>構造を使った再照合（プレビュー）</h3><p class="small">既存の文字起こしと元音声の発話区間を組み合わせます。元の字幕や音声は変更しません。外部通信・課金なし。</p><label>教材の収録形式<select name="profile"><option value="auto">自動（音声の規則性を分析）</option><option value="vocab">単語 → 例文 → 例文の繰り返し</option><option value="conversation">会話・まとまった文章</option><option value="alternate">英語と日本語が交互</option><option value="generic">その他・形式不明</option></select></label><p class="small muted">音声の無音・長さ・繰り返し傾向を分析します。ただし音量だけでは単語の内容を識別できません。認識結果がない場合、位置の自動確定はしません。</p><button class="btn primary" value="go">候補を調べる</button><button class="btn ghost" value="cancel">キャンセル</button></form>`;
       dlg.onclose=()=>resolve(dlg.returnValue==='go'?dlg.querySelector('[name=profile]')?.value:null);
       // capture selection before dialog closes (Safari dialog contents persist)
       dlg.showModal();
     });
     if (!profile) return;
+    // Analyze each attached source once, in memory only. Strict cap protects mobile devices.
+    const regionBySource = new Map(), audioNotes=[];
+    for (const sid of [...new Set(active.map(b=>b.segments[0].sourceId))]) {
+      const src=srcs[sid], blob=src?.stored?src.blob:sessionFiles.get(sid);
+      if (!blob) {audioNotes.push(`${src?.name||sid}: 音声ファイル未接続`);continue;}
+      if (blob.size>25*1024*1024 || (src.duration||0)>12*60) {audioNotes.push(`${src.name}: iPhone負荷を避けるため解析を省略（25MB・12分上限）`);continue;}
+      try {
+        toast(`発話区間を解析中：${src.name}`,2500);
+        const decoded=await sourceAudio16k(src,blob);
+        const regions=speechRegions(decoded.audio,16000);
+        regionBySource.set(sid,regions);
+        const st=regionStatistics(regions);
+        audioNotes.push(`${src.name}: 発話候補 ${st.count}件、間隔中央値 ${st.medianGap?.toFixed(2)??'—'}秒、長さ中央値 ${st.medianDuration?.toFixed(2)??'—'}秒、隣接する同程度の長さ ${st.repeats}組`);
+      } catch(e) {audioNotes.push(`${src.name}: 解析できませんでした（${e?.message||e}）`);}
+    }
     const normal = text => tokensOf(text).map(x => String(x).toLowerCase().replace(/[^a-z0-9']/g,''));
     const proposals = [], missing=[];
     const used = new Set();
@@ -1307,10 +1323,12 @@ async function editorScreen(el, params) {
       if (ranked.length>1 && ranked[1].distance-best.distance<1.5) { missing.push(b); continue; }
       used.add(best.c.id); lastBySource.set(g.sourceId,best.c.end);
       if (Math.abs(best.c.start-g.start)<.08&&Math.abs(best.c.end-g.end)<.08) continue;
-      proposals.push({b, g, c:best.c});
+      const snapped=snapCueToRegion(best.c,regionBySource.get(g.sourceId)||[]);
+      // Region must agree with an independent transcript; it never establishes words itself.
+      proposals.push({b,g,c:snapped?{...best.c,start:snapped.start,end:snapped.end}:best.c, snapped:!!snapped});
     }
-    const desc = profile==='vocab'?'単語・例文（全文一致のみ）':profile==='conversation'?'会話（発話全文一致のみ）':profile==='alternate'?'英日交互（発話全文一致のみ）':'一般（発話全文一致のみ）';
-    dlg.innerHTML=`<form method="dialog" class="dlg stack"><h3>再照合の候補</h3><p class="small">${esc(desc)}。認識済み候補 ${cues.length}件、変更候補 ${proposals.length}件、照合不能 ${missing.length}件。<strong>元音声の再認識は行っていません。</strong></p>${!cues.length?'<p class="notice warn">照合に使える独立した文字起こしが残っていません。既存の誤対応をもとに再推定すると誤りを繰り返すため、変更しません。</p>':''}<div style="max-height:45vh;overflow:auto">${proposals.slice(0,80).map((x,i)=>`<label class="row small" style="padding:6px 0;border-bottom:1px solid #aaa4"><input type="checkbox" data-proposal="${i}" checked><span class="grow">${esc(x.b.text.slice(0,75))}<br><span class="muted">${fmt(x.g.start)}–${fmt(x.g.end)} → ${fmt(x.c.start)}–${fmt(x.c.end)}</span></span></label>`).join('')}</div>${proposals.length?'<p class="small muted">選択した候補のみ適用します。1回のUndoで取り消せます。音声は複製しません。</p><button class="btn primary" value="apply">選択分を適用</button>':''}<button class="btn ghost" value="cancel">閉じる</button></form>`;
+    const desc = profile==='auto'?'音声構造を自動解析（文字起こし一致が必須）':profile==='vocab'?'単語・例文（全文一致のみ）':profile==='conversation'?'会話（発話全文一致のみ）':profile==='alternate'?'英日交互（発話全文一致のみ）':'一般（発話全文一致のみ）';
+    dlg.innerHTML=`<form method="dialog" class="dlg stack"><h3>再照合の候補</h3><p class="small">${esc(desc)}。認識済み候補 ${cues.length}件、変更候補 ${proposals.length}件、照合不能 ${missing.length}件。<strong>元音声の再認識は行っていません。</strong></p><details><summary>音声構造の解析結果</summary><p class="small">${audioNotes.map(esc).join('<br>')}</p></details>${!cues.length?'<p class="notice warn">照合に使える独立した文字起こしが残っていません。既存の誤対応をもとに再推定すると誤りを繰り返すため、変更しません。</p>':''}<div style="max-height:45vh;overflow:auto">${proposals.slice(0,80).map((x,i)=>`<label class="row small" style="padding:6px 0;border-bottom:1px solid #aaa4"><input type="checkbox" data-proposal="${i}" checked><span class="grow">${esc(x.b.text.slice(0,75))}<br><span class="muted">${fmt(x.g.start)}–${fmt(x.g.end)} → ${fmt(x.c.start)}–${fmt(x.c.end)} ${x.snapped?'（無音境界で補正）':'（認識時刻）'}</span></span></label>`).join('')}</div>${proposals.length?'<p class="small muted">選択した候補のみ適用します。1回のUndoで取り消せます。音声は複製しません。</p><button class="btn primary" value="apply">選択分を適用</button>':''}<button class="btn ghost" value="cancel">閉じる</button></form>`;
     const selected=await new Promise(resolve=>{
       dlg.onclose=()=>resolve(dlg.returnValue==='apply'?[...dlg.querySelectorAll('[data-proposal]:checked')].map(x=>+x.dataset.proposal):null);
       dlg.showModal();

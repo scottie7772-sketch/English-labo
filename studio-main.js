@@ -16,7 +16,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.20.1-post-align-state-test';
+export const STUDIO_VERSION = '0.20.4-safe-ui-test';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -807,7 +807,7 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
         if (src) {
           let a = 0, b = dur || 1;
           if (trimEdges && dur > 4) { try { onStep(n, group.items.length, '前後の音を調べています…'); const r = await edgesFor(src, dur, a16, trimEdges); a = r.start; b = r.end; } catch { /* whole file */ } }
-          part.push(newBlock(setId, { segments: seg(a, b), label: src.name.replace(/\.[^.]+$/, ''), sync: 'auto' }));
+          part.push(newBlock(setId, { segments: seg(a, b), label: '', sync: 'auto' }));
         }
         tag(part); blocks.push(...part); a16 = null; await new Promise((r) => setTimeout(r, 250));
         continue;
@@ -835,7 +835,7 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
         try { onStep(n, group.items.length, 'カットした部分を削っています…'); const t2 = await hardTrim(src.id, a, b, (t) => onStep(n, group.items.length, t)); const off = t2.trimmed.from; a = Math.max(0, a - off); b = Math.min(t2.duration, b - off); Object.assign(src, t2); }
         catch (e) { trimNote += `（削除はできませんでした：${e.message}）`; }
       }
-      part.push(newBlock(setId, { segments: seg(a, b), label: src.name.replace(/\.[^.]+$/, ''), sync: dur ? 'auto' : 'estimated', ...(trimNote ? { trimNote } : {}) }));
+      part.push(newBlock(setId, { segments: seg(a, b), label: '', sync: dur ? 'auto' : 'estimated', ...(trimNote ? { trimNote } : {}) }));
     }
     tag(part); blocks.push(...part);
     a16 = null; await new Promise((r) => setTimeout(r, 250));   // let the phone free the decoded sound before the next file
@@ -865,11 +865,35 @@ async function editorScreen(el, params) {
     <div id="info" class="small muted"></div><div id="alignNote"></div>
     <div id="list" class="st-list"></div>
     <div id="bar" class="st-bar" hidden></div><div class="st-jump" id="jump"><button type="button" data-j="top" aria-label="いちばん上へ">▲</button><button type="button" data-j="bot" aria-label="いちばん下へ">▼</button></div>`;
-  // 1.17.6: long lists: ▲▼ appear at the right edge while scrolling (tap = jump to the top / bottom)
-  { const jp = $('#jump', el); let hideT = null;
-    const onScroll = () => { if (!el.contains(jp)) return window.removeEventListener('scroll', onScroll); if (document.documentElement.scrollHeight < innerHeight * 2.5) return; jp.classList.add('on'); clearTimeout(hideT); hideT = setTimeout(() => jp.classList.remove('on'), 1800); };
+  // ▲▼: tap = one step, hold = continuous, double tap = edge.
+  // Pointer cancellation and leaving the button always stop scrolling.
+  { const jp = $('#jump', el); let hideT = null, frame = 0, pressed = null, moved = false;
+    const stop = () => { if (frame) cancelAnimationFrame(frame); frame = 0; pressed = null; };
+    const show = () => { jp.classList.add('on'); clearTimeout(hideT); hideT = setTimeout(() => { if (!pressed) jp.classList.remove('on'); }, 1800); };
+    const onScroll = () => { if (!el.contains(jp)) { stop(); window.removeEventListener('scroll', onScroll); return; } if (document.documentElement.scrollHeight >= innerHeight * 2.5) show(); };
     window.addEventListener('scroll', onScroll, { passive: true });
-    jp.onclick = (e) => { const j = e.target.closest('[data-j]')?.dataset.j; if (!j) return; window.scrollTo({ top: j === 'top' ? 0 : document.documentElement.scrollHeight, behavior: 'auto' }); jp.classList.add('on'); clearTimeout(hideT); hideT = setTimeout(() => jp.classList.remove('on'), 1800); }; }
+    for (const btn of jp.querySelectorAll('[data-j]')) {
+      const dir = btn.dataset.j === 'top' ? -1 : 1;
+      btn.setAttribute('aria-label', dir < 0 ? '上へスクロール（長押しで連続・ダブルタップで最上部）' : '下へスクロール（長押しで連続・ダブルタップで最下部）');
+      btn.addEventListener('pointerdown', e => {
+        if (e.button !== 0 || pressed) return;
+        e.preventDefault(); stop(); pressed = btn; moved = false; show();
+        try { btn.setPointerCapture(e.pointerId); } catch {}
+        let last = performance.now(), elapsed = 0;
+        const tick = now => {
+          if (pressed !== btn || !el.contains(jp)) return stop();
+          const dt = Math.min(50, now - last); last = now; elapsed += dt;
+          if (elapsed >= 280) { moved = true; window.scrollBy(0, dir * dt * .75); }
+          frame = requestAnimationFrame(tick);
+        };
+        frame = requestAnimationFrame(tick);
+      });
+      btn.addEventListener('pointerup', () => { if (pressed !== btn) return; const wasHold = moved; stop(); if (!wasHold) window.scrollBy({ top: dir * Math.max(90, innerHeight * .42), behavior: 'auto' }); show(); });
+      for (const event of ['pointercancel', 'lostpointercapture', 'pointerleave']) btn.addEventListener(event, stop);
+      btn.addEventListener('dblclick', e => { e.preventDefault(); stop(); window.scrollTo({ top: dir < 0 ? 0 : document.documentElement.scrollHeight, behavior: 'auto' }); show(); });
+      btn.addEventListener('click', e => { if (e.detail === 0) { window.scrollBy({ top: dir * Math.max(90, innerHeight * .42), behavior: 'auto' }); show(); } });
+    }
+  }
   const vid = $('#vid', el), list = $('#list', el), bar = $('#bar', el);
   // 1.17.4: the title bar (title・↶↷・⋯) stays on top too; the player controls stick right under it
   { const hd = $('header.top', el); hd?.classList.add('st-edhead'); const fit = () => el.style.setProperty('--edh', `${hd?.offsetHeight || 0}px`); fit(); try { new ResizeObserver(fit).observe(hd); } catch {} }
@@ -1017,10 +1041,10 @@ async function editorScreen(el, params) {
     }
     if (editorPlayback) {
       const p = editorPlayback;
-      if (!p.dlg.open) editorPlayback = null;
+      if (!p.dlg.open) { p.cleanup?.(); editorPlayback = null; }
       else {
         const end = p.segmentEnd();
-        if (p.kind === 'range' && !vid.paused && end != null && vid.currentTime >= end - 0.015) { vid.pause(); playing = null; p.done = true; }
+        if (p.kind === 'range' && p.seekReady && !vid.seeking && !vid.paused && end != null && vid.currentTime >= end - 0.015) { vid.pause(); playing = null; p.done = true; }
         if (p.kind === 'block' && p.started && !playing && vid.paused) p.done = true;
         const state = p.dlg.querySelector('#ePlaybackState');
         if (state) {
@@ -1569,7 +1593,7 @@ async function editorScreen(el, params) {
       dlg.close(); if (view !== 'all') setView('all'); setTimeout(() => goNear(id), 50); }));
   }
   async function editBlock(b) {
-    vid.pause(); playing = null; editorPlayback = null;
+    vid.pause(); playing = null; editorPlayback?.cleanup?.(); editorPlayback = null;
     let mode = 'hole'; let work = structuredClone(b);
     // Keep the original positions visible while fine-tuning. No media is copied.
     const originalSegments = structuredClone(b.segments);
@@ -1592,10 +1616,11 @@ async function editorScreen(el, params) {
       $('#ePlay', dlg).onclick = () => {
         readText();
         if (editorPlayback && !vid.paused && !editorPlayback.done) { vid.pause(); playing = null; editorPlayback.started = true; editorPlayback.stopped = true; return; }
+        editorPlayback?.cleanup?.();
         playBlock(work);
         editorPlayback = { dlg, kind: 'block', loop: false, started: true, done: false, segmentEnd: () => work.segments.at(-1)?.end };
       };
-      $('#eLoop', dlg).onclick = () => { readText(); playBlock(work, true); editorPlayback = { dlg, kind: 'block', loop: true, started: true, done: false, segmentEnd: () => work.segments.at(-1)?.end }; };
+      $('#eLoop', dlg).onclick = () => { readText(); editorPlayback?.cleanup?.(); playBlock(work, true); editorPlayback = { dlg, kind: 'block', loop: true, started: true, done: false, segmentEnd: () => work.segments.at(-1)?.end }; };
       $('#eMode', dlg).onclick = (e) => { const v = e.target.dataset.v; if (v) { readText(); mode = v; draw(); } };
       $$('[data-t]', dlg).forEach((t) => (t.onclick = async () => {
         readText(); const i = +t.dataset.t;
@@ -1700,15 +1725,36 @@ async function editorScreen(el, params) {
       return out;
     }
     const playRange = (sid, from, to) => {
-      readText(); if (!attach(sid, from)) return toast('ファイルを選んでください');
-      ++playbackRequest; pendingSegmentSeek = null; playing = null; vid.play().catch(() => {});
-      editorPlayback = { dlg, kind: 'range', loop: false, started: true, done: false, segmentEnd: () => to };
+      readText();
+      if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return toast('再生範囲を確認してください');
+      ++playbackRequest; pendingSegmentSeek = null; playing = null;
+      if (!attach(sid, from)) return toast('ファイルを選んでください');
+      if (editorPlayback?.cleanup) editorPlayback.cleanup();
+      const preview = { dlg, kind: 'range', loop: false, started: true, done: false,
+        stopped: false, seekReady: false, segmentEnd: () => to };
+      editorPlayback = preview;
+      // A seek to a different file may finish asynchronously on iPad/Safari.
+      // Never apply the range end test to the previous playback position.
+      const ready = () => {
+        if (editorPlayback !== preview || vid.dataset.src !== sid) return;
+        if (vid.seeking || Math.abs(vid.currentTime - from) > 0.15) return;
+        preview.seekReady = true;
+        vid.removeEventListener('seeked', ready);
+      };
+      preview.cleanup = () => vid.removeEventListener('seeked', ready);
+      vid.addEventListener('seeked', ready);
+      ready();
+      vid.play().catch((e) => {
+        if (editorPlayback !== preview) return;
+        preview.stopped = true;
+        toast('範囲を再生できません：' + (e?.message || '再生操作をやり直してください'));
+      });
     };
     const readText = () => { const en = $('#eEn', dlg)?.value, ja = $('#eJa', dlg)?.value; if (en != null && (en !== work.text || ja !== work.ja)) work = ops.editText(work, en.trim(), (ja || '').trim()); };
     draw();
     dlg.returnValue = '';
     dlg.onclose = async () => {
-      if (editorPlayback?.dlg === dlg) { editorPlayback = null; vid.pause(); playing = null; }
+      if (editorPlayback?.dlg === dlg) { editorPlayback.cleanup?.(); editorPlayback = null; vid.pause(); playing = null; }
       if (dlg.returnValue !== 'ok') return;
       readText();
       if (JSON.stringify(work) === JSON.stringify(b)) return;
@@ -2112,6 +2158,58 @@ async function editorScreen(el, params) {
       okLabel: '英文をコピー', cancelLabel: '閉じる' });
     if (ok) { try { await navigator.clipboard.writeText(blocks.map((b) => b.text).filter(Boolean).join('\n')); toast('コピーしました'); } catch { toast('コピーできませんでした'); } }
   }
+  // Read-only alignment diagnostic. Never edits blocks, source media or manual timings.
+  function exportAlignmentDiagnostic() {
+    const orderedBlocks = set.order.map((id, index) => ({ b: byId[id], index })).filter((x) => x.b && !x.b.deleted);
+    const rows = orderedBlocks.map(({ b, index }) => {
+      const segs = (b.segments || []).map((g) => ({
+        sourceId: g.sourceId, sourceName: srcs[g.sourceId]?.name || null,
+        start: g.start, end: g.end,
+      }));
+      return {
+        orderIndex: index, id: b.id, revision: b.rev, text: b.text || '',
+        label: b.label || '', asr: !!b.asr, aligned: !!b.aligned,
+        sync: b.sync || null, manual: b.sync === 'manual',
+        segments: segs, lineage: b.lineage || null,
+        normalizedTokens: tokensOf(b.text || ''),
+      };
+    });
+    const overlaps = [];
+    const perSource = new Map();
+    for (const r of rows) for (const g of r.segments) {
+      if (!Number.isFinite(g.start) || !Number.isFinite(g.end) || g.end <= g.start) continue;
+      if (!perSource.has(g.sourceId)) perSource.set(g.sourceId, []);
+      perSource.get(g.sourceId).push({ r, g });
+    }
+    for (const [sourceId, entries] of perSource) {
+      entries.sort((a, b) => a.g.start - b.g.start || a.g.end - b.g.end);
+      for (let i = 0; i < entries.length; i++) {
+        for (let j = i + 1; j < entries.length && entries[j].g.start < entries[i].g.end; j++) {
+          const a = entries[i], b = entries[j];
+          const seconds = Math.min(a.g.end, b.g.end) - Math.max(a.g.start, b.g.start);
+          if (seconds > 0.01) overlaps.push({ sourceId, firstId: a.r.id, secondId: b.r.id, seconds: +seconds.toFixed(3), firstKind: a.r.aligned ? 'aligned' : a.r.asr ? 'asr' : 'other', secondKind: b.r.aligned ? 'aligned' : b.r.asr ? 'asr' : 'other' });
+        }
+      }
+    }
+    const report = {
+      format: 'englabo-alignment-diagnostic-v1', generatedAt: new Date().toISOString(),
+      appStudioVersion: STUDIO_VERSION, setId: set.id, setTitle: set.title,
+      counts: { total: rows.length, audioMissing: rows.filter((r) => !r.segments.length).length,
+        aligned: rows.filter((r) => r.aligned).length, asr: rows.filter((r) => r.asr).length,
+        overlappingPairs: overlaps.length },
+      sources: [...perSource].map(([id, entries]) => ({ id, name: srcs[id]?.name || null, timedRows: entries.length })),
+      rows, overlaps,
+      note: 'Read-only snapshot. Overlap does not necessarily indicate an error; repeated speech and nested ASR cues can be valid. Timestamps are source-local seconds.',
+    };
+    const file = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    const url = URL.createObjectURL(file);
+    a.href = url;
+    a.download = `englabo-diagnostic-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 3000);
+    toast(`診断データを出力しました（${rows.length}行・重複候補${overlaps.length}組）。音声ファイルは含みません`, 4500);
+  }
   // ---------- script ↔ audio: the transcription (with mistakes) gives the times, the script gives the text ----------
   function scriptLines() { return set.order.map((id) => byId[id]).filter((b) => b && !b.segments.length && b.text.trim()); }
   async function runAlign({ afterAsr = 0 } = {}) {
@@ -2392,6 +2490,7 @@ async function editorScreen(el, params) {
       <button class="btn" value="names">固有名詞をまとめて直す</button>
       <button class="btn" value="words">単語リストを作る</button>
       <button class="btn" value="txt">テキストを書き出す</button>
+      <button class="btn" value="diag">照合・重複の診断データを書き出す（変更なし）</button>
       ${Object.values(srcs).some((x) => x.audio?.count > 1 && x.derived !== 'audio16k') ? '<button class="btn" value="track">使う音声トラックを選ぶ</button>' : ''}
       ${Object.values(srcs).some((x) => x.stored && (x.derived !== 'audio16k' || x.codec === 'aac')) ? '<button class="btn" value="toaudio">容量を減らす（音声だけ・低音質に）</button>' : ''}
       <button class="btn" value="full">スクリプト全文を見る（抜け・重複の確認・範囲で削除）</button>
@@ -2424,6 +2523,7 @@ async function editorScreen(el, params) {
       if (v === 'structResume') resumeSpeechFirstCandidates();
       if (v === 'mergeset') mergeSets();
       if (v === 'txt') exportText();
+      if (v === 'diag') exportAlignmentDiagnostic();
       if (v === 'toaudio') toAudio();
       if (v === 'track') chooseTrackAgain();
       if (v === 'autotrim') autoTrim();

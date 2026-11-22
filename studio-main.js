@@ -1337,6 +1337,8 @@ async function editorScreen(el, params) {
   async function editBlock(b) {
     vid.pause(); playing = null;
     let mode = 'hole'; let work = structuredClone(b);
+    // Keep the original positions visible while fine-tuning. No media is copied.
+    const originalSegments = structuredClone(b.segments);
     const dlg = $('#dialog');
     let draw = () => {
       const toks = tokensOf(work.text);
@@ -1347,7 +1349,8 @@ async function editorScreen(el, params) {
         <div class="st-toks">${toks.map((w, i) => `<button type="button" class="st-tok ${(work.holes || []).some((h) => i >= h.s && i <= h.e) ? 'hole' : ''}" data-t="${i}">${esc(w)}</button>`).join('')}</div>
         <label class="field"><span>和訳</span><textarea id="eJa" rows="2">${esc(work.ja || '')}</textarea></label>
         <div class="stack">${work.segments.map((s, i) => `<div class="st-segrow"><b>区間${i + 1}</b> <small class="muted">${esc(srcs[s.sourceId]?.name || '')}</small>
-          <div class="st-trim" data-trim="${i}"><div class="st-trk"><i class="sel"></i><b class="h" data-h="start"></b><b class="h" data-h="end"></b></div><div class="row small muted"><span class="st-tl0"></span><span class="grow"></span><span>端をドラッグ・離すと試聴</span><span class="grow"></span><span class="st-tl1"></span></div></div>
+          <div class="st-trim" data-trim="${i}"><div class="st-trk"><i class="st-origin"></i><i class="sel" data-slide="${i}" title="長さを固定して移動"></i><b class="h" data-h="start"></b><b class="h" data-h="end"></b></div><div class="row small muted"><span class="st-tl0"></span><span class="grow"></span><span>中央をドラッグ＝長さ固定で移動／薄枠＝元の位置</span><span class="grow"></span><span class="st-tl1"></span></div></div>
+          <div class="row wrap"><button type="button" class="btn xs" data-slide-step="${i}:-0.1">◀ 0.10秒</button><button type="button" class="btn xs" data-slide-step="${i}:-0.05">◀ 0.05秒</button><button type="button" class="btn xs" data-slide-step="${i}:0.05">0.05秒 ▶</button><button type="button" class="btn xs" data-slide-step="${i}:0.1">0.10秒 ▶</button><button type="button" class="btn xs ghost" data-slide-reset="${i}">元の位置</button><span class="small muted" data-slide-delta="${i}"></span></div>
           <div class="row"><button type="button" class="btn xs" data-pseg="${i}:all">${icon('play')} 区間</button><button type="button" class="btn xs" data-pseg="${i}:head">頭2秒</button><button type="button" class="btn xs" data-pseg="${i}:tail">後ろ2秒</button></div>
           <div class="row"><span class="small">開始 ${fmt(s.start)}</span><button type="button" class="btn xs" data-adj="${i}:start:-0.1">−0.1</button><button type="button" class="btn xs" data-adj="${i}:start:0.1">＋0.1</button><button type="button" class="btn xs" data-now="${i}:start">今の位置</button></div>
           <div class="row"><span class="small">終了 ${fmt(s.end)}</span><button type="button" class="btn xs" data-adj="${i}:end:-0.1">−0.1</button><button type="button" class="btn xs" data-adj="${i}:end:0.1">＋0.1</button><button type="button" class="btn xs" data-now="${i}:end">今の位置</button></div></div>`).join('')}</div>
@@ -1377,21 +1380,71 @@ async function editorScreen(el, params) {
         if (k === 'all') playRange(g.sourceId, g.start, g.end); else if (k === 'head') playRange(g.sourceId, g.start, Math.min(g.end, g.start + 2)); else playRange(g.sourceId, Math.max(g.start, g.end - 2), g.end); }));
       if (!$('#eFollow', dlg) && work.segments.length) { const st = $('.st-segrow', dlg); st?.insertAdjacentHTML('beforebegin', `<label class="chk small"><input type="checkbox" id="eFollow" ${follow ? 'checked' : ''}> 前後の行もつなげて動かす（音のダブり・抜けを防ぐ）</label>`);
         $('#eFollow', dlg).onchange = (e) => { follow = e.target.checked; try { localStorage.setItem('st-follow', follow ? '1' : '0'); } catch {} }; }
+      $$('[data-slide-step]', dlg).forEach((x) => (x.onclick = () => {
+        readText(); const [i, delta] = x.dataset.slideStep.split(':');
+        const sg = work.segments[+i], duration = srcs[sg.sourceId]?.duration || Infinity;
+        const d = +delta, length = sg.end - sg.start;
+        const st = Math.max(0, Math.min(duration - length, +(sg.start + d).toFixed(3)));
+        if (!Number.isFinite(st)) return;
+        sg.start = +st.toFixed(3); sg.end = +(st + length).toFixed(3);
+        work.sync = 'manual'; follow = false; draw();
+      }));
+      $$('[data-slide-reset]', dlg).forEach((x) => (x.onclick = () => {
+        readText(); const i = +x.dataset.slideReset, old = originalSegments[i], sg = work.segments[i];
+        if (!old || old.sourceId !== sg.sourceId) return;
+        sg.start = old.start; sg.end = old.end; work.sync = 'manual'; follow = false; draw();
+      }));
       $$('[data-trim]', dlg).forEach((box) => {
-        const i = +box.dataset.trim, sg = work.segments[i], D = srcs[sg.sourceId]?.duration || sg.end + 4;
-        const lo = Math.max(0, sg.start - 4), hi = Math.min(D, sg.end + 4), trk = $('.st-trk', box);
-        const pos = () => { const L = ((sg.start - lo) / (hi - lo)) * 100, R = ((sg.end - lo) / (hi - lo)) * 100; $('.sel', trk).style.cssText = `left:${L}%;width:${R - L}%`; $('[data-h=start]', trk).style.left = `${L}%`; $('[data-h=end]', trk).style.left = `${R}%`; $('.st-tl0', box).textContent = fmt(sg.start); $('.st-tl1', box).textContent = fmt(sg.end); };
+        const i = +box.dataset.trim, sg = work.segments[i], original = originalSegments[i];
+        const D = srcs[sg.sourceId]?.duration || sg.end + 8;
+        // Focus on a short time window, not the entire recording. Show original position.
+        const lo = Math.max(0, Math.min(sg.start, original?.start ?? sg.start) - 1.5);
+        const hi = Math.max(lo + 0.5, Math.min(D, Math.max(sg.end, original?.end ?? sg.end) + 1.5));
+        const trk = $('.st-trk', box);
+        const pct = (t) => Math.max(0, Math.min(100, (t - lo) / (hi - lo) * 100));
+        const pos = () => {
+          const L = pct(sg.start), R = pct(sg.end);
+          $('.sel', trk).style.cssText = `left:${L}%;width:${Math.max(0,R-L)}%`;
+          $('[data-h=start]', trk).style.left = `${L}%`;
+          $('[data-h=end]', trk).style.left = `${R}%`;
+          const origin = $('.st-origin', trk);
+          if (original?.sourceId === sg.sourceId) origin.style.cssText = `left:${pct(original.start)}%;width:${Math.max(0,pct(original.end)-pct(original.start))}%`;
+          else origin.hidden = true;
+          $('.st-tl0', box).textContent = fmt(sg.start); $('.st-tl1', box).textContent = fmt(sg.end);
+          const d = sg.start - (original?.start ?? sg.start);
+          const label = $(`[data-slide-delta="${i}"]`, dlg);
+          if (label) label.textContent = `元の開始から ${d >= 0 ? '+' : ''}${d.toFixed(2)}秒`;
+        };
         pos();
-        $$('[data-h]', trk).forEach((h) => (h.onpointerdown = (e) => {
-          e.preventDefault(); h.setPointerCapture(e.pointerId); const edge = h.dataset.h; readText();
-          const mv = (ev) => { const r = trk.getBoundingClientRect(); let t = lo + ((ev.clientX - r.left) / r.width) * (hi - lo); t = Math.round(Math.max(lo, Math.min(hi, t)) * 20) / 20;
-            if (edge === 'start') sg.start = Math.min(t, sg.end - 0.1); else sg.end = Math.max(t, sg.start + 0.1); work.sync = 'manual'; pos(); };
+        const preview = () => {
+          if (attach(sg.sourceId, sg.start)) {
+            playing = null; vid.play().catch(() => {});
+            clearTimeout(trimBars.t);
+            trimBars.t = setTimeout(() => vid.pause(), Math.min(1.5, sg.end - sg.start) * 1000 / (vid.playbackRate || 1));
+          }
+        };
+        const startDrag = (h, edge) => (e) => {
+          e.preventDefault(); h.setPointerCapture(e.pointerId); readText();
+          const x0 = e.clientX, start0 = sg.start, end0 = sg.end, dur = end0 - start0;
+          const mv = (ev) => {
+            const width = trk.getBoundingClientRect().width; if (!width) return;
+            const delta = Math.round(((ev.clientX - x0) / width) * (hi - lo) * 100) / 100;
+            if (edge === 'slide') {
+              const ns = Math.max(0, Math.min(D - dur, +(start0 + delta).toFixed(2)));
+              sg.start = ns; sg.end = +(ns + dur).toFixed(2);
+              follow = false; // moving a whole word must not change its neighbours
+            } else if (edge === 'start') sg.start = Math.max(0, Math.min(end0 - 0.1, +(start0 + delta).toFixed(2)));
+            else sg.end = Math.min(D, Math.max(start0 + 0.1, +(end0 + delta).toFixed(2)));
+            work.sync = 'manual'; pos();
+          };
           h.onpointermove = mv;
-          h.onpointerup = h.onpointercancel = () => { h.onpointermove = null; h.onpointerup = null;
-            const from = edge === 'start' ? sg.start : Math.max(sg.start, sg.end - 1.2), to = edge === 'start' ? Math.min(sg.end, sg.start + 1.2) : sg.end;
-            if (attach(sg.sourceId, from)) { playing = null; vid.play().catch(() => {}); clearTimeout(trimBars.t); trimBars.t = setTimeout(() => vid.pause(), (to - from) * 1000 / (vid.playbackRate || 1)); }
-            draw(); };
-        }));
+          h.onpointerup = h.onpointercancel = () => {
+            h.onpointermove = null; h.onpointerup = h.onpointercancel = null;
+            preview(); draw();
+          };
+        };
+        $$('[data-h]', trk).forEach((h) => h.onpointerdown = startDrag(h, h.dataset.h));
+        $('[data-slide]', trk).onpointerdown = startDrag($('.sel', trk), 'slide');
       });
     }
     // 1.17.7: neighbours follow — when this line's start / end moves, the line before ends there / the line after starts there,

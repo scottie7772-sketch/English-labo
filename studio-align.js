@@ -117,6 +117,14 @@ export function alignScript(scriptLines, cues, { chunk = 250 } = {}) {
     const interior = timed.length === ws.length;   // every word got a time (matched or between matched words)
     if (!interior && nMatched / ws.length < 0.3) continue;
     if (!nMatched && ws.length > 3) continue;
+    // A vocabulary headword must not be aligned to its occurrence INSIDE an example sentence.
+    // If no standalone recognised cue exists, leave it unmatched rather than inventing a time.
+    if (ws.length === 1) {
+      const ri = sTime[ws[0]];
+      if (ri == null) continue;
+      const cue = cues.find((c) => c.id === R[ri].cue);
+      if (!cue || words(cue.text).length !== 1) continue;
+    }
     lines.push({ li, start: Math.max(first, Math.min(...timed.map((i) => T0[i]))), end: Math.min(last, Math.max(...timed.map((i) => T1[i]))) });
   }
   lines.sort((x, y) => x.li - y.li);

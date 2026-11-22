@@ -121,3 +121,9 @@ header.top.st-edhead ~ .st-stick, header.top.st-edhead ~ * .st-stick { top: var(
 .st-fulllist li.st-fsel { background: rgba(224,96,96,.18); }
 #fBar { gap: 6px; padding: 6px; border-radius: 8px; background: rgba(255,255,255,.05); }
 a.st-setrow { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+
+/* Fine audio positioning: ghost marks the pre-edit range, center slides fixed duration. */
+.st-trk .st-origin { position:absolute; top:2px; bottom:2px; border:2px dashed #7b9ba5; background:rgba(120,160,175,.13); border-radius:4px; pointer-events:none; box-sizing:border-box; }
+.st-trk .sel[data-slide] { cursor:grab; touch-action:none; }
+.st-trk .sel[data-slide]:active { cursor:grabbing; }
+.st-trk .h { z-index:2; }

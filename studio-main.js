@@ -15,7 +15,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.19.6';
+export const STUDIO_VERSION = '0.19.7';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -1729,13 +1729,14 @@ async function editorScreen(el, params) {
   // Stored in the existing block records; survives closing/reopening the studio.
   async function showStructureSaved() {
     await reload();
-    const saved=blocks.filter(b=>b.segments?.length && (b.lineage?.op==='structure-align' || b.structureAlign?.method==='speech-first'))
+    const saved=blocks.filter(b=>b.segments?.length && (b.lineage?.op==='structure-align' || b.structureAlign?.method==='speech-first' || (set.structureAlignReceipt?.blockIds||[]).includes(b.id)))
       .sort((a,b)=>a.segments[0].start-b.segments[0].start);
     const dlg=$('#dialog');
     const lastReceipt=set.structureAlignReceipt;
+    const draft=await sdb.get('sets',set.id).then(x=>x?.speechFirstDraft).catch(()=>null);
     dlg.innerHTML=`<form method="dialog" class="dlg stack"><h3>発話区切りの保存結果（${saved.length}件）</h3>
       <p class="small">${lastReceipt ? `前回の保存記録：${esc(new Date(lastReceipt.at).toLocaleString('ja-JP'))}・選択${lastReceipt.selected}件／書込${lastReceipt.written}件／確認${lastReceipt.verified}件。` : 'この教材の保存記録はありません。'} 現在この教材に保存されている照合済みの行です。▶で該当区間を再生し、「行へ」で一覧内の位置を表示します。元音声やスクリプトは変更しません。</p>
-      <div class="stack" style="max-height:57vh;overflow:auto">${saved.length?saved.map((b,i)=>`<div class="card stack" style="padding:10px"><div>${esc(b.text)}</div><small class="muted">${fmt(b.segments[0].start)}〜${fmt(b.segments.at(-1).end)}・${esc(srcs[b.segments[0].sourceId]?.name||'音声ファイル')}</small><div class="row"><button type="button" class="btn sm" data-saved-play="${i}">▶ 再生</button><button class="btn sm ghost" value="jump:${i}">行へ移動</button></div></div>`).join(''):'<p class="muted">保存済みの発話区切り照合結果は見つかりません。以前の保存が反映されなかった可能性があります。</p>'}</div>
+      <div class="stack" style="max-height:57vh;overflow:auto">${draft?.length?`<p class="small">未確定の解析候補 ${draft.length}件があります。再解析せずに「⋯ → 発話区切りの候補を再表示」で確認できます。</p>`:''}${saved.length?saved.map((b,i)=>`<div class="card stack" style="padding:10px"><div>${esc(b.text)}</div><small class="muted">${fmt(b.segments[0].start)}〜${fmt(b.segments.at(-1).end)}・${esc(srcs[b.segments[0].sourceId]?.name||'音声ファイル')}</small><div class="row"><button type="button" class="btn sm" data-saved-play="${i}">▶ 再生</button><button class="btn sm ghost" value="jump:${i}">行へ移動</button></div></div>`).join(''):'<p class="muted">保存済みの発話区切り照合結果は見つかりません。以前の保存が反映されなかった可能性があります。</p>'}</div>
       <button class="btn ghost" value="cancel">閉じる</button></form>`;
     $$('[data-saved-play]',dlg).forEach(btn=>btn.onclick=()=>playBlock(saved[+btn.dataset.savedPlay]));
     dlg.returnValue='';
@@ -1748,6 +1749,55 @@ async function editorScreen(el, params) {
       if(row){row.scrollIntoView({block:'center'});row.classList.add('cur');}
     };
     dlg.showModal();
+  }
+
+  // Dedicated dialog: avoids queued `close` events from the shared #dialog on iPad Safari.
+  async function pickSpeechFirstCandidates(draft) {
+    return new Promise(resolve=>{
+      const d=document.createElement('dialog');
+      d.className='st-speech-pick';
+      d.style.cssText='max-width:min(94vw,700px);max-height:85dvh;overflow:auto;padding:20px;border:0;border-radius:18px;background:#292f49;color:#fff';
+      d.innerHTML=`<div class="dlg stack"><h3>照合候補 ${draft.length}件</h3><p class="small">解析結果は教材に一時保存済みです。画面を閉じても再解析せず再表示できます。</p><div class="stack" style="max-height:55dvh;overflow:auto">${draft.map((x,i)=>`<label class="chk"><input type="checkbox" data-pick="${i}" checked><span>${esc(x.text.slice(0,90))}<br><small>${fmt(x.start)}〜${fmt(x.end)}・一致度 ${Math.round(x.score*100)}%</small></span></label>`).join('')}</div><div class="row end"><button type="button" class="btn ghost" data-cancel>あとで確認</button><button type="button" class="btn primary" data-save>選択した候補を保存</button></div></div>`;
+      document.body.appendChild(d);
+      let settled=false;
+      const finish=(v)=>{if(settled)return;settled=true;d.removeEventListener('close',closed);if(d.open)d.close();d.remove();resolve(v);};
+      const closed=()=>finish(null);
+      d.addEventListener('close',closed);
+      d.querySelector('[data-cancel]').onclick=()=>finish(null);
+      d.querySelector('[data-save]').onclick=()=>finish(new Set([...d.querySelectorAll('[data-pick]:checked')].map(e=>draft[Number(e.dataset.pick)].blockId)));
+      d.showModal();
+    });
+  }
+  async function resumeSpeechFirstCandidates(){
+    const fresh=await sdb.get('sets',set.id);
+    const draft=fresh?.speechFirstDraft||[];
+    if(!draft.length)return confirmDialog({title:'未確定の候補はありません',body:'この教材に再表示できる解析候補はありません。',okLabel:'閉じる',cancelLabel:null});
+    const ids=await pickSpeechFirstCandidates(draft);
+    if(!ids?.size)return;
+    await saveSpeechFirstCandidates(draft.filter(x=>ids.has(x.blockId)),draft.length);
+  }
+  async function saveSpeechFirstCandidates(chosenCandidates, selectedCount){
+    await reload();
+    const skips=[];
+    const changes=[];
+    for(const x of chosenCandidates){
+      const latest=byId[x.blockId];
+      if(!latest){skips.push('対象行なし: '+x.text);continue;}
+      if(latest.segments?.length){skips.push('既に音声あり: '+x.text);continue;}
+      if(!set.order.includes(latest.id)){skips.push('教材の行一覧に存在しない: '+x.text);continue;}
+      if(!srcs[x.sourceId]){skips.push('音声ファイルID不明: '+x.text);continue;}
+      changes.push({...latest,segments:[{sourceId:x.sourceId,start:x.start,end:x.end}],aligned:true,sync:'auto',structureAlign:{method:'speech-first',score:x.score,at:Date.now()},lineage:{op:'structure-align',from:[`${latest.id}@${latest.rev}`],at:Date.now(),score:x.score}});
+    }
+    let written=0,verified=[];let error='';
+    try{
+      if(changes.length){const r=await commit(set,'発話区切りから照合',{blocks:changes},srcs);written=r.blocks.length;}
+      await reload();drawList();
+      verified=changes.filter(x=>{const b=byId[x.id],a=b?.segments?.[0],g=x.segments[0];return a?.sourceId===g.sourceId&&Math.abs(a.start-g.start)<.01&&Math.abs(a.end-g.end)<.01;});
+      const fresh=await sdb.get('sets',set.id);
+      await sdb.put('sets',{...fresh,structureAlignReceipt:{at:Date.now(),selected:selectedCount,written,verified:verified.length,blockIds:verified.map(x=>x.id)},speechFirstDraft:(fresh.speechFirstDraft||[]).filter(x=>!verified.some(v=>v.id===x.blockId))});
+      await reload();
+    }catch(e){error=e?.message||String(e);}
+    await confirmDialog({title:error?'保存エラー':verified.length===chosenCandidates.length?'照合結果を保存しました':'保存結果を確認してください',body:`<p>選択 ${selectedCount}件／保存対象 ${changes.length}件／書込 ${written}件／再読込確認 ${verified.length}件</p>${error?`<p class="warn-text">${esc(error)}</p>`:''}${skips.length?`<details><summary>保存対象外 ${skips.length}件（理由）</summary><p class="small">${skips.map(esc).join('<br>')}</p></details>`:''}<p>未確定の候補は再表示できます。</p>`,okLabel:'閉じる',cancelLabel:null});
   }
 
   // Opt-in: boundaries first, independent ASR per utterance, then monotone script alignment.
@@ -1790,57 +1840,14 @@ async function editorScreen(el, params) {
     finally{tr?.close();lock?.release?.();if(dlg.open){dlg.onclose=null;dlg.close();}}
     if(cancelled)return toast('中止しました（データ変更なし）');
     if(!result.length)return confirmDialog({title:'安全な一致候補がありません',body:'発話区間は検出しましたが、認識結果とスクリプトの強い一致が得られませんでした。字幕は変更していません。短い単語や重複する例文は誤対応防止のため保留します。',okLabel:'閉じる',cancelLabel:null});
-    // Read selections inside the dialog close handler, before another dialog can replace its DOM.
-    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>照合候補 ${result.length}件（冒頭30発話）</h3>
-      <p class="small">一致率は文字列の一致度です。保存後、実際の再生位置を確認してください。既存の音声付き行は変更しません。</p>
-      <div class="stack" style="max-height:48vh;overflow:auto">${result.map(x=>`<label class="chk"><input type="checkbox" class="structPick" value="${esc(x.b.id)}" checked> <span>${esc(x.b.text.slice(0,85))}<br><small>${fmt(x.u.start)}〜${fmt(x.u.end)}・一致度 ${Math.round(x.score*100)}%</small></span></label>`).join('')}</div>
-      <div class="row end"><button class="btn ghost" value="cancel">保存しない</button><button class="btn primary" value="apply">選択した候補を保存</button></div></form>`;
-    // Capture selections on the actual button click, before Safari closes the dialog.
-    // Relying on dialog.returnValue in a delayed close event can lose the selection.
-    dlg.returnValue='';
-    const ids=await new Promise(resolve=>{
-      let settled=false;
-      const finish=value=>{if(settled)return;settled=true;dlg.onclose=null;if(dlg.open)dlg.close();resolve(value);};
-      const apply=dlg.querySelector('button[value="apply"]');
-      const cancel=dlg.querySelector('button[value="cancel"]');
-      apply.addEventListener('click',e=>{
-        e.preventDefault();
-        finish(new Set([...dlg.querySelectorAll('.structPick:checked')].map(x=>x.value)));
-      },{once:true});
-      cancel.addEventListener('click',e=>{e.preventDefault();finish(null);},{once:true});
-      dlg.onclose=()=>finish(null);
-      dlg.showModal();
-    });
+    // Store candidates BEFORE displaying them. No audio blobs are duplicated.
+    const draft=result.map(({b,u,score})=>({blockId:b.id,sourceId:chosen.id,start:u.start,end:u.end,score,text:b.text}));
+    const freshForDraft=await sdb.get('sets',set.id);
+    await sdb.put('sets',{...freshForDraft,speechFirstDraft:draft});
+    const ids=await pickSpeechFirstCandidates(draft);
     if(!ids)return;
     if(!ids.size)return toast('候補が選択されていません',3500);
-    // Verify the latest record, not a stale preview reference. Preserve every other field.
-    await reload();
-    const changes=result.filter(x=>ids.has(x.b.id)).map(({b,u,score})=>{
-      const latest=byId[b.id];
-      if(!latest || latest.segments.length || !set.order.includes(b.id))return null;
-      return {...latest,segments:[{sourceId:chosen.id,start:u.start,end:u.end}],aligned:true,sync:'auto',
-        structureAlign:{method:'speech-first',score,at:Date.now()},
-        lineage:{op:'structure-align',from:[`${latest.id}@${latest.rev}`],at:Date.now(),score}};
-    }).filter(Boolean);
-    if(!changes.length)return confirmDialog({title:'保存対象が0件です',body:`選択${ids.size}件のうち、未照合のスクリプト行として保存可能なものがありませんでした。既存の音声付き行は変更していません。`,okLabel:'閉じる',cancelLabel:null});
-    try {
-      const write=await commit(set,'発話区切りから照合',{blocks:changes},srcs);
-      await reload();drawList();
-      const verified=changes.filter(x=>{
-        const b=byId[x.id],a=b?.segments?.[0],g=x.segments[0];
-        return a?.sourceId===g.sourceId && Math.abs(a.start-g.start)<.01 && Math.abs(a.end-g.end)<.01;
-      });
-      // A compact receipt is separate from individual block metadata; no audio is copied.
-      // This allows us to diagnose missing list entries without rerunning recognition.
-      const receipt={at:Date.now(),sourceId:chosen.id,selected:ids.size,written:write.blocks.length,verified:verified.length,
-        blockIds:changes.map(x=>x.id)};
-      set.structureAlignReceipt=receipt;
-      await sdb.put('sets',set);
-      await reload();
-      const details=`<p>選択：${ids.size}件／書込：${write.blocks.length}件／再読込確認：${verified.length}件</p>`;
-      await confirmDialog({title:verified.length===changes.length?'照合結果を保存しました':'保存結果を確認してください',body:`${details}<p>教材「${esc(set.title)}」に保存しました。「⋯ → 発話区切りの保存結果を見る」で確認できます。</p>${verified.length!==changes.length?'<p class="warn-text">書込と再読込に差があります。再解析せず、この画面を記録してください。</p>':''}`,okLabel:'閉じる',cancelLabel:null});
-    }catch(e){toast('照合結果の保存失敗：'+(e?.message||String(e)),6500);}
-
+    await saveSpeechFirstCandidates(draft.filter(x=>ids.has(x.blockId)),ids.size);
   }
 
   // ---------- transcription (Whisper in the browser; audio never leaves the device) ----------
@@ -2201,6 +2208,7 @@ async function editorScreen(el, params) {
       <button class="btn" value="realign">構造を使った再照合（プレビュー）</button>
       <button class="btn" value="structImport">発話を先に区切って照合（試験版）</button>
       <button class="btn" value="structSaved">発話区切りの保存結果を見る</button>
+      <button class="btn" value="structResume">発話区切りの候補を再表示</button>
       <button class="btn" value="mergeset">別の教材をこの教材にまとめる</button>
       <button class="btn" value="names">固有名詞をまとめて直す</button>
       <button class="btn" value="words">単語リストを作る</button>
@@ -2234,6 +2242,7 @@ async function editorScreen(el, params) {
       if (v === 'realign') previewStructuralRealign();
       if (v === 'structImport') importBySpeechStructure();
       if (v === 'structSaved') showStructureSaved();
+      if (v === 'structResume') resumeSpeechFirstCandidates();
       if (v === 'mergeset') mergeSets();
       if (v === 'txt') exportText();
       if (v === 'toaudio') toAudio();

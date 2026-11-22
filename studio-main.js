@@ -10,6 +10,7 @@ import { extractPhrases, extractWords } from './studio-words.js';
 import { findCandidates, applySpans } from './studio-names.js';
 import { alignScript, scriptToLines } from './studio-align.js';
 import { speechRegions, regionStatistics, snapCueToRegion } from './studio-structure.js';
+import { alignUtterances } from './studio-import-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
@@ -1717,6 +1718,57 @@ async function editorScreen(el, params) {
     if (thenAlign && blocks.some((b) => b.script && !b.segments.length)) { toast('スクリプトと照合します…', 1500); await reload(); await runAlign(); }
   }
 
+  // Opt-in: boundaries first, independent ASR per utterance, then monotone script alignment.
+  // Preview only: no ASR rows or script changes are persisted before explicit approval.
+  async function importBySpeechStructure() {
+    const sl=scriptLines();
+    if(!sl.length)return toast('先に完全なスクリプトを取り込んでください',4500);
+    const sources=Object.values(srcs).filter(x=>x.stored ? x.blob : sessionFiles.get(x.id));
+    if(!sources.length)return toast('音声ファイルを選び直してください',4500);
+    const chosen=sources.length===1?sources[0]:sources.find(x=>blocks.some(b=>b.segments[0]?.sourceId===x.id))||sources[0];
+    const ok=await confirmDialog({title:'発話を先に区切って照合（試験版）',body:`<p>対象：${esc(chosen.name)}</p><p>音声の発話境界を先に検出し、冒頭最大30発話を個別に端末内で文字起こしします。文字と順序が強く一致する字幕だけを候補にします。</p><p class="hint">初回は無料モデルのダウンロードが必要です。音声は外部送信しません。処理中は画面を開いたままにしてください。すでに音声が付いている字幕・手動調整済みの字幕は変更しません。</p>`,okLabel:'解析を開始'});
+    if(!ok)return;
+    let tr=null;const dlg=$('#dialog');let cancelled=false;
+    await new Promise(r=>setTimeout(r,60));if(dlg.open){dlg.onclose=null;dlg.close();}
+    dlg.innerHTML='<form method="dialog" class="dlg stack"><h3>発話区間を解析中</h3><p id="structMsg">音声を準備しています…</p><div id="structCap"></div><button class="btn ghost" value="cancel">中止</button></form>';
+    dlg.onclose=()=>{cancelled=true;tr?.close();};dlg.showModal();
+    const say=t=>{const e=$('#structMsg',dlg);if(e)e.textContent=t;};
+    const lock=await navigator.wakeLock?.request?.('screen').catch(()=>null);
+    let result=[];
+    try {
+      const blob=chosen.stored?chosen.blob:sessionFiles.get(chosen.id);
+      const decoded=await sourceAudio16k(chosen,blob,{box:$('#structCap',dlg),say});
+      const audio=decoded.audio;highPass(audio);
+      const regions=speechRegions(audio,16000).filter(r=>r.end-r.start>=.2);
+      if(!regions.length)throw new Error('発話区間を検出できませんでした');
+      const picked=regions.slice(0,30);
+      say(`${regions.length}発話を検出。冒頭${picked.length}発話を文字起こしします…`);
+      tr=openTranscriber('en',say,{quality:'acc'});
+      const utterances=[];
+      for(let k=0;k<picked.length&&!cancelled;k++){
+        const r=picked[k];say(`発話 ${k+1}/${picked.length}：${fmt(r.start)}〜${fmt(r.end)}`);
+        const cues=await recognisePiece(tr,audio,Math.max(0,r.start-.12),Math.min(decoded.duration,r.end+.12));
+        utterances.push({...r,text:(cues.raw||cues.map(x=>x.text).join(' ')).trim()});
+      }
+      if(!cancelled){
+        const proposals=alignUtterances(sl.map(b=>({text:b.text})),utterances);
+        result=proposals.map(p=>({b:sl[p.scriptIndex],u:utterances[p.utteranceIndex],score:p.score})).filter(x=>!x.b.segments.length);
+      }
+    }catch(e){if(!cancelled)toast('解析失敗：'+(e?.message||e),6000);}
+    finally{tr?.close();lock?.release?.();if(dlg.open){dlg.onclose=null;dlg.close();}}
+    if(cancelled)return toast('中止しました（データ変更なし）');
+    if(!result.length)return confirmDialog({title:'安全な一致候補がありません',body:'発話区間は検出しましたが、認識結果とスクリプトの強い一致が得られませんでした。字幕は変更していません。短い単語や重複する例文は誤対応防止のため保留します。',okLabel:'閉じる',cancelLabel:null});
+    let selectedIds=null;
+    dlg.addEventListener('close',()=>{selectedIds=new Set([...dlg.querySelectorAll('.structPick:checked')].map(x=>x.value));},{once:true});
+    const confirmed=await confirmDialog({title:`照合候補 ${result.length}件（冒頭30発話）`,body:`<p>強く一致した候補だけを表示しています。未一致・繰り返し例文は変更しません。</p><div class="stack" style="max-height:45vh;overflow:auto">${result.map(x=>`<label class="chk"><input type="checkbox" class="structPick" value="${esc(x.b.id)}" checked> ${esc(x.b.text.slice(0,85))}<br><small>${fmt(x.u.start)}〜${fmt(x.u.end)}・一致度 ${Math.round(x.score*100)}%</small></label>`).join('')}</div>`,okLabel:'選択した候補を保存',cancelLabel:'保存しない'});
+    if(!confirmed)return;
+    const ids=selectedIds||new Set();
+    // Capture checkbox selection on the dialog close event; never default to applying all.
+    if(!ids.size)return toast('選択を取得できなかったため変更しませんでした',4000);
+    const changes=result.filter(x=>ids.has(x.b.id)&&!byId[x.b.id]?.segments.length).map(({b,u})=>({ ...byId[b.id],segments:[{sourceId:chosen.id,start:u.start,end:u.end}],aligned:true,sync:'auto',lineage:{op:'structure-align',from:[`${b.id}@${b.rev}`],at:Date.now()} }));
+    if(changes.length)await run('発話区切りから照合', {blocks:changes});
+  }
+
   // ---------- transcription (Whisper in the browser; audio never leaves the device) ----------
   // Pieces of ~2 min are transcribed one by one and saved as they finish. The block that still has no text keeps the rest,
   // so if iOS reloads the page, running it again continues from where it stopped.
@@ -2073,6 +2125,7 @@ async function editorScreen(el, params) {
       <button class="btn" value="align">スクリプトと照合</button>
       <button class="btn" value="refine">音声位置を一括自動調整（試験版）</button>
       <button class="btn" value="realign">構造を使った再照合（プレビュー）</button>
+      <button class="btn" value="structImport">発話を先に区切って照合（試験版）</button>
       <button class="btn" value="mergeset">別の教材をこの教材にまとめる</button>
       <button class="btn" value="names">固有名詞をまとめて直す</button>
       <button class="btn" value="words">単語リストを作る</button>
@@ -2104,6 +2157,7 @@ async function editorScreen(el, params) {
       if (v === 'align') runAlign();
       if (v === 'refine') refineBoundaries();
       if (v === 'realign') previewStructuralRealign();
+      if (v === 'structImport') importBySpeechStructure();
       if (v === 'mergeset') mergeSets();
       if (v === 'txt') exportText();
       if (v === 'toaudio') toAudio();

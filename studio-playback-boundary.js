@@ -1,0 +1,17 @@
+// Playback-only boundary padding for speech-first alignment.
+// Never mutates stored segments or manually edited timings.
+export function speechFirstPlaybackRange(block, segment, allBlocks, duration = Infinity) {
+  if (!block || !segment || block.sync === 'manual' ||
+      block.structureAlign?.method !== 'speech-first') return null;
+  const start = Number(segment.start), end = Number(segment.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  const others = (allBlocks || []).filter(b => b && b.id !== block.id && !b.deleted)
+    .flatMap(b => b.segments || []).filter(s => s.sourceId === segment.sourceId &&
+      Number.isFinite(s.start) && Number.isFinite(s.end));
+  const previousEnd = Math.max(0, ...others.filter(s => s.end <= start).map(s => s.end));
+  const nextStart = Math.min(duration, ...others.filter(s => s.start >= end).map(s => s.start));
+  // For adjacent blocks, never enter the neighbour's saved interval.
+  const paddedStart = Math.max(0, previousEnd, start - 0.18);
+  const paddedEnd = Math.min(duration, nextStart, end + 0.06);
+  return { start: Math.min(start, paddedStart), end: Math.max(end, paddedEnd) };
+}

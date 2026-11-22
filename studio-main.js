@@ -10,6 +10,7 @@ import { extractPhrases, extractWords } from './studio-words.js';
 import { findCandidates, applySpans } from './studio-names.js';
 import { alignScript, scriptToLines } from './studio-align.js';
 import { speechRegions, regionStatistics, snapCueToRegion } from './studio-structure.js';
+import { speechFirstPlaybackRange } from './studio-playback-boundary.js';
 import { alignUtterances } from './studio-import-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
@@ -895,6 +896,15 @@ async function editorScreen(el, params) {
   // ---------- media ----------
   // iOS only lets a tap start sound if play() is called right away (no waiting before it), so everything here is synchronous
   let seekTo = null, seeking = false;
+  // A new subtitle tap supersedes pending play() promises from earlier taps.
+  let playbackRequest = 0;
+  let pendingSegmentSeek = null;
+  vid.addEventListener('seeked', () => {
+    if (!pendingSegmentSeek || pendingSegmentSeek.request !== playbackRequest) return;
+    // Do not advance to the next subtitle while the media element is seeking.
+    if (vid.dataset.src === pendingSegmentSeek.sourceId &&
+        Math.abs(vid.currentTime - pendingSegmentSeek.time) < 0.12) pendingSegmentSeek = null;
+  });
   vid.addEventListener('loadedmetadata', () => { if (seekTo != null) { vid.currentTime = seekTo; seekTo = null; } });
   function attach(sourceId, at = null) {
     const s = srcs[sourceId]; const u = mediaURL(s);
@@ -937,10 +947,12 @@ async function editorScreen(el, params) {
   }
   let estMap = new Map();
   function playBlock(b, loop = false, cont = false, from = null) {
+    ++playbackRequest;
+    pendingSegmentSeek = null;
     if (!b.segments.length) { const e = estMap.get(b.id); if (e && attach(e.sid, e.t)) { vid.pause(); playing = null; return toast(`音声なし・推定位置 ≈${fmt(e.t)}`, 1800); } return toast('この項目には音声区間がありません'); }
     let i = 0;
     if (from != null) { const k = b.segments.findIndex((x) => x.sourceId === vid.dataset.src && from >= x.start && from < x.end - 0.05); if (k >= 0) i = k; else from = null; }
-    playing = { b, i, loop, cont }; curBlock = b;
+    playing = { b, i, loop, cont, range: null }; curBlock = b;
     startSeg(from);
   }
   function nextPlayable(b) {
@@ -951,16 +963,25 @@ async function editorScreen(el, params) {
   function startSeg(from = null) {
     const p = playing; if (!p) return;
     const s = p.b.segments[p.i];
-    if (!attach(s.sourceId, from ?? s.start)) { playing = null; return toast('ファイルを選んでください'); }
+    // Playback-only padding for saved speech-first matches; never rewrite their timings.
+    // Explicit user seeks and manually edited blocks keep their exact requested start.
+    p.range = from == null ? speechFirstPlaybackRange(p.b, s, blocks, srcs[s.sourceId]?.duration ?? Infinity) : null;
+    const target = from ?? p.range?.start ?? s.start;
+    const request = ++playbackRequest;
+    pendingSegmentSeek = { request, sourceId: s.sourceId, time: target };
+    if (!attach(s.sourceId, target)) { pendingSegmentSeek = null; playing = null; return toast('ファイルを選んでください'); }
+    // If seeking is unnecessary, do not wait for an event that may never fire.
+    if (vid.readyState >= 1 && !vid.seeking && Math.abs(vid.currentTime - target) < 0.025) pendingSegmentSeek = null;
     try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
-    vid.play().catch((e) => { if (e.name === 'NotAllowedError') toast('もう一度タップしてください'); });
+    // iOS requires play() in the tap's activation stack. Never await seeked before play().
+    vid.play().catch((e) => { if (request !== playbackRequest) return; if (e.name === 'NotAllowedError') toast('もう一度タップしてください'); });
   }
   let editorPlayback = null;
   let raf = 0;
   const tick = () => {
-    if (playing && !vid.paused) {
+    if (playing && !vid.paused && !vid.seeking && !pendingSegmentSeek) {
       const s = playing.b.segments[playing.i];
-      if (vid.currentTime >= s.end - 0.02) {
+      if (vid.currentTime >= (playing.range?.end ?? s.end) - 0.02) {
         if (playing.i + 1 < playing.b.segments.length) { playing.i++; startSeg(); }
         else if (playing.loop) { playing.i = 0; startSeg(); }
         else if (playing.cont) {
@@ -1548,7 +1569,7 @@ async function editorScreen(el, params) {
         pos();
         const preview = () => {
           if (attach(sg.sourceId, sg.start)) {
-            playing = null; vid.play().catch(() => {});
+            ++playbackRequest; pendingSegmentSeek = null; playing = null; vid.play().catch(() => {});
             clearTimeout(trimBars.t);
             trimBars.t = setTimeout(() => vid.pause(), Math.min(1.5, sg.end - sg.start) * 1000 / (vid.playbackRate || 1));
           }
@@ -1592,7 +1613,7 @@ async function editorScreen(el, params) {
     }
     const playRange = (sid, from, to) => {
       readText(); if (!attach(sid, from)) return toast('ファイルを選んでください');
-      playing = null; vid.play().catch(() => {});
+      ++playbackRequest; pendingSegmentSeek = null; playing = null; vid.play().catch(() => {});
       editorPlayback = { dlg, kind: 'range', loop: false, started: true, done: false, segmentEnd: () => to };
     };
     const readText = () => { const en = $('#eEn', dlg)?.value, ja = $('#eJa', dlg)?.value; if (en != null && (en !== work.text || ja !== work.ja)) work = ops.editText(work, en.trim(), (ja || '').trim()); };
@@ -2186,9 +2207,9 @@ async function editorScreen(el, params) {
     const sid = vid.dataset.src; const b = blocks.find((x) => x.segments.some((g) => g.sourceId === sid && t >= g.start && t < g.end));
     if (b) { const i = b.segments.findIndex((g) => g.sourceId === sid && t >= g.start && t < g.end); playing = { b, i, loop: false, cont: true }; curBlock = b; } else playing = null;
   };
-  const jump = (d) => { const t = Math.max(0, Math.min(vid.duration || Infinity, vid.currentTime + d)); vid.currentTime = t; syncAt(t); };
+  const jump = (d) => { ++playbackRequest; pendingSegmentSeek = null; const t = Math.max(0, Math.min(vid.duration || Infinity, vid.currentTime + d)); vid.currentTime = t; syncAt(t); };
   const sk = $('#seek', el);
-  sk.addEventListener('input', () => { seeking = true; vid.currentTime = +sk.value; $('#tnow', el).textContent = fmt(+sk.value); });
+  sk.addEventListener('input', () => { ++playbackRequest; pendingSegmentSeek = null; seeking = true; vid.currentTime = +sk.value; $('#tnow', el).textContent = fmt(+sk.value); });
   sk.addEventListener('change', () => { seeking = false; vid.currentTime = +sk.value; syncAt(+sk.value); });
   sk.addEventListener('touchend', () => setTimeout(() => { if (seeking) { seeking = false; syncAt(+sk.value); } }, 50));
   $('#back3', el).onclick = () => jump(-3);

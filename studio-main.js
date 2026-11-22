@@ -1873,9 +1873,47 @@ async function editorScreen(el, params) {
     if(!sl.length)return toast('先に完全なスクリプトを取り込んでください',4500);
     const sources=Object.values(srcs).filter(x=>x.stored ? x.blob : sessionFiles.get(x.id));
     if(!sources.length)return toast('音声ファイルを選び直してください',4500);
-    const chosen=sources.length===1?sources[0]:sources.find(x=>blocks.some(b=>b.segments[0]?.sourceId===x.id))||sources[0];
-    const ok=await confirmDialog({title:'発話を先に区切って照合（試験版）',body:`<p>対象：${esc(chosen.name)}</p><p>音声の発話境界を先に検出し、冒頭最大30発話を個別に端末内で文字起こしします。文字と順序が強く一致する字幕だけを候補にします。</p><p class="hint">初回は無料モデルのダウンロードが必要です。音声は外部送信しません。処理中は画面を開いたままにしてください。すでに音声が付いている字幕・手動調整済みの字幕は変更しません。</p>`,okLabel:'解析を開始'});
-    if(!ok)return;
+    // Explicit source and time window; default remains the original first 30 utterances.
+    // Only the selected window is ASR'd; all timestamps remain source-absolute.
+    const parseClock = value => {
+      const v=String(value||'').trim();
+      if (!/^(?:\d+:)?\d{1,2}:\d{2}(?:\.\d+)?$/.test(v)) return NaN;
+      const parts=v.split(':').map(Number);
+      if (parts.some(x=>!Number.isFinite(x))) return NaN;
+      return parts.reduce((acc,x)=>acc*60+x,0);
+    };
+    const defaultSource=sources.length===1?sources[0]:sources.find(x=>blocks.some(b=>b.segments[0]?.sourceId===x.id))||sources[0];
+    const cfg=await new Promise(resolve=>{
+      const dlg=$('#dialog');
+      if(dlg.open){dlg.onclose=null;dlg.close();}
+      dlg.innerHTML=`<form method="dialog" class="dlg stack"><h3>発話を先に区切って照合（試験版）</h3>
+        <label>音声ファイル<select id="structSource">${sources.map(x=>`<option value="${esc(x.id)}" ${x.id===defaultSource.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>
+        <p class="small">開始・終了時刻を指定できます。空欄の終了時刻はファイル末尾です。最大30発話を解析します。</p>
+        <div class="row"><label class="field grow">開始（分:秒）<input id="structStart" inputmode="decimal" value="00:00" placeholder="05:00"></label><label class="field grow">終了（分:秒）<input id="structEnd" inputmode="decimal" placeholder="空欄なら最後まで"></label></div>
+        <p class="hint">無料・端末内処理。音声の途中からでもスクリプト全体から一致候補を探します。既存の保存結果と手動編集は上書きしません。処理中は画面を開いたままにしてください。</p>
+        <p id="structRangeError" class="warn-text small" aria-live="polite"></p>
+        <div class="row end"><button class="btn ghost" value="cancel">キャンセル</button><button class="btn primary" value="go">解析を開始</button></div></form>`;
+      let selected=null;
+      const form=dlg.querySelector('form');
+      form.addEventListener('submit',e=>{
+        const submit=e.submitter;
+        if(submit?.value!=='go')return;
+        const sid=dlg.querySelector('#structSource').value;
+        const start=parseClock(dlg.querySelector('#structStart').value);
+        const rawEnd=dlg.querySelector('#structEnd').value.trim();
+        const end=rawEnd?parseClock(rawEnd):Infinity;
+        const source=sources.find(x=>x.id===sid);
+        const duration=Number(source?.duration);
+        if(!source||!Number.isFinite(start)||start<0||!Number.isFinite(end)&&end!==Infinity||end<=start||(Number.isFinite(duration)&&duration>0&&start>=duration)){
+          e.preventDefault();dlg.querySelector('#structRangeError').textContent='開始・終了時刻を確認してください（例：05:00〜07:00）。';return;
+        }
+        selected={source,start,end};
+      });
+      dlg.onclose=()=>resolve(dlg.returnValue==='go'?selected:null);
+      dlg.showModal();
+    });
+    if(!cfg)return;
+    const chosen=cfg.source;
     let tr=null;const dlg=$('#dialog');let cancelled=false;
     await new Promise(r=>setTimeout(r,60));if(dlg.open){dlg.onclose=null;dlg.close();}
     dlg.innerHTML='<form method="dialog" class="dlg stack"><h3>発話区間を解析中</h3><p id="structMsg">音声を準備しています…</p><div id="structCap"></div><button class="btn ghost" value="cancel">中止</button></form>';
@@ -1889,13 +1927,14 @@ async function editorScreen(el, params) {
       const audio=decoded.audio;highPass(audio);
       const regions=speechRegions(audio,16000).filter(r=>r.end-r.start>=.2);
       if(!regions.length)throw new Error('発話区間を検出できませんでした');
-      const picked=regions.slice(0,30);
-      say(`${regions.length}発話を検出。冒頭${picked.length}発話を文字起こしします…`);
+      const picked=regions.filter(r=>r.end>cfg.start && r.start<cfg.end).slice(0,30);
+      if(!picked.length)throw new Error('指定範囲に発話が見つかりませんでした');
+      say(`${regions.length}発話を検出。指定範囲 ${fmt(cfg.start)}〜${Number.isFinite(cfg.end)?fmt(cfg.end):'末尾'} の ${picked.length}発話を文字起こしします…`);
       tr=openTranscriber('en',say,{quality:'acc'});
       const utterances=[];
       for(let k=0;k<picked.length&&!cancelled;k++){
         const r=picked[k];say(`発話 ${k+1}/${picked.length}：${fmt(r.start)}〜${fmt(r.end)}`);
-        const cues=await recognisePiece(tr,audio,Math.max(0,r.start-.12),Math.min(decoded.duration,r.end+.12));
+        const cues=await recognisePiece(tr,audio,Math.max(cfg.start,r.start-.12),Math.min(decoded.duration,cfg.end,r.end+.12));
         utterances.push({...r,text:(cues.raw||cues.map(x=>x.text).join(' ')).trim()});
       }
       if(!cancelled){

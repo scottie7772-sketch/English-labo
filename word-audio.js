@@ -55,9 +55,10 @@ function lookup(text) {
     best = { e, at, key }; bl = key.length;
   }
   let r = null;
-  if (best) { const { e, at, key } = best, d = e.end - e.start; r = { ...e, start: +(e.start + (d * at) / key.length).toFixed(2), end: +(e.start + (d * Math.min(key.length, at + k.length + 1)) / key.length).toFixed(2), est: true }; }
+  if (best) { const { e, at, key } = best, d = e.end - e.start; r = { ...e, start: +(e.start + (d * at) / key.length).toFixed(2), end: +(e.start + (d * Math.min(key.length, at + k.length + 1)) / key.length).toFixed(2), est: true, line: { start: e.start, end: e.end, at, len: k.length, keyLen: key.length, head: at === 0 } }; }
   near.set(k, r); return r;
 }
+export const ready = () => !!index;
 export const has = (text) => !!lookup(text);
 export const find = (text) => lookup(text);
 
@@ -85,8 +86,9 @@ export function unlock() {
 export function stop() { clearTimeout(timer); try { el?.pause(); } catch {} }
 // play the original sound of `text`; resolves true when it plays, false when there is none (use TTS then)
 export async function play(text) {
-  const e = find(text); if (!e) return false;
+  let e = find(text); if (!e) return false;
   try {
+    if (e.line) e = await refine(e);
     const u = await fileOf(e); if (!u) return false;
     const a = audioEl(); stop();
     if (a.src !== u) { a.src = u; await new Promise((ok, ng) => { a.onloadedmetadata = ok; a.onerror = ng; setTimeout(ok, 1500); }); }
@@ -96,4 +98,53 @@ export async function play(text) {
     timer = setTimeout(end, ((t - s) * 1000) / (a.playbackRate || 1));
     return true;
   } catch { return false; }
+}
+
+// ---- 1.18.6: a word / example that is only part of a line is cut at the PAUSES in the real sound ----
+// The line's sound is decoded once (only that line: a few seconds), split where it is quiet, and the result is remembered.
+// word at the start of the line → the first spoken part; example → the part where its letters fall (first reading only).
+const REF_KEY = 'wa-parts1';
+const refMem = (() => { try { return JSON.parse(localStorage.getItem(REF_KEY) || '{}'); } catch { return {}; } })();
+const refSave = () => { try { const ks = Object.keys(refMem); if (ks.length > 3000) for (const k of ks.slice(0, ks.length - 3000)) delete refMem[k]; localStorage.setItem(REF_KEY, JSON.stringify(refMem)); } catch {} };
+async function lineBlob(e) {
+  let blob = null;
+  if (e.from === 'studio') { const { sdb } = await import('./studio-db.js'); blob = (await sdb.get('sources', e.id))?.blob || null; }
+  else blob = (await db.get('vblobs', e.id))?.blob || (await db.get('videos', e.id))?.blob || null;
+  if (!blob) return null;
+  const { cutAac } = await import('./compress.js');
+  try { return { blob: (await cutAac(blob, e.line.start, e.line.end, 'line')).file, off: 0 }; } catch { /* not AAC */ }
+  if (blob.size <= 25e6) return { blob, off: e.line.start };   // small file: decode it whole, then look at the line only
+  return null;
+}
+async function partsOf(e) {
+  const key = `${e.from}:${e.id}@${e.line.start}-${e.line.end}`;
+  if (refMem[key]) return refMem[key];
+  const lb = await lineBlob(e); if (!lb) return null;
+  const AC = window.AudioContext || window.webkitAudioContext; const ac = new AC();
+  let buf; try { buf = await ac.decodeAudioData(await lb.blob.arrayBuffer()); } finally { try { ac.close(); } catch {} }
+  const sr = buf.sampleRate, ch = buf.getChannelData(0), from = Math.floor(lb.off * sr), to = Math.min(ch.length, Math.floor((lb.off + (e.line.end - e.line.start)) * sr));
+  const hop = Math.round(sr * 0.02), rms = [];
+  for (let i = from; i + hop <= to; i += hop) { let a = 0; for (let j = i; j < i + hop; j++) a += ch[j] * ch[j]; rms.push(Math.sqrt(a / hop)); }
+  if (!rms.length) return null;
+  const sorted = rms.slice().sort((a, b) => a - b), floor = sorted[Math.floor(sorted.length * 0.1)], peak = sorted[Math.floor(sorted.length * 0.95)];
+  const th = floor + (peak - floor) * 0.12;
+  // spoken parts separated by quiet of at least 0.25 s
+  const parts = []; let on = -1, quiet = 0;
+  rms.forEach((v, i) => { if (v > th) { if (on < 0) on = i; quiet = 0; } else if (on >= 0 && ++quiet >= 13) { parts.push([on, i - quiet + 1]); on = -1; quiet = 0; } });
+  if (on >= 0) parts.push([on, rms.length]);
+  const out = parts.filter(([a, b]) => b - a >= 4).map(([a, b]) => [+(e.line.start + a * 0.02).toFixed(2), +(e.line.start + b * 0.02).toFixed(2)]);
+  refMem[key] = out; refSave(); return out;
+}
+async function refine(e) {
+  try {
+    const parts = await partsOf(e); if (!parts || !parts.length) return e;
+    if (e.line.head) return { ...e, start: parts[0][0], end: parts[0][1] };   // the word said first, before the pause
+    // an example: the parts after the first one (the word) are joined while the pauses are short (one reading), up to the next long pause
+    const rest = parts.length > 1 ? parts.slice(1) : parts;
+    const want = e.line.start + ((e.line.end - e.line.start) * e.line.at) / e.line.keyLen;
+    let i = rest.findIndex((p) => p[1] > want); if (i < 0) i = 0;
+    let a = rest[i][0], b = rest[i][1];
+    for (let k = i + 1; k < rest.length && rest[k][0] - b < 0.6; k++) b = rest[k][1];
+    return { ...e, start: a, end: b };
+  } catch { return e; }
 }

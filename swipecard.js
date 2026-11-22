@@ -258,9 +258,12 @@ export function fc2Voice(root, speakFn) {
   // 1.17.10: the original recording first (when the same word / sentence is in a matched material), else the synthetic voice
   import('./word-audio.js').then((m) => { wa = m; return m.prepare(true); }).catch(() => {});
   const tts = (text) => { try { const u = speakFn(text); if (u) { u.onstart = () => { unlocked = true; pending = null; }; } } catch { /* the cards still work without sound */ } };
-  const say = (text) => {
+  const say = (text, waited = false) => {
     if (!text) return; const my = ++seq;
     try { speechSynthesis.cancel(); } catch {}
+    if (wa && origOn() && !wa.ready() && !waited) {   // 1.18.6: the list of recordings is still loading: wait a moment instead of using TTS
+      Promise.race([wa.prepare(), new Promise((r) => setTimeout(r, 2500))]).then(() => { if (my === seq) { seq--; say(text, true); } }); return;
+    }
     if (wa?.has(text) && origOn()) { wa.play(text).then((ok) => { if (ok) { unlocked = true; pending = null; } else if (my === seq) tts(text); }); return; }
     wa?.stop(); tts(text);
   };

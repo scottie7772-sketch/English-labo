@@ -1855,6 +1855,26 @@ async function editorScreen(el, params, revision) {
 
   const rescueVersion = () => ({updatedAt:set.updatedAt,order:set.order.slice(),undo:(set.undo || []).slice(),redo:(set.redo || []).slice()});
 
+  // Preserve existing occupied intervals; trim rescue proposals to one continuous free span.
+  // Multiple disconnected spans are never stitched together into one subtitle.
+  function rescueUnoccupied(segment, excluding = new Set()) {
+    const occupied = blocks.filter(b => !b.deleted && !excluding.has(b.id) && (b.aligned || b.sync === 'manual' || b.segments?.length))
+      .flatMap(b => (b.segments || []).filter(g => g.sourceId === segment.sourceId && Number.isFinite(g.start) && Number.isFinite(g.end))
+        .map(g => ({start:g.start,end:g.end}))).sort((a,b)=>a.start-b.start);
+    let fragments=[{start:segment.start,end:segment.end}];
+    for (const o of occupied) fragments=fragments.flatMap(f => {
+      if (o.end <= f.start || o.start >= f.end) return [f];
+      return [{start:f.start,end:Math.min(f.end,o.start)},{start:Math.max(f.start,o.end),end:f.end}]
+        .filter(x=>x.end-x.start>=.12);
+    });
+    return fragments.map(f=>({...segment,...f})).filter(f=>f.end-f.start>=.12);
+  }
+  function rescuePreferredFragment(segment, excluding = new Set()) {
+    const free=rescueUnoccupied(segment,excluding);
+    // Prefer the longest continuous interval; never silently create overlapping assignments.
+    return free.sort((a,b)=>(b.end-b.start)-(a.end-a.start))[0] || null;
+  }
+
   async function previewProseAssignment(rows, range, {local = null,manual = false,expected} = {}) {
     await reload();
     if (revision !== routeRevision) return;
@@ -1868,14 +1888,17 @@ async function editorScreen(el, params, revision) {
     if (currentRows.some((b,i) => !b || b.rev !== rows[i].rev || b.text !== rows[i].text || !search.byRow.has(b.id))) {
       return toast('対象の字幕が更新されました。候補を開き直してください');
     }
-    const proposed = manual ? [{row:currentRows[0],segment:{sourceId:range.sid,start:range.start,end:range.end},evidence:[]}] :
+    const rawProposed = manual ? [{row:currentRows[0],segment:{sourceId:range.sid,start:range.start,end:range.end},evidence:[]}] :
       search.assignments(currentRows,range,local);
+    const proposed = rawProposed.map(x => ({...x,segment:rescuePreferredFragment(x.segment,new Set(currentRows.map(r=>r.id)))}));
+    if (proposed.some(x => !x.segment)) return toast('既存区間を除くと割当可能な音声がありません');
     if (!proposed.length) {
       return confirmDialog({title:'行ごとの区間を確認できませんでした',
         body:'<p>指定範囲では本文と順序が一意に一致する音声がそろっていません。範囲を広げるか、行数を減らして再解析・試聴してください。1行なら開始と終了を指定して割り当てられます。</p>',
         okLabel:'閉じる',cancelLabel:null});
     }
-    if (proposed.some(x => !search.isFree(x.segment))) return toast('既存区間に重なっています。境界を確認してください');
+    // Recheck against current occupied intervals; user sees the trimmed boundaries in preview.
+    if (proposed.some(x => !search.isFree(x.segment))) return toast('他の割当と重複するため保存できません。候補を確認してください');
     const accepted = confirmDialog({title:'朗読の音声区間を保存',
       body:`<p class="small">${manual ? '入力した範囲を1行に割り当てます。' : local ? '指定区間の発話と本文が順番に一致しました。' : '保存済みASRと本文が順番に一致しました。'}各行を試聴して確認できます。</p>
         <div class="stack" style="max-height:45vh;overflow:auto">${proposed.map(({row,segment},i) =>
@@ -1922,13 +1945,13 @@ async function editorScreen(el, params, revision) {
       <p class="small">連続する未割当 ${group.rows.length}行（今回表示 ${missing.length}行）。試聴してから反映してください。</p>
       <label class="field"><span>教材の種類</span><select id="rsMode"><option value="prose">朗読・会話（MA型）</option><option value="vocab">金フレ型（見出し語・例文・繰り返し）</option></select></label>
       <label class="field"><span>今回割り当てる行数</span><select id="rsCount">${missing.map((b,i)=>`<option value="${i+1}" ${i===0?'selected':''}>${i+1}行</option>`).join('')}</select></label>
-      <div class="small" id="rsRows" style="max-height:7rem;overflow:auto">${missing.map((b,i)=>`<div>${i+1}. ${esc(b.text)}</div>`).join('')}</div>
       <p id="rsModeHint" class="small muted"></p>
       <p id="rsAnchors" class="small muted"></p>
       <label class="chk"><input id="rsExpand" type="checkbox"> 探索範囲を広げる</label>
       <label class="field"><span>音声候補</span><select id="rsCandidate"></select></label>
       <div class="row wrap"><label class="field grow"><span>開始（分:秒.小数）</span><input id="rsStart" type="text" inputmode="decimal" placeholder="14:03.0"></label><label class="field grow"><span>終了（分:秒.小数）</span><input id="rsEnd" type="text" inputmode="decimal" placeholder="14:10.6"></label></div>
-      <div class="st-rescue-timeline"><div class="row st-rescue-hscroll"><button type="button" class="btn sm" id="rsView">ファイル全体を表示</button><button type="button" class="btn sm" id="rsStartZero">開始を先頭へ</button><button type="button" class="btn sm" id="rsEndLast">終了を末尾へ</button></div><p class="small muted">左右の丸いハンドルをドラッグして開始・終了を調整できます。中央をタップすると再生位置を移動します。</p><div class="st-rescue-track" id="rsTrack" style="position:relative;touch-action:none;min-height:44px"><i id="rsSelection" style="pointer-events:none"></i><b id="rsHead" style="pointer-events:none"></b><button type="button" id="rsHandleStart" aria-label="割当開始をドラッグ" style="position:absolute;z-index:4;top:4px;width:28px;height:36px;transform:translateX(-50%);border-radius:14px;border:2px solid currentColor;background:var(--surface,#fff);touch-action:none;cursor:ew-resize"></button><button type="button" id="rsHandleEnd" aria-label="割当終了をドラッグ" style="position:absolute;z-index:4;top:4px;width:28px;height:36px;transform:translateX(-50%);border-radius:14px;border:2px solid currentColor;background:var(--surface,#fff);touch-action:none;cursor:ew-resize"></button></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div></div><div class="row wrap"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div>
+      <div class="st-rescue-timeline"><div class="row st-rescue-hscroll"><button type="button" class="btn sm" id="rsView">ファイル全体を表示</button><button type="button" class="btn sm" id="rsStartZero">開始を先頭へ</button><button type="button" class="btn sm" id="rsEndLast">終了を末尾へ</button></div><p class="small muted">バーの下の開始・終了ポインターをドラッグして調整できます。中央をタップすると再生位置を移動します。</p><div class="st-rescue-track" id="rsTrack" style="position:relative;touch-action:none;min-height:44px"><i id="rsSelection" style="pointer-events:none"></i><b id="rsHead" style="pointer-events:none"></b><button type="button" class="st-range-pointer st-range-start" id="rsHandleStart" aria-label="割当開始をドラッグ"></button><button type="button" class="st-range-pointer st-range-end" id="rsHandleEnd" aria-label="割当終了をドラッグ"></button></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div></div><div class="row wrap"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsPlayLast">▶ 終了前2秒</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div>
+      <div class="small st-rescue-script" id="rsRows" style="max-height:7rem;overflow:auto">${missing.map((b,i)=>`<div>${i+1}. ${esc(b.text)}</div>`).join('')}</div>
       <p id="rsReason" class="small muted"></p><p class="small muted">朗読の手動割当は「今回割り当てる行数」を1行にしてください。時刻は例 14:03.0 と入力できます。</p>
       <div class="row end st-rescue-hscroll">
         <button class="btn ghost" value="cancel">やめる</button>
@@ -2011,7 +2034,7 @@ async function editorScreen(el, params, revision) {
       en.value = c ? fmt(c.end) : '';
       st.disabled = en.disabled = !c || Boolean(c.review);
       st.title = en.title = c?.review ? 'これは既存字幕の確認用です。下の「手動で時刻指定」を選んでください。' : ''; 
-      $('#rsPlay',dlg).disabled = !c;
+      $('#rsPlay',dlg).disabled = $('#rsPlayLast',dlg).disabled = !c;
       editAnchor.hidden = !c?.review;
       $('#rsReason',dlg).textContent = c ? c.kind : '候補がありません。探索範囲を広げてください。';
       gapButton.hidden = !(mode.value === 'prose' && c && !c.review && currentRows().length === 1 && c.kind.includes('アンカー間'));
@@ -2054,6 +2077,12 @@ async function editorScreen(el, params, revision) {
       stopRescuePreview();
       playBlock({segments:[{sourceId:c.sid,start:a,end:Math.min(z,a+30)}]});
     };
+    $('#rsPlayLast',dlg).onclick = () => {
+      const c=pickRange(),a=parseClock(st.value),z=parseClock(en.value);
+      if (!c || !Number.isFinite(a) || !Number.isFinite(z) || z<=a) return toast('開始・終了を確認してください');
+      stopRescuePreview();
+      playRange(c.sid,Math.max(a,z-2),z);
+    };
     dlg.returnValue = '';
     dlg.showModal();
     rescueClock=requestAnimationFrame(clockTick);
@@ -2085,8 +2114,9 @@ async function editorScreen(el, params, revision) {
       await reload();
       const row=byId[selected[0].id];
       if (!row || row.rev!==selected[0].rev || row.segments.length || rescueVersion()!==expected) return toast('字幕が更新されています。再探索してください');
-      if (blocks.some(b=>b.id!==row.id&&b.segments.some(g=>g.sourceId===c.sid&&g.start<z-.05&&g.end>a+.05)&&(b.aligned||b.sync==='manual'))) return toast('既存区間と重複します');
-      return run('前後アンカー間の仮割当',{blocks:[{...row,segments:[{sourceId:c.sid,start:a,end:z}],sync:'estimated',align:[],lineage:{op:'prose-anchor-gap-trial',from:[`${row.id}@${row.rev}`],at:Date.now()}}]});
+      const trimmed=rescuePreferredFragment({sourceId:c.sid,start:a,end:z},new Set([row.id]));
+      if (!trimmed) return toast('既存区間を除くと割当可能な音声がありません');
+      return run('前後アンカー間の仮割当',{blocks:[{...row,segments:[trimmed],sync:'estimated',align:[],lineage:{op:'prose-anchor-gap-trial',from:[`${row.id}@${row.rev}`],at:Date.now()}}]});
     }
     if (action !== 'ok') return;
     if (prose) {
@@ -2288,12 +2318,12 @@ async function editorScreen(el, params, revision) {
           </div>
         </div>
         <div class="stack">${work.segments.map((s, i) => `<div class="st-segrow"><b>区間${i + 1}</b> <small class="muted">${esc(srcs[s.sourceId]?.name || '')}</small>
-          <div class="st-trim" data-trim="${i}"><div class="st-trk"><i class="st-origin"></i><i class="st-playhead"></i><i class="sel" data-slide="${i}" title="長さを固定して移動"></i><b class="h" data-h="start"></b><b class="h" data-h="end"></b></div><div class="row small muted"><span class="st-tl0"></span><span class="grow"></span><span>中央をドラッグ＝長さ固定で移動／薄枠＝元の位置</span><span class="grow"></span><span class="st-tl1"></span></div></div>
+          <div class="st-trim" data-trim="${i}"><div class="st-trk"><i class="st-origin"></i><i class="st-playhead"></i><i class="sel" data-slide="${i}" title="長さを固定して移動"></i><b class="h st-range-pointer st-range-start" data-h="start"></b><b class="h st-range-pointer st-range-end" data-h="end"></b></div><div class="row small muted"><span class="st-tl0"></span><span class="grow"></span><span>中央をドラッグ＝長さ固定で移動／薄枠＝元の位置</span><span class="grow"></span><span class="st-tl1"></span></div></div>
           <div class="row wrap"><button type="button" class="btn xs ghost" data-range-view="${i}">${fullRangeView ? '周辺を拡大' : 'ファイル全体を表示'}</button><button type="button" class="btn xs ghost" data-range-edge="${i}:start">開始を先頭へ</button><button type="button" class="btn xs ghost" data-range-edge="${i}:end">終了を末尾へ</button></div>
           <div class="row wrap"><button type="button" class="btn xs" data-slide-step="${i}:-0.1">◀ 0.10秒</button><button type="button" class="btn xs" data-slide-step="${i}:-0.05">◀ 0.05秒</button><button type="button" class="btn xs" data-slide-step="${i}:0.05">0.05秒 ▶</button><button type="button" class="btn xs" data-slide-step="${i}:0.1">0.10秒 ▶</button><button type="button" class="btn xs ghost" data-slide-reset="${i}">元の位置</button><span class="small muted" data-slide-delta="${i}"></span></div>
           <div class="row"><button type="button" class="btn xs" data-pseg="${i}:all">${icon('play')} 区間</button><button type="button" class="btn xs" data-pseg="${i}:head">頭2秒</button><button type="button" class="btn xs" data-pseg="${i}:tail">後ろ2秒</button></div>
-          <div class="row"><span class="small">開始 ${fmt(s.start)}</span><button type="button" class="btn xs" data-adj="${i}:start:-0.1">−0.1</button><button type="button" class="btn xs" data-adj="${i}:start:0.1">＋0.1</button><button type="button" class="btn xs" data-now="${i}:start">今の位置</button></div>
-          <div class="row"><span class="small">終了 ${fmt(s.end)}</span><button type="button" class="btn xs" data-adj="${i}:end:-0.1">−0.1</button><button type="button" class="btn xs" data-adj="${i}:end:0.1">＋0.1</button><button type="button" class="btn xs" data-now="${i}:end">今の位置</button></div></div>`).join('')}</div>
+          <div class="row wrap"><span class="small">開始 ${fmt(s.start)}（終了固定）</span><button type="button" class="btn xs" data-adj="${i}:start:-1">−1秒</button><button type="button" class="btn xs" data-adj="${i}:start:-0.1">−0.1秒</button><button type="button" class="btn xs" data-adj="${i}:start:0.1">＋0.1秒</button><button type="button" class="btn xs" data-adj="${i}:start:1">＋1秒</button><button type="button" class="btn xs" data-now="${i}:start">今の位置</button></div>
+          <div class="row wrap"><span class="small">終了 ${fmt(s.end)}（開始固定）</span><button type="button" class="btn xs" data-adj="${i}:end:-1">−1秒</button><button type="button" class="btn xs" data-adj="${i}:end:-0.1">−0.1秒</button><button type="button" class="btn xs" data-adj="${i}:end:0.1">＋0.1秒</button><button type="button" class="btn xs" data-adj="${i}:end:1">＋1秒</button><button type="button" class="btn xs" data-now="${i}:end">今の位置</button></div></div>`).join('')}</div>
         <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">保存</button></div></form>`;
       $('#ePlay', dlg).onclick = () => {
         readText();
@@ -2317,7 +2347,11 @@ async function editorScreen(el, params, revision) {
           if (A.sync === 'estimated') toast('音声の切れ目は文字数から推定しました。編集で開始・終了を調整してください', 4000);
         } catch (e) { toast((e?.message || String(e)), 3000); }
       }));
-      $$('[data-adj]', dlg).forEach((x) => (x.onclick = () => { readText(); const [i, edge, d] = x.dataset.adj.split(':'); const s = work.segments[+i]; s[edge] = Math.max(0, +(s[edge] + +d).toFixed(2)); work.sync = 'manual'; draw(); }));
+      $$('[data-adj]', dlg).forEach((x) => (x.onclick = () => { readText(); const [i, edge, d] = x.dataset.adj.split(':'); const s = work.segments[+i]; const duration = srcs[s.sourceId]?.duration;
+        const next = +(s[edge] + Number(d)).toFixed(2);
+        if (edge === 'start') s.start = Math.max(0, Math.min(s.end - 0.1, next));
+        else s.end = Math.max(s.start + 0.1, Number.isFinite(duration) && duration > 0 ? Math.min(duration, next) : next);
+        work.sync = 'manual'; follow = false; draw(); }));
       $$('[data-now]', dlg).forEach((x) => (x.onclick = () => { readText(); const [i, edge] = x.dataset.now.split(':'); const s = work.segments[+i]; if (vid.dataset.src !== s.sourceId) return toast('この区間のファイルを再生してから押してください'); s[edge] = +vid.currentTime.toFixed(2); work.sync = 'manual'; draw(); }));
     };
     const _draw = draw; draw = () => { _draw(); trimBars(); };

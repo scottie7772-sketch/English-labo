@@ -43,6 +43,26 @@ function parseEsds(d, b) {   // returns AudioSpecificConfig bytes
 }
 
 // → { tracks: [{ id, kind: 'audio'|'video'|..., codec, lang, name, timescale, duration, channels, rate, asc, samples: { off[], size[], dur[] } }], container }
+function audioPresentation(d, list, movieScale, trackScale) {
+  if (!list) return { offset: 0, start: 0, end: Infinity };
+  if (list.body + 8 > list.end) return null;
+  const version = d.getUint8(list.body), count = R32(d, list.body + 4);
+  if (!movieScale || !trackScale || version > 1 || count < 1 || count > 2) return null;
+  const stride = version === 1 ? 20 : 12;
+  if (list.body + 8 + count * stride > list.end) return null;
+  let start = 0;
+  for (let i = 0; i < count; i++) {
+    const at = list.body + 8 + i * stride;
+    const length = version === 1 ? Number(d.getBigUint64(at)) : R32(d, at);
+    const pos = version === 1 ? Number(d.getBigInt64(at + 8)) : d.getInt32(at + 4);
+    if (d.getUint32(at + stride - 4) !== 0x10000) return null;
+    if (pos === -1 && i === 0 && count === 2) { start = length / movieScale; continue; }
+    if (pos < 0 || i !== count - 1) return null;
+    return { offset: start - pos / trackScale, start, end: start + length / movieScale };
+  }
+  return null;
+}
+
 export async function probe(blob) {
   const tops = await topBoxes(blob);
   const ftyp = tops.find((b) => b.type === 'ftyp');
@@ -51,6 +71,9 @@ export async function probe(blob) {
   if (moovBox.size > 200 * 1024 * 1024) throw new Error('目次が大きすぎます');
   const buf = await blob.slice(moovBox.off, moovBox.off + moovBox.size).arrayBuffer();
   const d = new DataView(buf); const moov = { body: moovBox.hdr, end: moovBox.size };
+  const mvhd = find(d, moov, 'mvhd');
+  const scaleOffset = mvhd && mvhd.body + (d.getUint8(mvhd.body) === 1 ? 20 : 12);
+  const movieScale = scaleOffset && scaleOffset + 4 <= mvhd.end ? R32(d, scaleOffset) : 0;
   const tracks = [];
   for (const trak of children(d, moov.body, moov.end).filter((c) => c.type === 'trak')) {
     const tkhd = find(d, trak, 'tkhd'), mdhd = find(d, trak, 'mdia', 'mdhd'), hdlr = find(d, trak, 'mdia', 'hdlr'), stbl = find(d, trak, 'mdia', 'minf', 'stbl');
@@ -64,6 +87,7 @@ export async function probe(blob) {
     let name = ''; for (let o = hdlr.body + 24; o < hdlr.end; o++) { const c = d.getUint8(o); if (!c) break; name += String.fromCharCode(c); }
     const kind = handler === 'soun' ? 'audio' : handler === 'vide' ? 'video' : handler;
     const t = { id, kind, handler, lang, name: name.trim(), timescale, duration: duration / timescale, codec: '', channels: 0, rate: 0, asc: null, enabled: !!(d.getUint32(tkhd.body) & 1) };
+    if (kind === 'audio') t.presentation = audioPresentation(d, find(d, trak, 'edts', 'elst'), movieScale, timescale);
     const stsd = find(d, stbl, 'stsd');
     if (stsd) {
       const e = children(d, stsd.body + 8, stsd.end)[0];
@@ -126,6 +150,16 @@ export async function extractTrack(blob, t, t0 = 0, t1 = Infinity) {
   if (t.codec === 'mp4a') return { blob: mp4Audio(frames, t.asc, Math.round(t.rate) || t.timescale, t.channels || 1, dur.subarray(i0, i1)), start, codec: 'm4a' };
   return { blob: pcmWav(frames, t), start, codec: 'wav' };
 }
+// Translate the player's timeline into source-sample time for boundary inspection.
+export async function extractPresentationRange(blob, track, start, end) {
+  const map = track.presentation;
+  if (!map) throw new Error('複雑な音声編集リストのため、再生位置を特定できません');
+  const from = Math.max(start, map.start), to = Math.min(end, map.end);
+  if (to <= from) throw new Error('指定位置に音声トラックがありません');
+  const clip = await extractTrack(blob, track, from - map.offset, to - map.offset);
+  return { ...clip, start: clip.start + map.offset, from, to };
+}
+
 function pcmWav(frames, t) {
   const total = frames.reduce((a, f) => a + f.length, 0), ch = t.channels || 1, bits = t.bits || 16, rate = Math.round(t.rate) || t.timescale;
   const h = new DataView(new ArrayBuffer(44)); const w = (o, s) => { for (let i = 0; i < 4; i++) h.setUint8(o + i, s.charCodeAt(i)); };

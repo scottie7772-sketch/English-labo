@@ -1,7 +1,7 @@
 // Playback-only boundary padding for speech-first alignment.
 // Never mutates stored segments or manually edited timings.
 export function speechFirstPlaybackRange(block, segment, allBlocks, duration = Infinity) {
-  if (!block || !segment || block.sync === 'manual' ||
+  if (!block || !segment || block.sync === 'manual' || block.maBoundaryChecked ||
       block.structureAlign?.method !== 'speech-first') return null;
   const start = Number(segment.start), end = Number(segment.end);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;

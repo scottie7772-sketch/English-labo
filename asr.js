@@ -137,6 +137,17 @@ export function openTranscriber(lang = 'en', onProgress = () => {}, { fast, qual
     } else if (m.type === 'device') onProgress(`モデルの準備ができました（${m.device === 'webgpu' ? 'GPU' : 'CPU'}で処理）`);
     else if (m.type === 'done') {
       // some results come back as plain text without time stamps: keep the text (one line for the piece) instead of dropping it
+      if (pending?.timestamps === 'word') {
+        const chunks = (m.chunks || []).flatMap(chunk => {
+          const [start, end] = chunk.timestamp || [];
+          return Number.isFinite(start) && Number.isFinite(end) && start >= 0 &&
+            end > start && end <= pending.duration + .04 && chunk.text?.trim() ?
+            [{ text: chunk.text, start, end }] : [];
+        });
+        pending?.resolve(chunks);
+        pending = null;
+        return;
+      }
       const noTime = !m.chunks?.length;
       const chunks = !noTime ? m.chunks : (m.text || '').trim() ? [{ text: m.text, timestamp: [0, pending?.duration ?? null] }] : [];
       const cues = chunksToCues(chunks, pending?.duration); if (noTime) cues.forEach((c) => (c.est = true));
@@ -148,7 +159,7 @@ export function openTranscriber(lang = 'en', onProgress = () => {}, { fast, qual
   return {
     run(audio, { timestamps = true } = {}) {
       const duration = audio.length / 16000;
-      return new Promise((resolve, reject) => { pending = { resolve, reject, duration }; worker.postMessage({ audio, model, dtype, language: LANG_NAME[lang] || null, devices, ts: timestamps }, [audio.buffer]); });
+      return new Promise((resolve, reject) => { pending = { resolve, reject, duration, timestamps }; worker.postMessage({ audio, model, dtype, language: LANG_NAME[lang] || null, devices, ts: timestamps }, [audio.buffer]); });
     },
     noTime: /moonshine/i.test(model),   // Moonshine gives text only: recognisePiece cuts ~8 s parts so each line's time is close
     close() { worker.terminate(); pending?.resolve([]); pending = null; },

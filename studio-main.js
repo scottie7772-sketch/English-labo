@@ -12,13 +12,14 @@ import { alignScript, scriptToLines, hasReplacementAudio } from './studio-align.
 import { speechRegions, regionStatistics, snapCueToRegion } from './studio-structure.js';
 import { speechFirstPlaybackRange, nextSourceSegment } from './studio-playback-boundary.js';
 import { planVocabAlignment, isVocabTarget, unassignedVocabRanges, vocabKey, isVocabHead } from './studio-vocab-align.js';
+import { maSeams, maWindow, inspectMaSeam, proposeMaSeam, maBoundaryUpdates, wavRangeReader } from './studio-ma-boundary.js';
 import { createRescueSearch } from './studio-prose-rescue.js';
 import { alignUtterances } from './studio-import-align.js';
-import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
+import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.7';
+export const STUDIO_VERSION = '0.21.8';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -1630,6 +1631,129 @@ async function editorScreen(el, params, revision) {
     if (dlg.returnValue !== 'ok' || k == null) return;
     try { const [A, B] = ops.splitAt(b, k); order.splice(order.indexOf(b.id), 1, A.id, B.id); await run('分割', { blocks: [A, B, { ...b, deleted: true }], order }); }
     catch (e) { toast(e?.message || String(e), 3500); }
+  }
+
+  async function inspectMaBoundaries() {
+    const snapshot = set.order.map(id => byId[id]).filter(Boolean);
+    const seams = maSeams(snapshot);
+    if (!seams.length) return toast('検査できるMA型の字幕境界がありません');
+    const guard = rescueVersion();
+    if (!(await confirmDialog({
+      title: 'MA型の音声境界を検査',
+      body: '<p>字幕の開始・終了付近を検査し、切れや隣接文の混入が疑われる箇所だけ端末内で再認識します。</p><p>確認画面で補正前後を試聴し、適用する候補を選べます。</p>',
+      okLabel: '検査する',
+    })) || revision !== routeRevision) return;
+    const progress = document.createElement('dialog');
+    progress.className = 'st-speech-pick';
+    progress.innerHTML = '<form method="dialog" class="dlg stack"><h3>音声境界の検査</h3><p aria-live="polite"></p><button class="btn ghost">中止</button></form>';
+    document.body.append(progress);
+    const say = message => { progress.querySelector('p').textContent = message; };
+    let tr, cancelled = false;
+    const stop = () => { cancelled = true; tr?.close(); };
+    progress.addEventListener('close', stop);
+    progress.showModal();
+    const available = new Map(), proposals = [], held = [], skipped = new Set();
+    const decodeRange = async (read, window) => {
+      const clip = await read(window.start, window.end);
+      const { audio } = await decodeTo16k(clip.blob);
+      const first = Math.max(0, Math.ceil(((clip.from ?? window.start) - clip.start) * 16000));
+      const last = Math.min(audio.length, Math.floor(((clip.to ?? window.end) - clip.start) * 16000));
+      return { audio: audio.subarray(first, last), start: clip.start + first / 16000 };
+    };
+    let checked = 0, unchanged = 0, asrFailed = '';
+    const fmtPrecise = t => t.toFixed(3) + '秒';
+    try {
+      for (const [index, seam] of seams.entries()) {
+        if (cancelled || !progress.open || revision !== routeRevision) return;
+        const src = srcs[seam.sourceId];
+        if (!available.has(seam.sourceId)) {
+          const blob = src?.stored ? src.blob : sessionFiles.get(seam.sourceId);
+          let read = null;
+          if (blob && src.duration > 0) {
+            if (isContainer(src, blob)) {
+              const info = await probeSource(src, blob).catch(() => null);
+              const tracks = info ? audioTracks(info) : [];
+              const track = tracks.find(t => t.id === src.audio?.trackId) ||
+                (src.audio?.index != null ? tracks[src.audio.index] : tracks.length === 1 ? tracks[0] : null);
+              if (track?.presentation && canExtract(track)) read = (a, b) => extractPresentationRange(blob, track, a, b);
+            } else read = await wavRangeReader(blob).catch(() => null);
+          }
+          available.set(seam.sourceId, read);
+        }
+        const read = available.get(seam.sourceId);
+        if (!read) { skipped.add(src?.name || seam.sourceId); continue; }
+        const label = [seam.left?.text, seam.right?.text].filter(Boolean).map(t => t.slice(0, 85)).join(' / ');
+        const window = maWindow(seam, src.duration, 1.05);
+        if (!window) { held.push({ label, reason: '字幕間の大きな空白・重複を確認してください' }); continue; }
+        if (window.end - window.start < .2) continue;
+        say(`境界 ${index + 1} / ${seams.length} を検査中`);
+        let reason;
+        try {
+          const clip = await decodeRange(read, window);
+          reason = inspectMaSeam(seam, clip.audio, clip.start);
+          checked++;
+          if (!reason) continue;
+          if (asrFailed) { held.push({ label, reason: reason + '・認識を利用できません' }); continue; }
+          const local = maWindow(seam, src.duration, 3.4);
+          const input = await decodeRange(read, local);
+          if (cancelled || !progress.open || revision !== routeRevision) return;
+          say(`境界 ${index + 1} / ${seams.length} を局所再照合中`);
+          let chunks;
+          try {
+            tr ||= openTranscriber('en', say, { quality: 'acc' });
+            chunks = await tr.run(input.audio.slice(), { timestamps: 'word' });
+          } catch (error) {
+            asrFailed = error?.message || String(error);
+            held.push({ label, reason: '単語時刻を取得できません' }); continue;
+          }
+          if (cancelled || !progress.open || revision !== routeRevision) return;
+          const result = proposeMaSeam(seam, chunks.map(c => ({ ...c, start: c.start + input.start, end: c.end + input.start })), src.duration);
+          if (result.changes.length) proposals.push({ ...result, label, reason });
+          else if (result.reason) held.push({ label, reason: result.reason });
+          else unchanged++;
+        } catch (error) {
+          held.push({ label, reason: '区間を読み出せません。' + (error?.message || error) });
+        }
+      }
+      if (!progress.open || revision !== routeRevision) return;
+    } finally {
+      progress.removeEventListener('close', stop);
+      tr?.close();
+      progress.remove();
+    }
+    const dlg = $('#dialog');
+    const confirm = confirmDialog({
+      title: 'MA型の音声境界を確認',
+      body: `<p>${checked}境界を検査・補正候補 ${proposals.length}件・要確認 ${held.length}件。${unchanged ? ` 再照合で変更不要 ${unchanged}件。` : ''}</p>
+        ${skipped.size ? `<p>区間抽出に対応したAACのM4A／MP4またはPCM WAVが必要です。対象外 ${skipped.size}ファイル。</p>` : ''}
+        ${asrFailed ? `<p>${esc(asrFailed)}</p>` : ''}
+        ${proposals.length ? '<p>試聴して適用する境界を選んでください。適用後は↶で元に戻せます。</p>' : ''}
+        <div class="stack" style="max-height:50dvh;overflow:auto">${proposals.map((p, i) => `<div class="stack">
+          <label class="chk"><input type="checkbox" data-ma-pick="${i}"> ${esc(p.label)}（信頼度 ${p.confidence === 'high' ? '高' : '中'}）</label>
+          <small>${esc(p.reason)}</small>
+          ${p.changes.map(({ row, side, time }, j) => `<div class="row wrap"><small>${side === 'start' ? '開始' : '終了'} ${fmtPrecise(row.segments[0][side])} → ${fmtPrecise(time)}</small>
+            <button type="button" class="btn sm" data-ma-play="${i}:${j}:old">補正前</button>
+            <button type="button" class="btn sm" data-ma-play="${i}:${j}:new">補正後</button></div>`).join('')}</div>`).join('')}
+          ${held.length ? `<details><summary>要確認 ${held.length}件</summary>${held.map(p => `<p class="small">${esc(p.label)}<br>${esc(p.reason)}</p>`).join('')}</details>` : ''}</div>`,
+      okLabel: proposals.length ? '選択分を適用' : '閉じる', cancelLabel: proposals.length ? 'キャンセル' : null,
+    });
+    let previewing = false;
+    for (const button of $$('[data-ma-play]', dlg)) button.onclick = () => {
+      const [i, j, version] = button.dataset.maPlay.split(':');
+      const { row, side, time } = proposals[Number(i)].changes[Number(j)];
+      const g = row.segments[0], bound = version === 'new' ? time : g[side];
+      const start = side === 'start' ? bound : Math.max(g.start, Math.min(bound, g.end) - 2.5);
+      const end = side === 'end' ? bound : Math.min(g.end, Math.max(bound, g.start) + 2.5);
+      previewing = true;
+      playBlock({ ...row, maBoundaryChecked: true, segments: [{ ...g, start, end }] });
+    };
+    const ok = await confirm;
+    if (previewing) { ++playbackRequest; pendingSegmentSeek = null; playing = null; vid.pause(); }
+    if (!ok || !proposals.length || revision !== routeRevision) return;
+    const picked = $$('[data-ma-pick]:checked', dlg).map(input => proposals[Number(input.dataset.maPick)]);
+    const updates = maBoundaryUpdates(snapshot, picked);
+    if (!updates) return toast('選んだ補正が別の字幕区間と競合しています。選択を見直してください', 5000);
+    if (updates.length) await run('MA型の音声境界を補正', { blocks: updates, guardedSet: guard });
   }
 
   // Conservative, offline bulk boundary refinement. No ASR, no new subtitles, no new media.
@@ -3676,6 +3800,7 @@ async function editorScreen(el, params, revision) {
       <button class="btn" value="align">スクリプトと照合</button>
       <button class="btn" value="alignVocab">金フレ型：既存ASRと照合</button>
       <button class="btn" value="alignProse">朗読・会話向け：緩めのスクリプト照合（試験版）</button>
+      <button class="btn" value="maBoundary">MA型の音声境界を検査</button>
       <button class="btn" value="refine">音声位置を一括自動調整（試験版）</button>
       <button class="btn" value="realign">構造を使った再照合（プレビュー）</button>
       <button class="btn" value="structImport">発話を先に区切って照合（試験版）</button>
@@ -3715,6 +3840,7 @@ async function editorScreen(el, params, revision) {
       if (v === 'align') runAlign();
       if (v === 'alignVocab') previewVocabAlignment();
       if (v === 'alignProse') runAlign({ mode: 'prose' });
+      if (v === 'maBoundary') inspectMaBoundaries();
       if (v === 'refine') refineBoundaries();
       if (v === 'realign') previewStructuralRealign();
       if (v === 'structImport') importBySpeechStructure();

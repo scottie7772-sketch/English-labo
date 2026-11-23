@@ -95,9 +95,11 @@ export function checkBlock(b, sources = {}) {
 
 // ---------- commit one operation ----------
 // changes: { blocks: [blockStateAfter...], order: newOrder|undefined }, label: text for history
-export async function commit(set, label, { blocks = [], order }, sources = {}) {
+export async function commit(set, label, { blocks = [], order, guardedSet }, sources = {}) {
   for (const b of blocks) { const e = checkBlock(b, sources); if (e.length) throw new Error(`保存できません：${e[0]}`); }
   const current = Object.fromEntries((await Promise.all(blocks.map((b) => sdb.get('blocks', b.id)))).filter(Boolean).map((b) => [b.id, b]));
+  const stale = '教材が更新されました。照合候補を出し直してください';
+  if (guardedSet && blocks.some(b => current[b.id]?.rev !== b.rev)) throw new Error(stale);
   const entries = [];
   const writes = [];
   for (const b of blocks) {
@@ -110,15 +112,29 @@ export async function commit(set, label, { blocks = [], order }, sources = {}) {
   const orderAfter = order ? order.slice() : orderBefore;
   const op = { setId: set.id, at: Date.now(), label, blocks: entries, orderBefore, orderAfter };
   let opId;
+  let rejected = false;
   await sdb.tx(['blocks', 'blockRevs', 'oplog', 'sets'], 'readwrite', (t) => {
-    for (const b of writes) { t.objectStore('blocks').put(b); t.objectStore('blockRevs').put(snap(b)); }
-    const r = t.objectStore('oplog').add(op);
-    r.onsuccess = () => {
-      opId = r.result;
-      set.order = orderAfter; set.undo = [...(set.undo || []), opId].slice(-UNDO_MAX); set.redo = []; set.updatedAt = Date.now();
-      t.objectStore('sets').put(set);
+    const sets = t.objectStore('sets');
+    const write = (fresh) => {
+      for (const b of writes) { t.objectStore('blocks').put(b); t.objectStore('blockRevs').put(snap(b)); }
+      const r = t.objectStore('oplog').add(op);
+      r.onsuccess = () => {
+        opId = r.result;
+        Object.assign(set, {...fresh, order:orderAfter, undo:[...(fresh.undo || []), opId].slice(-UNDO_MAX),
+          redo:[], updatedAt:Date.now()});
+        sets.put(set);
+      };
     };
-  });
+    if (!guardedSet) return write(set);
+    const request = sets.get(set.id);
+    request.onsuccess = () => {
+      const fresh = request.result;
+      const changed = !fresh || fresh.updatedAt !== guardedSet.updatedAt ||
+        ['order','undo','redo'].some(key => JSON.stringify(fresh[key] || []) !== JSON.stringify(guardedSet[key]));
+      if (changed) { rejected = true; t.abort(); return; }
+      write(fresh);
+    };
+  }).catch(error => { throw rejected ? new Error(stale) : error; });
   return { opId, blocks: writes };
 }
 

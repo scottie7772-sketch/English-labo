@@ -1,5 +1,5 @@
 // Offline, bounded speech-region analysis. No ASR, network, media copies or persistence.
-export function speechRegions(audio, rate = 16000) {
+export function speechRegions(audio, rate = 16000, { gapFrames = 9, minGap = .18 } = {}) {
   if (!audio?.length || !rate) return [];
   const hop = Math.max(1, Math.round(rate * .02));
   const rms = [];
@@ -16,13 +16,13 @@ export function speechRegions(audio, rate = 16000) {
   const raw=[]; let first=-1, last=-1;
   for(let i=0;i<rms.length;i++) {
     if(rms[i]>=threshold) {if(first<0)first=i;last=i;}
-    else if(first>=0 && i-last>9) {raw.push([first,last+1]);first=-1;}
+    else if(first>=0 && i-last>gapFrames) {raw.push([first,last+1]);first=-1;}
   }
   if(first>=0)raw.push([first,last+1]);
   // Short internal gaps (<180 ms) belong to the same spoken utterance.
   const merged=[];
   for(const [a,b] of raw) {
-    if(merged.length && (a-merged.at(-1)[1])*.02<.18)merged.at(-1)[1]=b;
+    if(merged.length && (a-merged.at(-1)[1])*.02<minGap)merged.at(-1)[1]=b;
     else merged.push([a,b]);
   }
   return merged.map(([a,b])=>({start:+Math.max(0,a*.02-.035).toFixed(2),end:+Math.min(audio.length/rate,b*.02+.035).toFixed(2)}))

@@ -80,7 +80,7 @@ export function chunksToCues(chunks, duration) {
     const parts = text.match(/[^.!?。！？]+[.!?。！？]+["”’)]?|[^.!?。！？]+$/g)?.map((x) => x.trim()).filter(Boolean) || [text];
     if (parts.length > 1 && e - s > 5) {   // distribute time by length
       const total = parts.reduce((a, b) => a + b.length, 0); let t = s;
-      for (const p of parts) { const d = ((e - s) * p.length) / total; out.push({ start: +t.toFixed(2), end: +(t + d).toFixed(2), text: p }); t += d; }
+      for (const p of parts) { const d = ((e - s) * p.length) / total; out.push({ start: +t.toFixed(2), end: +(t + d).toFixed(2), text: p, boundaryEstimated: true }); t += d; }
     } else out.push({ start: +s.toFixed(2), end: +e.toFixed(2), text });
   }
   return out;
@@ -236,7 +236,7 @@ export function captureTo16k(blob, { rate = 2, onProgress = () => {}, trackIndex
 // Retry: (1) ~8 s sub-pieces cut at quiet points, (2) the whole piece without time stamps (time spread by length).
 export async function recognisePiece(tr, audio, ps, pe, { onRetry = () => {} } = {}) {
   const cut = (a, b) => audio.slice(Math.floor(a * 16000), Math.floor(b * 16000));
-  const abs = (cues, a, b) => cues.map((c) => ({ start: +(a + c.start).toFixed(2), end: +Math.min(b, a + c.end).toFixed(2), text: c.text, ...(c.est ? { est: true } : {}) })).filter((c) => c.end - c.start > 0.05);
+  const abs = (cues, a, b) => cues.map((c) => ({ start: +(a + c.start).toFixed(2), end: +Math.min(b, a + c.end).toFixed(2), text: c.text, ...(c.est ? { est: true } : {}), ...(c.boundaryEstimated ? { boundaryEstimated: true } : {}) })).filter((c) => c.end - c.start > 0.05);
   // this model gives no time stamps: recognise ~8 s parts so each line's time is close
   if (tr.noTime && pe - ps > 10) {
     const out = [], raw = [];

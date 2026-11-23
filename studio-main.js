@@ -17,8 +17,8 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.3';
-const STUDIO_UPDATED_JST = '2026-11-23 13:40 JST';
+export const STUDIO_VERSION = '0.21.4';
+const STUDIO_UPDATED_JST = '2026-11-23 14:12 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -1120,9 +1120,6 @@ async function editorScreen(el, params, revision) {
     // iOS requires play() in the tap's activation stack. Never await seeked before play().
     vid.play().catch((e) => { if (request !== playbackRequest) return; if (e.name === 'NotAllowedError') toast('もう一度タップしてください'); });
   }
-  // A source boundary is a visual marker, not the end of continuous playback.
-  // The old guard could discard the only `ended` event when an iOS seek was
-  // still marked pending, leaving playback stopped between imported files.
   vid.addEventListener('ended', () => {
     if (!vid.ended || !playing?.cont) return;
     const finishedSource = vid.dataset.src;
@@ -1656,7 +1653,7 @@ async function editorScreen(el, params, revision) {
       proposals.push({b,g,c:snapped?{...best.c,start:snapped.start,end:snapped.end}:best.c, snapped:!!snapped});
     }
     const desc = profile==='auto'?'音声構造を自動解析（文字起こし一致が必須）':profile==='vocab'?'単語・例文（全文一致のみ）':profile==='conversation'?'会話（発話全文一致のみ）':profile==='alternate'?'英日交互（発話全文一致のみ）':'一般（発話全文一致のみ）';
-    dlg.innerHTML=`<form method="dialog" class="dlg stack"><h3>再照合の候補</h3><p class="small">${esc(desc)}。認識済み候補 ${cues.length}件、変更候補 ${proposals.length}件、照合不能 ${missing.length}件。<strong>元音声の再認識は行っていません。</strong></p><details><summary>音声構造の解析結果</summary><p class="small">${audioNotes.map(esc).join('<br>')}</p></details>${!cues.length?'<p class="notice warn">照合に使える独立した文字起こしが残っていません。既存の誤対応をもとに再推定すると誤りを繰り返すため、変更しません。</p>':''}<div style="max-height:45vh;overflow:auto">${proposals.slice(0,80).map((x,i)=>`<label class="row small" style="padding:6px 0;border-bottom:1px solid #aaa4"><input type="checkbox" data-proposal="${i}" checked><span class="grow">${esc(x.b.text.slice(0,75))}<br><span class="muted">${fmt(x.g.start)}–${fmt(x.g.end)} → ${fmt(x.c.start)}–${fmt(x.c.end)} ${x.snapped?'（無音境界で補正）':'（認識時刻）'}</span></span></label>`).join('')}</div>${proposals.length?'<p class="small muted">選択した候補のみ適用します。1回のUndoで取り消せます。音声は複製しません。</p>':''}<div class="row end st-structure-actions"><button class="btn ghost" value="cancel">閉じる</button>${proposals.length?'<button class="btn primary" value="apply">選択分を適用</button>':''}</div></form>`;
+    dlg.innerHTML=`<form method="dialog" class="dlg stack"><h3>再照合の候補</h3><p class="small">${esc(desc)}。認識済み候補 ${cues.length}件、変更候補 ${proposals.length}件、照合不能 ${missing.length}件。<strong>元音声の再認識は行っていません。</strong></p><details><summary>音声構造の解析結果</summary><p class="small">${audioNotes.map(esc).join('<br>')}</p></details>${!cues.length?'<p class="notice warn">照合に使える独立した文字起こしが残っていません。既存の誤対応をもとに再推定すると誤りを繰り返すため、変更しません。</p>':''}<div style="max-height:45vh;overflow:auto">${proposals.slice(0,80).map((x,i)=>`<label class="row small" style="padding:6px 0;border-bottom:1px solid #aaa4"><input type="checkbox" data-proposal="${i}" checked><span class="grow">${esc(x.b.text.slice(0,75))}<br><span class="muted">${fmt(x.g.start)}–${fmt(x.g.end)} → ${fmt(x.c.start)}–${fmt(x.c.end)} ${x.snapped?'（無音境界で補正）':'（認識時刻）'}</span></span></label>`).join('')}</div>${proposals.length?'<p class="small muted">選択した候補のみ適用します。1回のUndoで取り消せます。音声は複製しません。</p><button class="btn primary" value="apply">選択分を適用</button>':''}<button class="btn ghost" value="cancel">閉じる</button></form>`;
     const selected=await new Promise(resolve=>{
       dlg.onclose=()=>resolve(dlg.returnValue==='apply'?[...dlg.querySelectorAll('[data-proposal]:checked')].map(x=>+x.dataset.proposal):null);
       dlg.showModal();

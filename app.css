@@ -1308,3 +1308,8 @@ dialog.st-rescue-dialog .field select { box-sizing: border-box; max-width: 100%;
 .st-edit .st-editor-sticky h3 { flex: 1; min-width: 0; margin: 0; }
 .st-edit .st-editor-sticky .btn { flex-shrink: 0; }
 .st-edit .st-preview-controls { margin-top: 8px; }
+
+/* Keep the editor actions reachable while the content scrolls. */
+.st-edit .st-editor-sticky { flex-wrap: nowrap; }
+.st-edit .st-editor-sticky h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-edit .st-editor-sticky button { white-space: nowrap; }

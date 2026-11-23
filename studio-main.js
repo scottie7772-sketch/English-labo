@@ -1982,7 +1982,7 @@ async function editorScreen(el, params, revision) {
     if (dlg.open) return;
     dlg.classList.add("st-rescue-dialog");
     dlg.addEventListener("close", () => dlg.classList.remove("st-rescue-dialog"), {once:true});
-    dlg.innerHTML=`<form method="dialog" class="dlg stack st-edit"><div class="st-editor-sticky"><h3>音声なし字幕の救済（試験版）</h3><button class="btn sm ghost" value="cancel">閉じる</button></div>
+    dlg.innerHTML=`<form method="dialog" class="dlg stack st-edit"><div class="st-editor-sticky"><h3>音声なし字幕の救済（試験版）</h3><button class="btn sm ghost" value="cancel">閉じる</button><button id="rsApply" class="btn sm primary" value="ok">1行に手動で割り当て</button></div>
       <p class="small">連続する未割当 ${group.rows.length}行（今回表示 ${missing.length}行）。試聴してから反映してください。</p>
       <label class="field"><span>教材の種類</span><select id="rsMode"><option value="prose">朗読・会話（MA型）</option><option value="vocab">金フレ型（見出し語・例文・繰り返し）</option></select></label>
       <label class="field"><span>今回割り当てる行数</span><select id="rsCount">${missing.map((b,i)=>`<option value="${i+1}" ${i===0?'selected':''}>${i+1}行</option>`).join('')}</select></label>
@@ -1998,7 +1998,7 @@ async function editorScreen(el, params, revision) {
         <button id="rsEditAnchor" class="btn" value="anchor" hidden>既存字幕の境界を確認</button>
         <button id="rsSaved" class="btn" value="saved">既存ASRと照合</button>
         <button id="rsLocal" class="btn" value="local">指定区間を再解析</button>
-        <button id="rsGap" class="btn" value="gap" hidden>前後の間を仮割当</button><button id="rsApply" class="btn primary" value="ok">1行に手動で割り当て</button>
+        <button id="rsGap" class="btn" value="gap" hidden>前後の間を仮割当</button>
       </div></form>`;
     const pick=$('#rsCandidate',dlg),st=$('#rsStart',dlg),en=$('#rsEnd',dlg);
     const mode=$('#rsMode',dlg),count=$('#rsCount',dlg),rows=$('#rsRows',dlg),hint=$('#rsModeHint',dlg);
@@ -2348,7 +2348,7 @@ async function editorScreen(el, params, revision) {
     const dlg = $('#dialog');
     let draw = () => {
       const toks = tokensOf(work.text);
-      dlg.innerHTML = `<form method="dialog" class="dlg stack st-edit"><div class="st-editor-sticky"><h3>項目の編集</h3><button class="btn sm ghost" value="cancel">閉じる</button></div>
+      dlg.innerHTML = `<form method="dialog" class="dlg stack st-edit"><div class="st-editor-sticky"><h3>項目の編集</h3><button class="btn sm ghost" value="cancel">閉じる</button><button class="btn sm primary" value="ok">保存</button></div>
         <div class="row"><button type="button" class="btn sm" id="ePlay">${icon('play')} 再生</button><button type="button" class="btn sm" id="eLoop">ループ</button><span id="ePlaybackState" class="small muted" role="status" aria-live="off">未再生</span><span class="small muted">${fmt(blockDur(work))}・${work.segments.length}区間</span></div>
         <div><button type="button" class="btn sm ghost" id="eTokenToggle" aria-expanded="${tokenToolsOpen}" aria-controls="eTokenTools">${tokenToolsOpen ? '▾' : '▸'} 語をタップ（穴埋め・分割）</button>
           <div id="eTokenTools" ${tokenToolsOpen ? '' : 'hidden'}>
@@ -2365,7 +2365,7 @@ async function editorScreen(el, params, revision) {
           <div class="row wrap"><button type="button" class="btn xs" data-slide-step="${i}:-0.1">◀ 0.10秒</button><button type="button" class="btn xs" data-slide-step="${i}:-0.05">◀ 0.05秒</button><button type="button" class="btn xs" data-slide-step="${i}:0.05">0.05秒 ▶</button><button type="button" class="btn xs" data-slide-step="${i}:0.1">0.10秒 ▶</button><button type="button" class="btn xs ghost" data-slide-reset="${i}">元の位置</button><span class="small muted" data-slide-delta="${i}"></span></div>
           <div class="row wrap"><span class="small">開始 ${fmt(s.start)}（終了固定）</span><button type="button" class="btn xs" data-adj="${i}:start:-1">−1秒</button><button type="button" class="btn xs" data-adj="${i}:start:-0.1">−0.1秒</button><button type="button" class="btn xs" data-adj="${i}:start:0.1">＋0.1秒</button><button type="button" class="btn xs" data-adj="${i}:start:1">＋1秒</button><button type="button" class="btn xs" data-now="${i}:start">今の位置</button></div>
           <div class="row wrap"><span class="small">終了 ${fmt(s.end)}（開始固定）</span><button type="button" class="btn xs" data-adj="${i}:end:-1">−1秒</button><button type="button" class="btn xs" data-adj="${i}:end:-0.1">−0.1秒</button><button type="button" class="btn xs" data-adj="${i}:end:0.1">＋0.1秒</button><button type="button" class="btn xs" data-adj="${i}:end:1">＋1秒</button><button type="button" class="btn xs" data-now="${i}:end">今の位置</button></div></div>`).join('')}</div>
-        <div class="row end"><button class="btn primary" value="ok">保存</button></div></form>`;
+        </form>`;
       $('#ePlay', dlg).onclick = () => {
         readText();
         if (editorPlayback && !vid.paused && !editorPlayback.done) { vid.pause(); playing = null; editorPlayback.started = true; editorPlayback.stopped = true; return; }

@@ -1867,7 +1867,7 @@ async function editorScreen(el, params, revision) {
     dlg.innerHTML=`<form method="dialog" class="dlg stack st-edit"><h3>音声なし字幕の救済（試験版）</h3>
       <p class="small">連続する未割当 ${group.rows.length}行（今回表示 ${missing.length}行）。試聴してから反映してください。</p>
       <label class="field"><span>教材の種類</span><select id="rsMode"><option value="prose">朗読・会話（MA型）</option><option value="vocab">金フレ型（見出し語・例文・繰り返し）</option></select></label>
-      <label class="field"><span>今回割り当てる行数</span><select id="rsCount">${missing.map((b,i)=>`<option value="${i+1}" ${i===missing.length-1?'selected':''}>${i+1}行</option>`).join('')}</select></label>
+      <label class="field"><span>今回割り当てる行数</span><select id="rsCount">${missing.map((b,i)=>`<option value="${i+1}" ${i===0?'selected':''}>${i+1}行</option>`).join('')}</select></label>
       <div class="small" id="rsRows" style="max-height:7rem;overflow:auto">${missing.map((b,i)=>`<div>${i+1}. ${esc(b.text)}</div>`).join('')}</div>
       <p id="rsModeHint" class="small muted"></p>
       <p id="rsAnchors" class="small muted"></p>
@@ -1875,7 +1875,7 @@ async function editorScreen(el, params, revision) {
       <label class="field"><span>音声候補</span><select id="rsCandidate"></select></label>
       <div class="row wrap"><label class="field grow"><span>開始（分:秒.小数）</span><input id="rsStart" type="text" inputmode="decimal" placeholder="14:03.0"></label><label class="field grow"><span>終了（分:秒.小数）</span><input id="rsEnd" type="text" inputmode="decimal" placeholder="14:10.6"></label></div>
       <div class="st-rescue-timeline"><div class="st-rescue-track" id="rsTrack"><i id="rsSelection"></i><b id="rsHead"></b></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div></div><div class="row wrap"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div>
-      <p id="rsReason" class="small muted"></p>
+      <p id="rsReason" class="small muted"></p><p class="small muted">朗読の手動割当は「今回割り当てる行数」を1行にしてください。時刻は例 14:03.0 と入力できます。</p>
       <div class="row end">
         <button class="btn ghost" value="cancel">やめる</button>
         <button id="rsEditAnchor" class="btn" value="anchor" hidden>既存字幕の境界を確認</button>
@@ -1922,6 +1922,7 @@ async function editorScreen(el, params, revision) {
       st.value = c ? fmt(c.start) : '';
       en.value = c ? fmt(c.end) : '';
       st.disabled = en.disabled = !c || Boolean(c.review);
+      st.title = en.title = c?.review ? 'これは既存字幕の確認用です。下の「手動で時刻指定」を選んでください。' : ''; 
       $('#rsPlay',dlg).disabled = !c;
       editAnchor.hidden = !c?.review;
       $('#rsReason',dlg).textContent = c ? c.kind : '候補がありません。探索範囲を広げてください。';
@@ -1934,8 +1935,24 @@ async function editorScreen(el, params, revision) {
       const plan = search.search(group,expand.checked);
       const usable = c => srcs[c.sid]?.stored ? Boolean(srcs[c.sid].blob) : sessionFiles.has(c.sid);
       opt = [...plan.candidates.filter(usable).slice(0,50),...plan.review.filter(usable)];
+      // A review-only result used to disable both clock inputs and Apply.
+      // Always offer a non-destructive manual range on the same source, even
+      // when no unused gap was found. Commit still checks occupied intervals.
+      const sourceIds = [...new Set([...opt.map(c=>c.sid),plan.before?.sourceId,plan.after?.sourceId].filter(Boolean))];
+      if (!sourceIds.length) sourceIds.push(...Object.keys(srcs).filter(sid=>usable({sid})).slice(0,10));
+      for (const sid of sourceIds) {
+        if (!usable({sid})) continue;
+        const duration=Number(srcs[sid]?.duration)||0;
+        const a=plan.before?.sourceId===sid ? plan.before.end : 0;
+        const z=plan.after?.sourceId===sid ? plan.after.start : Math.min(duration||a+20,a+20);
+        const start=Math.max(0,Math.min(a,Math.max(0,(duration||Infinity)-.2)));
+        const end=Math.max(start+.2,Math.min(duration||start+20,z>start+.2?z:start+10));
+        opt.push({sid,start,end,kind:'手動で時刻指定（既存区間との重複は保存時に検査）'});
+      }
       $('#rsAnchors',dlg).textContent = `前のアンカー ${describe(plan.before)} / 次のアンカー ${describe(plan.after)}${plan.reversed ? '（前後の区間が逆順または重複）' : ''}`;
       pick.innerHTML = opt.map((c,i) => `<option value="${i}">${esc(srcs[c.sid]?.name || '音声')} / ${esc(c.kind)} / ${fmt(c.start)}–${fmt(c.end)}</option>`).join('');
+      const firstEditable=opt.findIndex(c=>!c.review);
+      pick.value=String(firstEditable>=0?firstEditable:0);
       update();
     };
     mode.onchange = count.onchange = () => { refreshRows(); const c=pickRange();gapButton.hidden=!(mode.value==='prose'&&c&&!c.review&&currentRows().length===1&&c.kind.includes('アンカー間')); };

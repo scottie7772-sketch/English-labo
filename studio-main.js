@@ -1030,13 +1030,27 @@ async function editorScreen(el, params, revision) {
   };
   const setView = (v) => {
     const anchor = viewAnchor();
+    // While playing, use the audio clock as the navigation anchor, not the
+    // first visible row (which may be far away from the playback position).
+    const active = !vid.paused ? blockAtTime() : null;
+    const activeIndex = active ? set.order.indexOf(active.id) : -1;
     const serial = ++viewSwitchSerial;
     view = v;
     try { localStorage.setItem('st-view', view); } catch {}
     drawViewB(); drawList();
-    // After layout has settled: restoring synchronously may be clamped to the
-    // previous scroll height when the list expands from 未 to 全.
-    requestAnimationFrame(() => requestAnimationFrame(() => restoreViewAnchor(anchor, serial)));
+    // drawList replaces the rows. The previous highlight node and subtitle
+    // cache are no longer valid, even if the active block id is unchanged.
+    lastSubId = undefined;
+    lastHighlightedRow = null;
+    drawSub();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (serial !== viewSwitchSerial) return;
+      restoreViewAnchor(activeIndex >= 0 ? {id:active.id,index:activeIndex,offset:0} : anchor, serial);
+      // A folded/filtered view may hide the exact active row; resume tracking
+      // immediately when it becomes visible again, without seeking the audio.
+      lastSubId = undefined;
+      drawSub();
+    }));
   };
   $('#viewB', el).onclick = () => { setView({ all: 'todo', todo: 'done', done: 'rest', rest: 'all' }[view]); toast(VIEWS[view].d, 1500); };
   // play only the chosen sound track (screen recordings: app sound and microphone are separate tracks; never mixed)
@@ -1237,7 +1251,7 @@ async function editorScreen(el, params, revision) {
   function drawSub() {
     const b = blockAtTime();
     const id = b ? b.id + '@' + b.rev : null;
-    if (id === lastSubId) return;
+    if (id === lastSubId && (!lastHighlightedRow || lastHighlightedRow.isConnected)) return;
     lastSubId = id;
     // Keep subtitle elements mounted. Replacing innerHTML on each transition
     // can flash the subtitle area on iPad WebKit, even without scrolling.
@@ -1263,7 +1277,17 @@ async function editorScreen(el, params, revision) {
       empty.hidden = !!(english || japanese);
     }
     if (lastHighlightedRow?.isConnected) lastHighlightedRow.classList.remove('cur');
-    const row = b ? Array.from(list.querySelectorAll('.st-row')).find(r => r.dataset.id === b.id) : null;
+    let row = b ? Array.from(list.querySelectorAll('.st-row')).find(r => r.dataset.id === b.id) : null;
+    if (!row && b && view === 'todo') {
+      const at = set.order.indexOf(b.id);
+      const folds = Array.from(list.querySelectorAll('.st-fold1[data-oid]'));
+      row = folds.find((fold) => {
+        const start = set.order.indexOf(fold.dataset.oid);
+        const next = fold.nextElementSibling?.dataset.id;
+        const end = next ? set.order.indexOf(next) : set.order.length;
+        return start >= 0 && at >= start && at < end;
+      }) || null;
+    }
     if (row) row.classList.add('cur');
     lastHighlightedRow = row || null;
     // Follow only when the active row leaves a safe visible area; avoid stacked

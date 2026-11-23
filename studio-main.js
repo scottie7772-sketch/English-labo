@@ -1120,12 +1120,18 @@ async function editorScreen(el, params, revision) {
     // iOS requires play() in the tap's activation stack. Never await seeked before play().
     vid.play().catch((e) => { if (request !== playbackRequest) return; if (e.name === 'NotAllowedError') toast('もう一度タップしてください'); });
   }
+  // A source boundary is a visual marker, not the end of continuous playback.
+  // The old guard could discard the only `ended` event when an iOS seek was
+  // still marked pending, leaving playback stopped between imported files.
   vid.addEventListener('ended', () => {
-    if (!vid.ended || !playing || !playing.cont || pendingSegmentSeek || vid.seeking) return;
-    const sourceId = vid.dataset.src;
-    const next = nextSourceSegment(set.order, byId, playing, sourceId);
-    playing = next ? { ...next, cont: true, loop: false, range: null } : null;
-    if (next) { curBlock = next.b; startSeg(); }
+    if (!vid.ended || !playing?.cont) return;
+    const finishedSource = vid.dataset.src;
+    const next = nextSourceSegment(set.order, byId, playing, finishedSource);
+    pendingSegmentSeek = null;
+    if (!next) { playing = null; return; }
+    playing = { ...next, cont: true, loop: false, range: null };
+    curBlock = next.b;
+    startSeg();
   });
   let editorPlayback = null;
   let raf = 0;

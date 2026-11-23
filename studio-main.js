@@ -2166,7 +2166,7 @@ async function editorScreen(el, params, revision) {
   }
   async function editBlock(b, {protectNeighbours = false,onFinish = null} = {}) {
     vid.pause(); playing = null; editorPlayback?.cleanup?.(); editorPlayback = null;
-    let mode = 'hole'; let work = structuredClone(b);
+    let mode = 'hole'; let tokenToolsOpen = false; let fullRangeView = false; let work = structuredClone(b);
     // Keep the original positions visible while fine-tuning. No media is copied.
     const originalSegments = structuredClone(b.segments);
     const dlg = $('#dialog');
@@ -2174,12 +2174,17 @@ async function editorScreen(el, params, revision) {
       const toks = tokensOf(work.text);
       dlg.innerHTML = `<form method="dialog" class="dlg stack st-edit"><h3>項目の編集</h3>
         <div class="row"><button type="button" class="btn sm" id="ePlay">${icon('play')} 再生</button><button type="button" class="btn sm" id="eLoop">ループ</button><span id="ePlaybackState" class="small muted" role="status" aria-live="off">未再生</span><span class="small muted">${fmt(blockDur(work))}・${work.segments.length}区間</span></div>
-        <label class="field"><span>英文</span><textarea id="eEn" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false">${esc(work.text)}</textarea></label>
-        <div class="seg sm" id="eMode"><button type="button" data-v="hole" class="${mode === 'hole' ? 'on' : ''}">語をタップ＝穴埋め</button><button type="button" data-v="split" class="${mode === 'split' ? 'on' : ''}">語をタップ＝その前で分割</button></div>
-        <div class="st-toks">${toks.map((w, i) => `<button type="button" class="st-tok ${(work.holes || []).some((h) => i >= h.s && i <= h.e) ? 'hole' : ''}" data-t="${i}">${esc(w)}</button>`).join('')}</div>
         <label class="field"><span>和訳</span><textarea id="eJa" rows="2">${esc(work.ja || '')}</textarea></label>
+        <label class="field"><span>英文</span><textarea id="eEn" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false">${esc(work.text)}</textarea></label>
+        <div><button type="button" class="btn sm ghost" id="eTokenToggle" aria-expanded="${tokenToolsOpen}" aria-controls="eTokenTools">${tokenToolsOpen ? '▾' : '▸'} 語をタップ（穴埋め・分割）</button>
+          <div id="eTokenTools" ${tokenToolsOpen ? '' : 'hidden'}>
+            <div class="seg sm" id="eMode"><button type="button" data-v="hole" class="${mode === 'hole' ? 'on' : ''}">語をタップ＝穴埋め</button><button type="button" data-v="split" class="${mode === 'split' ? 'on' : ''}">語をタップ＝その前で分割</button></div>
+            <div class="st-toks">${toks.map((w, i) => `<button type="button" class="st-tok ${(work.holes || []).some((h) => i >= h.s && i <= h.e) ? 'hole' : ''}" data-t="${i}">${esc(w)}</button>`).join('')}</div>
+          </div>
+        </div>
         <div class="stack">${work.segments.map((s, i) => `<div class="st-segrow"><b>区間${i + 1}</b> <small class="muted">${esc(srcs[s.sourceId]?.name || '')}</small>
           <div class="st-trim" data-trim="${i}"><div class="st-trk"><i class="st-origin"></i><i class="st-playhead"></i><i class="sel" data-slide="${i}" title="長さを固定して移動"></i><b class="h" data-h="start"></b><b class="h" data-h="end"></b></div><div class="row small muted"><span class="st-tl0"></span><span class="grow"></span><span>中央をドラッグ＝長さ固定で移動／薄枠＝元の位置</span><span class="grow"></span><span class="st-tl1"></span></div></div>
+          <div class="row wrap"><button type="button" class="btn xs ghost" data-range-view="${i}">${fullRangeView ? '周辺を拡大' : 'ファイル全体を表示'}</button><button type="button" class="btn xs ghost" data-range-edge="${i}:start">開始を先頭へ</button><button type="button" class="btn xs ghost" data-range-edge="${i}:end">終了を末尾へ</button></div>
           <div class="row wrap"><button type="button" class="btn xs" data-slide-step="${i}:-0.1">◀ 0.10秒</button><button type="button" class="btn xs" data-slide-step="${i}:-0.05">◀ 0.05秒</button><button type="button" class="btn xs" data-slide-step="${i}:0.05">0.05秒 ▶</button><button type="button" class="btn xs" data-slide-step="${i}:0.1">0.10秒 ▶</button><button type="button" class="btn xs ghost" data-slide-reset="${i}">元の位置</button><span class="small muted" data-slide-delta="${i}"></span></div>
           <div class="row"><button type="button" class="btn xs" data-pseg="${i}:all">${icon('play')} 区間</button><button type="button" class="btn xs" data-pseg="${i}:head">頭2秒</button><button type="button" class="btn xs" data-pseg="${i}:tail">後ろ2秒</button></div>
           <div class="row"><span class="small">開始 ${fmt(s.start)}</span><button type="button" class="btn xs" data-adj="${i}:start:-0.1">−0.1</button><button type="button" class="btn xs" data-adj="${i}:start:0.1">＋0.1</button><button type="button" class="btn xs" data-now="${i}:start">今の位置</button></div>
@@ -2193,6 +2198,7 @@ async function editorScreen(el, params, revision) {
         editorPlayback = { dlg, kind: 'block', loop: false, started: true, done: false, segmentEnd: () => work.segments.at(-1)?.end };
       };
       $('#eLoop', dlg).onclick = () => { readText(); editorPlayback?.cleanup?.(); playBlock(work, true); editorPlayback = { dlg, kind: 'block', loop: true, started: true, done: false, segmentEnd: () => work.segments.at(-1)?.end }; };
+      $('#eTokenToggle', dlg).onclick = () => { readText(); tokenToolsOpen = !tokenToolsOpen; draw(); };
       $('#eMode', dlg).onclick = (e) => { const v = e.target.dataset.v; if (v) { readText(); mode = v; draw(); } };
       $$('[data-t]', dlg).forEach((t) => (t.onclick = async () => {
         readText(); const i = +t.dataset.t;
@@ -2216,6 +2222,16 @@ async function editorScreen(el, params, revision) {
         if (k === 'all') playRange(g.sourceId, g.start, g.end); else if (k === 'head') playRange(g.sourceId, g.start, Math.min(g.end, g.start + 2)); else playRange(g.sourceId, Math.max(g.start, g.end - 2), g.end); }));
       if (!$('#eFollow', dlg) && work.segments.length) { const st = $('.st-segrow', dlg); st?.insertAdjacentHTML('beforebegin', `<label class="chk small"><input type="checkbox" id="eFollow" ${follow ? 'checked' : ''}> 前後の行もつなげて動かす（音のダブり・抜けを防ぐ）</label>`);
         $('#eFollow', dlg).onchange = (e) => { follow = e.target.checked; try { localStorage.setItem('st-follow', follow ? '1' : '0'); } catch {} }; }
+      $$('[data-range-view]', dlg).forEach((x) => (x.onclick = () => { readText(); fullRangeView = !fullRangeView; draw(); }));
+      $$('[data-range-edge]', dlg).forEach((x) => (x.onclick = () => {
+        readText(); const [i, edge] = x.dataset.rangeEdge.split(':');
+        const sg = work.segments[+i]; if (!sg) return;
+        const duration = srcs[sg.sourceId]?.duration;
+        if (edge === 'start') sg.start = 0;
+        else if (Number.isFinite(duration) && duration > sg.start) sg.end = duration;
+        else return toast('音声ファイルの終了時刻を取得できません');
+        work.sync = 'manual'; follow = false; draw();
+      }));
       $$('[data-slide-step]', dlg).forEach((x) => (x.onclick = () => {
         readText(); const [i, delta] = x.dataset.slideStep.split(':');
         const sg = work.segments[+i], duration = srcs[sg.sourceId]?.duration || Infinity;
@@ -2234,8 +2250,8 @@ async function editorScreen(el, params, revision) {
         const i = +box.dataset.trim, sg = work.segments[i], original = originalSegments[i];
         const D = srcs[sg.sourceId]?.duration || sg.end + 8;
         // Focus on a short time window, not the entire recording. Show original position.
-        const lo = Math.max(0, Math.min(sg.start, original?.start ?? sg.start) - 15);
-        const hi = Math.max(lo + 0.5, Math.min(D, Math.max(sg.end, original?.end ?? sg.end) + 15));
+        const lo = fullRangeView ? 0 : Math.max(0, Math.min(sg.start, original?.start ?? sg.start) - 15);
+        const hi = fullRangeView ? Math.max(0.5, D) : Math.max(lo + 0.5, Math.min(D, Math.max(sg.end, original?.end ?? sg.end) + 15));
         const trk = $('.st-trk', box);
         const pct = (t) => Math.max(0, Math.min(100, (t - lo) / (hi - lo) * 100));
         trk.dataset.sourceId=sg.sourceId;trk.dataset.lo=String(lo);trk.dataset.hi=String(hi);

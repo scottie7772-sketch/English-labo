@@ -2937,7 +2937,12 @@ async function editorScreen(el, params, revision) {
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>元音声を2つの独立した教材に分割</h3>
       <p class="small muted">字幕の区間に関係なく元ファイル全体を分割します。元教材と元音声は残り、前半・後半が別教材として作成されます。元音声はコピーしません。</p>
       <label class="field"><span>元音声・動画</span><select id="wholeSplitSource">${opts}</select></label>
-      <label class="field"><span>分割時刻（分:秒.小数）</span><input id="wholeSplitAt" inputmode="decimal" placeholder="20:30.5"></label>
+      <div class="field"><span>分割時刻（分・秒・小数）</span>
+        <div class="row" style="align-items:center;gap:6px;flex-wrap:wrap">
+          <input id="wholeSplitMin" type="number" min="0" step="1" inputmode="numeric" aria-label="分" style="width:76px" placeholder="20"><span>分</span>
+          <input id="wholeSplitSec" type="number" min="0" max="59" step="1" inputmode="numeric" aria-label="秒" style="width:65px" placeholder="30"><span>秒</span>
+          <input id="wholeSplitDec" type="number" min="0" max="9" step="1" inputmode="numeric" aria-label="0.1秒" style="width:57px" placeholder="5"><span>／10秒</span>
+        </div><input id="wholeSplitAt" type="hidden"></div>
       <p id="wholeSplitInfo" class="small muted"></p>
       <div class="card stack"><b>分割前の音声確認</b><p class="small muted">境界の直前・直後をそれぞれ約4秒再生します。</p>
         <div class="row wrap"><button type="button" class="btn sm" id="splitHearBefore">前半の終わりを聴く</button><button type="button" class="btn sm" id="splitHearAfter">後半の始まりを聴く</button><button type="button" class="btn sm ghost" id="splitHearStop">停止</button></div>
@@ -2948,14 +2953,29 @@ async function editorScreen(el, params, revision) {
       <p class="small muted">境界をまたぐ音声付き文章は両方に残し、要確認にします。元教材は削除しません。</p>
       <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">前半・後半の教材を作成</button></div></form>`;
     const pick = $('#wholeSplitSource',dlg), field = $('#wholeSplitAt',dlg), info = $('#wholeSplitInfo',dlg);
+    const mins = $('#wholeSplitMin',dlg), secs = $('#wholeSplitSec',dlg), decs = $('#wholeSplitDec',dlg);
+    const syncClock = () => {
+      const m = Number(mins.value), sec = Number(secs.value), d = Number(decs.value);
+      const valid = mins.value !== '' && secs.value !== '' && decs.value !== '' &&
+        Number.isInteger(m) && m >= 0 && Number.isInteger(sec) && sec >= 0 && sec < 60 &&
+        Number.isInteger(d) && d >= 0 && d <= 9;
+      field.value = valid ? `${m}:${String(sec).padStart(2,'0')}.${d}` : '';
+    };
+    const setClock = (value) => {
+      const t = Math.max(0, Math.round(Number(value || 0) * 10));
+      mins.value = String(Math.floor(t / 600));
+      secs.value = String(Math.floor(t / 10) % 60);
+      decs.value = String(t % 10);
+      syncClock();
+    };
     const refresh = () => {
       const src = srcs[pick.value], duration = Number(src?.duration) || 0, at = parseClock(field.value);
       info.textContent = `元音声：0:00.0〜${fmt(duration)} / 分割位置：${Number.isFinite(at)?fmt(at):'未入力'}${at > 0.1 && at < duration - 0.1 ? '（分割可能）' : '（範囲外）'}`;
     };
-    pick.onchange = () => { field.value = fmt((Number(srcs[pick.value]?.duration)||0)/2); refresh(); };
-    field.oninput = refresh;
+    pick.onchange = () => { setClock((Number(srcs[pick.value]?.duration)||0)/2); refresh(); };
+    for (const input of [mins, secs, decs]) input.addEventListener('input', () => { syncClock(); refresh(); });
     pick.onchange();
-    if (vid.dataset.src === pick.value && vid.currentTime > 0) { field.value = fmt(vid.currentTime); refresh(); }
+    if (vid.dataset.src === pick.value && vid.currentTime > 0) { setClock(vid.currentTime); refresh(); }
     const preview = $('#splitHearAudio',dlg), previewStatus = $('#splitHearStatus',dlg);
     let previewEnd = null;
     const stopPreview = () => { preview.pause(); previewEnd = null; };

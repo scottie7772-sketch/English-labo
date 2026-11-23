@@ -17,8 +17,8 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.4';
-const STUDIO_UPDATED_JST = '2026-11-23 14:12 JST';
+export const STUDIO_VERSION = '0.21.5';
+const STUDIO_UPDATED_JST = '2026-11-23 15:00 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -1714,6 +1714,10 @@ async function editorScreen(el, params, revision) {
     playing = null;
     vid.pause();
     if (!selected.length) return;
+    await applyVocabAlignment(selected);
+  }
+
+  async function applyVocabAlignment(selected) {
     await reload();
     if (revision !== routeRevision) return;
     const now = vocabInputs();
@@ -1740,6 +1744,18 @@ async function editorScreen(el, params, revision) {
     const order = set.order.filter(id => !consumed.has(id));
     await run('金フレ型の照合', {blocks:[...changes,...[...consumed].map(id => ({...byId[id],deleted:true}))],order,guardedSet});
     if (changes.length < selected.length) toast(`${selected.length - changes.length}行は変更・重なりがあるため保留しました`, 4500);
+  }
+
+  async function batchVocabAlignment() {
+    if (revision !== routeRevision) return;
+    await reload();
+    if (revision !== routeRevision) return;
+    const {rows, occupied, evidence} = vocabInputs();
+    const planned = planVocabAlignment(rows, evidence, occupied);
+    if (!planned.length) return toast("一括照合できる候補はありません");
+    const ok = await confirmDialog({title:"金フレ型：一括照合",body:`<p>保存済みASRから ${planned.length} 行の一致候補が見つかりました。元音声を再解析せず、候補を一括で割り当てます。</p><p class="small">既存の照合済み・手動編集済み区間は保護し、競合した行は保留します。反映後は試聴で確認してください。1回のUndoで取り消せます。</p>`,okLabel:"候補を一括反映"});
+    if (!ok || revision !== routeRevision) return;
+    await applyVocabAlignment(planned);
   }
 
   async function reanalyseVocabRange(sourceId, start, end, targets) {
@@ -1843,6 +1859,8 @@ async function editorScreen(el, params, revision) {
       <p id="rsModeHint" class="small muted">朗読・会話は従来どおり文章の長さを使って仮分割します。</p>
       <label class="field"><span>音声候補</span><select id="rsCandidate">${opt.map((c,i)=>`<option value="${i}">${esc(srcs[c.sid]?.name||'音声')} / ${esc(c.kind)} / ${fmt(c.start)}–${fmt(c.end)}</option>`).join('')}</select></label>
       <div class="row wrap"><label class="field grow"><span>開始（秒）</span><input id="rsStart" type="number" min="0" step="0.01"></label><label class="field grow"><span>終了（秒）</span><input id="rsEnd" type="number" min="0" step="0.01"></label></div>
+      <div class="stack" style="gap:6px"><span class="small muted">位置をボタンで微調整（秒）</span>
+      ${[['開始','rsStart'],['終了','rsEnd']].map(([label,id])=>`<div class="row wrap" style="align-items:center"><span class="small" style="min-width:3em">${label}</span>${[-5,-1,-0.5,0.5,1,5].map(n=>`<button type="button" class="btn sm ghost" data-rs-adjust="${id}" data-rs-step="${n}">${n>0?'+':''}${n}</button>`).join('')}</div>`).join('')}</div>
       <div class="row wrap"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div>
       <p class="small muted">複数行は英文の長さに応じて仮分割します。無音・話速を解析した境界ではありません。反映後に各行の✎から調整できます。既存の音声区間は変更しません。↶で取り消せます。</p>
       <div class="row end"><button class="btn ghost" value="cancel">やめる</button><button class="btn" value="vocabSaved">金フレ型・既存ASRを照合</button><button class="btn" value="vocabLocal">金フレ型・指定区間を再解析</button><button class="btn primary" value="ok">確認して割り当て</button></div></form>`;
@@ -1860,6 +1878,15 @@ async function editorScreen(el, params, revision) {
     mode.onchange=refreshRows;count.onchange=refreshRows;refreshRows();
     const update=()=>{const c=opt[+pick.value];st.value=c.start.toFixed(2);en.value=c.end.toFixed(2);};
     pick.onchange=update;update();
+    $$('[data-rs-adjust]',dlg).forEach(button => button.onclick = () => {
+      const field = button.dataset.rsAdjust === 'rsStart' ? st : en;
+      const step = Number(button.dataset.rsStep);
+      const current = Number(field.value);
+      if (!Number.isFinite(current) || !Number.isFinite(step)) return;
+      const duration = Number(srcs[opt[Number(pick.value)]?.sid]?.duration);
+      const max = Number.isFinite(duration) && duration > 0 ? duration : Infinity;
+      field.value = Math.min(max, Math.max(0, Math.round((current + step) * 100) / 100)).toFixed(2);
+    });
     const stop = () => { ++playbackRequest; pendingSegmentSeek = null; playing = null; vid.pause(); };
     $('#rsStop', dlg).onclick = stop;
     $('#rsPlay', dlg).onclick = () => {
@@ -2974,6 +3001,7 @@ async function editorScreen(el, params, revision) {
       <button class="btn" value="addMedia">音声・動画を追加</button>
       <button class="btn" value="align">スクリプトと照合</button>
       <button class="btn" value="alignVocab">金フレ型：既存ASRと照合</button>
+      <button class="btn" value="alignVocabBatch">金フレ型：一括照合（既存ASR）</button>
       <button class="btn" value="alignProse">朗読・会話向け：緩めのスクリプト照合（試験版）</button>
       <button class="btn" value="refine">音声位置を一括自動調整（試験版）</button>
       <button class="btn" value="realign">構造を使った再照合（プレビュー）</button>
@@ -3012,6 +3040,7 @@ async function editorScreen(el, params, revision) {
       if (v === 'addMedia') nav(`import?to=${set.id}`);
       if (v === 'align') runAlign();
       if (v === 'alignVocab') previewVocabAlignment();
+      if (v === 'alignVocabBatch') batchVocabAlignment();
       if (v === 'alignProse') runAlign({ mode: 'prose' });
       if (v === 'refine') refineBoundaries();
       if (v === 'realign') previewStructuralRealign();

@@ -1982,7 +1982,7 @@ async function editorScreen(el, params, revision) {
     if (dlg.open) return;
     dlg.classList.add("st-rescue-dialog");
     dlg.addEventListener("close", () => dlg.classList.remove("st-rescue-dialog"), {once:true});
-    dlg.innerHTML=`<form method="dialog" class="dlg stack st-edit"><h3>音声なし字幕の救済（試験版）</h3>
+    dlg.innerHTML=`<form method="dialog" class="dlg stack st-edit"><div class="st-editor-sticky"><h3>音声なし字幕の救済（試験版）</h3><button class="btn sm ghost" value="cancel">閉じる</button></div>
       <p class="small">連続する未割当 ${group.rows.length}行（今回表示 ${missing.length}行）。試聴してから反映してください。</p>
       <label class="field"><span>教材の種類</span><select id="rsMode"><option value="prose">朗読・会話（MA型）</option><option value="vocab">金フレ型（見出し語・例文・繰り返し）</option></select></label>
       <label class="field"><span>今回割り当てる行数</span><select id="rsCount">${missing.map((b,i)=>`<option value="${i+1}" ${i===0?'selected':''}>${i+1}行</option>`).join('')}</select></label>
@@ -1991,11 +1991,10 @@ async function editorScreen(el, params, revision) {
       <label class="chk"><input id="rsExpand" type="checkbox"> 探索範囲を広げる</label>
       <label class="field"><span>音声候補</span><select id="rsCandidate"></select></label>
       <div class="row wrap"><label class="field grow"><span>開始（分:秒.小数）</span><input id="rsStart" type="text" inputmode="decimal" placeholder="14:03.0"></label><label class="field grow"><span>終了（分:秒.小数）</span><input id="rsEnd" type="text" inputmode="decimal" placeholder="14:10.6"></label></div>
-      <div class="st-rescue-timeline"><div class="row st-rescue-hscroll"><button type="button" class="btn sm" id="rsView">ファイル全体を表示</button><button type="button" class="btn sm" id="rsStartZero">開始を先頭へ</button><button type="button" class="btn sm" id="rsEndLast">終了を末尾へ</button></div><p class="small muted">バーの下の開始・終了ポインターをドラッグして調整できます。中央をタップすると再生位置を移動します。</p><div class="st-rescue-track" id="rsTrack" style="position:relative;touch-action:none;min-height:44px"><i id="rsSelection" style="pointer-events:none"></i><b id="rsHead" style="pointer-events:none"></b><button type="button" class="st-range-pointer st-range-start" id="rsHandleStart" aria-label="割当開始をドラッグ"></button><button type="button" class="st-range-pointer st-range-end" id="rsHandleEnd" aria-label="割当終了をドラッグ"></button></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div></div><div class="row wrap"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsPlayLast">▶ 終了前2秒</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div>
+      <div class="st-rescue-timeline"><div class="row st-rescue-hscroll"><button type="button" class="btn sm" id="rsView">ファイル全体を表示</button><button type="button" class="btn sm" id="rsStartZero">開始を先頭へ</button><button type="button" class="btn sm" id="rsEndLast">終了を末尾へ</button></div><p class="small muted">バーの上の開始ポインターと下の終了ポインターをドラッグして調整できます。中央をタップすると再生位置を移動します。</p><div class="st-rescue-track" id="rsTrack" style="position:relative;touch-action:none;min-height:44px"><i id="rsSelection" style="pointer-events:none"></i><b id="rsHead" style="pointer-events:none"></b><button type="button" class="st-range-pointer st-range-start" id="rsHandleStart" aria-label="割当開始をドラッグ"></button><button type="button" class="st-range-pointer st-range-end" id="rsHandleEnd" aria-label="割当終了をドラッグ"></button></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div><div class="row wrap st-preview-controls"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsPlayHead">▶ 頭2秒</button><button type="button" class="btn sm" id="rsPlayLast">▶ 後ろ2秒</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div></div>
       <div class="small st-rescue-script" id="rsRows" style="max-height:7rem;overflow:auto">${missing.map((b,i)=>`<div>${i+1}. ${esc(b.text)}</div>`).join('')}</div>
       <p id="rsReason" class="small muted"></p><p class="small muted">朗読の手動割当は「今回割り当てる行数」を1行にしてください。時刻は例 14:03.0 と入力できます。</p>
       <div class="row end st-rescue-hscroll">
-        <button class="btn ghost" value="cancel">やめる</button>
         <button id="rsEditAnchor" class="btn" value="anchor" hidden>既存字幕の境界を確認</button>
         <button id="rsSaved" class="btn" value="saved">既存ASRと照合</button>
         <button id="rsLocal" class="btn" value="local">指定区間を再解析</button>
@@ -2075,7 +2074,7 @@ async function editorScreen(el, params, revision) {
       en.value = c ? fmt(c.end) : '';
       st.disabled = en.disabled = !c || Boolean(c.review);
       st.title = en.title = c?.review ? 'これは既存字幕の確認用です。下の「手動で時刻指定」を選んでください。' : ''; 
-      $('#rsPlay',dlg).disabled = $('#rsPlayLast',dlg).disabled = !c;
+      $('#rsPlay',dlg).disabled = $('#rsPlayHead',dlg).disabled = $('#rsPlayLast',dlg).disabled = !c;
       editAnchor.hidden = !c?.review;
       $('#rsReason',dlg).textContent = c ? c.kind : '候補がありません。探索範囲を広げてください。';
       gapButton.hidden = !(mode.value === 'prose' && c && !c.review && currentRows().length === 1 && c.kind.includes('アンカー間'));
@@ -2118,6 +2117,7 @@ async function editorScreen(el, params, revision) {
       stopRescuePreview();
       playBlock({segments:[{sourceId:c.sid,start:a,end:Math.min(z,a+30)}]});
     };
+    $('#rsPlayHead',dlg).onclick = () => { const c=pickRange(),a=parseClock(st.value),z=parseClock(en.value); if(c&&Number.isFinite(a)&&Number.isFinite(z)&&z>a)playRange(c.sid,a,Math.min(z,a+2)); };
     $('#rsPlayLast',dlg).onclick = () => {
       const c=pickRange(),a=parseClock(st.value),z=parseClock(en.value);
       if (!c || !Number.isFinite(a) || !Number.isFinite(z) || z<=a) return toast('開始・終了を確認してください');
@@ -2348,24 +2348,24 @@ async function editorScreen(el, params, revision) {
     const dlg = $('#dialog');
     let draw = () => {
       const toks = tokensOf(work.text);
-      dlg.innerHTML = `<form method="dialog" class="dlg stack st-edit"><h3>項目の編集</h3>
+      dlg.innerHTML = `<form method="dialog" class="dlg stack st-edit"><div class="st-editor-sticky"><h3>項目の編集</h3><button class="btn sm ghost" value="cancel">閉じる</button></div>
         <div class="row"><button type="button" class="btn sm" id="ePlay">${icon('play')} 再生</button><button type="button" class="btn sm" id="eLoop">ループ</button><span id="ePlaybackState" class="small muted" role="status" aria-live="off">未再生</span><span class="small muted">${fmt(blockDur(work))}・${work.segments.length}区間</span></div>
-        <label class="field"><span>和訳</span><textarea id="eJa" rows="2">${esc(work.ja || '')}</textarea></label>
-        <label class="field"><span>英文</span><textarea id="eEn" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false">${esc(work.text)}</textarea></label>
         <div><button type="button" class="btn sm ghost" id="eTokenToggle" aria-expanded="${tokenToolsOpen}" aria-controls="eTokenTools">${tokenToolsOpen ? '▾' : '▸'} 語をタップ（穴埋め・分割）</button>
           <div id="eTokenTools" ${tokenToolsOpen ? '' : 'hidden'}>
             <div class="seg sm" id="eMode"><button type="button" data-v="hole" class="${mode === 'hole' ? 'on' : ''}">語をタップ＝穴埋め</button><button type="button" data-v="split" class="${mode === 'split' ? 'on' : ''}">語をタップ＝その前で分割</button></div>
             <div class="st-toks">${toks.map((w, i) => `<button type="button" class="st-tok ${(work.holes || []).some((h) => i >= h.s && i <= h.e) ? 'hole' : ''}" data-t="${i}">${esc(w)}</button>`).join('')}</div>
           </div>
         </div>
+        <label class="field"><span>和訳</span><textarea id="eJa" rows="2">${esc(work.ja || '')}</textarea></label>
+        <label class="field"><span>英文</span><textarea id="eEn" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false">${esc(work.text)}</textarea></label>
         <div class="stack">${work.segments.map((s, i) => `<div class="st-segrow"><b>区間${i + 1}</b> <small class="muted">${esc(srcs[s.sourceId]?.name || '')}</small>
           <div class="st-trim" data-trim="${i}"><div class="st-trk"><i class="st-origin"></i><i class="st-playhead"></i><i class="sel" data-slide="${i}" title="長さを固定して移動"></i><b class="h st-range-pointer st-range-start" data-h="start"></b><b class="h st-range-pointer st-range-end" data-h="end"></b></div><div class="row small muted"><span class="st-tl0"></span><span class="grow"></span><span>中央をドラッグ＝長さ固定で移動／薄枠＝元の位置</span><span class="grow"></span><span class="st-tl1"></span></div></div>
+          <div class="row"><button type="button" class="btn xs" data-pseg="${i}:all">${icon('play')} 区間</button><button type="button" class="btn xs" data-pseg="${i}:head">頭2秒</button><button type="button" class="btn xs" data-pseg="${i}:tail">後ろ2秒</button></div>
           <div class="row wrap"><button type="button" class="btn xs ghost" data-range-view="${i}">${fullRangeView ? '周辺を拡大' : 'ファイル全体を表示'}</button><button type="button" class="btn xs ghost" data-range-edge="${i}:start">開始を先頭へ</button><button type="button" class="btn xs ghost" data-range-edge="${i}:end">終了を末尾へ</button></div>
           <div class="row wrap"><button type="button" class="btn xs" data-slide-step="${i}:-0.1">◀ 0.10秒</button><button type="button" class="btn xs" data-slide-step="${i}:-0.05">◀ 0.05秒</button><button type="button" class="btn xs" data-slide-step="${i}:0.05">0.05秒 ▶</button><button type="button" class="btn xs" data-slide-step="${i}:0.1">0.10秒 ▶</button><button type="button" class="btn xs ghost" data-slide-reset="${i}">元の位置</button><span class="small muted" data-slide-delta="${i}"></span></div>
-          <div class="row"><button type="button" class="btn xs" data-pseg="${i}:all">${icon('play')} 区間</button><button type="button" class="btn xs" data-pseg="${i}:head">頭2秒</button><button type="button" class="btn xs" data-pseg="${i}:tail">後ろ2秒</button></div>
           <div class="row wrap"><span class="small">開始 ${fmt(s.start)}（終了固定）</span><button type="button" class="btn xs" data-adj="${i}:start:-1">−1秒</button><button type="button" class="btn xs" data-adj="${i}:start:-0.1">−0.1秒</button><button type="button" class="btn xs" data-adj="${i}:start:0.1">＋0.1秒</button><button type="button" class="btn xs" data-adj="${i}:start:1">＋1秒</button><button type="button" class="btn xs" data-now="${i}:start">今の位置</button></div>
           <div class="row wrap"><span class="small">終了 ${fmt(s.end)}（開始固定）</span><button type="button" class="btn xs" data-adj="${i}:end:-1">−1秒</button><button type="button" class="btn xs" data-adj="${i}:end:-0.1">−0.1秒</button><button type="button" class="btn xs" data-adj="${i}:end:0.1">＋0.1秒</button><button type="button" class="btn xs" data-adj="${i}:end:1">＋1秒</button><button type="button" class="btn xs" data-now="${i}:end">今の位置</button></div></div>`).join('')}</div>
-        <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">保存</button></div></form>`;
+        <div class="row end"><button class="btn primary" value="ok">保存</button></div></form>`;
       $('#ePlay', dlg).onclick = () => {
         readText();
         if (editorPlayback && !vid.paused && !editorPlayback.done) { vid.pause(); playing = null; editorPlayback.started = true; editorPlayback.stopped = true; return; }

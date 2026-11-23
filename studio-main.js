@@ -1000,16 +1000,44 @@ async function editorScreen(el, params, revision) {
   let view = (() => { try { return localStorage.getItem('st-view') || 'all'; } catch { return 'all'; } })(); if (!VIEWS[view]) view = 'all';
   const drawViewB = () => { const b = $('#viewB', el); b.innerHTML = `<span class="st-vico">☰</span><b>${VIEWS[view].t}</b>`; b.classList.toggle('on', view !== 'all'); b.title = VIEWS[view].d; };
   drawViewB();
-  // 1.17.6: after switching the view, the list stays near the line that was at the top before
-  const topLine = () => { const lim = (el.querySelector('.st-stick')?.getBoundingClientRect().bottom || 0) + 4; const r = [...list.querySelectorAll('.st-row, .st-fold1')].find((x) => x.getBoundingClientRect().bottom > lim); return r ? (r.dataset.id || r.dataset.oid) : null; };
-  const goNear = (id) => {
-    if (!id) return; const ids = set.order.filter((x) => byId[x]); const k = ids.indexOf(id); if (k < 0) return;
-    const els = [...list.querySelectorAll('.st-row, .st-fold1')]; let best = null, bd = Infinity;
-    for (const x of els) { const kk = ids.indexOf(x.dataset.id || x.dataset.oid); if (kk < 0) continue; const d = Math.abs(kk - k) + (kk < k ? 0.5 : 0); if (d < bd) { bd = d; best = x; } }
-    if (!best) return; const lim = el.querySelector('.st-stick')?.getBoundingClientRect().bottom || 0;
-    window.scrollBy(0, best.getBoundingClientRect().top - lim - 8);
+  // Preserve the script position when cycling 未/済/残/全. A filtered view
+  // may fold several rows into one, so retain the source-order index rather
+  // than relying on a row still being present in the new DOM.
+  let viewSwitchSerial = 0;
+  const viewAnchor = () => {
+    const stickyBottom = (el.querySelector('.st-stick')?.getBoundingClientRect().bottom || 0) + 8;
+    const visible = [...list.querySelectorAll('.st-row[data-id], .st-fold1[data-oid]')];
+    const hit = visible.find(x => x.getBoundingClientRect().bottom > stickyBottom) || visible.at(-1);
+    const id = hit?.dataset.id || hit?.dataset.oid || null;
+    const index = set.order.indexOf(id);
+    return { id, index, offset: hit ? hit.getBoundingClientRect().top - stickyBottom : 0 };
   };
-  const setView = (v) => { const keep = topLine(); view = v; try { localStorage.setItem('st-view', view); } catch {} drawViewB(); drawList(); goNear(keep); };
+  const restoreViewAnchor = (anchor, serial) => {
+    if (serial !== viewSwitchSerial || anchor.index < 0) return;
+    const ids = set.order;
+    const nodes = [...list.querySelectorAll('.st-row[data-id], .st-fold1[data-oid]')];
+    let target = null, distance = Infinity;
+    for (const node of nodes) {
+      const k = ids.indexOf(node.dataset.id || node.dataset.oid);
+      if (k < 0) continue;
+      const d = Math.abs(k - anchor.index);
+      if (d < distance) { distance = d; target = node; }
+    }
+    if (!target) return;
+    const stickyBottom = (el.querySelector('.st-stick')?.getBoundingClientRect().bottom || 0) + 8;
+    const desiredOffset = distance === 0 ? anchor.offset : 0;
+    window.scrollBy({top: target.getBoundingClientRect().top - stickyBottom - desiredOffset, behavior: 'instant'});
+  };
+  const setView = (v) => {
+    const anchor = viewAnchor();
+    const serial = ++viewSwitchSerial;
+    view = v;
+    try { localStorage.setItem('st-view', view); } catch {}
+    drawViewB(); drawList();
+    // After layout has settled: restoring synchronously may be clamped to the
+    // previous scroll height when the list expands from 未 to 全.
+    requestAnimationFrame(() => requestAnimationFrame(() => restoreViewAnchor(anchor, serial)));
+  };
   $('#viewB', el).onclick = () => { setView({ all: 'todo', todo: 'done', done: 'rest', rest: 'all' }[view]); toast(VIEWS[view].d, 1500); };
   // play only the chosen sound track (screen recordings: app sound and microphone are separate tracks; never mixed)
   vid.addEventListener('loadedmetadata', () => { const at = vid.audioTracks, a = srcs[vid.dataset.src]?.audio; if (at && at.length > 1) { const k = a?.index ?? 0; for (let i = 0; i < at.length; i++) at[i].enabled = i === k; } });

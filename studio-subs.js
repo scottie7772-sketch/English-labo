@@ -35,6 +35,18 @@ export function parseScript(text, fileName = '') {
 const LRC = /^\s*\[((?:\d+:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?)\]\s*/;
 const REP = /\s*[×xX✕＊*]\s*([2-9]|1\d)\s*$/;                 // "×2" "x2" "X3" at the end of a line = read n times in the audio
 const HEAD = /^\s*(?:#+\s*)?(?:file\s*[:：]\s*)?([^\[\]|]*?\.(?:mp3|m4a|wav|aac|mp4|m4v|mov))\s*$/i;
+// Plain-text imports may contain file headers and a separated title above the lesson.
+export function withoutPlainScriptHeaders(parsed, raw, names) {
+  if (parsed.format !== 'txt' || parsed.timed) return parsed;
+  const normalize = value => clean(value).toLowerCase();
+  const titles = new Set(names.filter(Boolean).map(name =>
+    normalize(String(name).split('/').at(-1).replace(/\.(txt|mp3|m4a|wav|aac|mp4|m4v|mov)$/i, ''))));
+  const metadata = /^\s*\uFEFF?([^\r\n]+)\r?\n[ \t]*\r?\n/.exec(String(raw));
+  const title = metadata && normalize(metadata[1].replace(/^#+\s*/, ''));
+  const cues = parsed.cues.filter((cue, index) => !HEAD.test(cue.text) &&
+    !(index === 0 && title && titles.has(title) && parsed.cues.length > 1));
+  return {...parsed, cues};
+}
 const tSec = (v) => { if (typeof v === 'number') return v; const m = String(v || '').trim().replace(',', '.'); if (!m) return null; return /:/.test(m) ? toSec(m) : +m; };
 const isWordLine = (t) => t.split(/\s+/).length <= 4 && !/[.!?。]["”’)]?$/.test(t);
 const stem = (w) => w.toLowerCase().replace(/[^a-z']/g, '').replace(/(ing|ed|es|s)$/, '');

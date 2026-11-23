@@ -153,3 +153,19 @@ export function scriptToLines(text) {
   }
   return out;
 }
+
+// Check actual same-source coverage so repeated readings retain their own intervals.
+export function hasReplacementAudio(segment, replacements) {
+  const overlaps = replacements
+    .filter(s => s.sourceId === segment.sourceId && s.start < segment.end && s.end > segment.start)
+    .sort((a, b) => a.start - b.start);
+  let cursor = segment.start, covered = 0;
+  for (const span of overlaps) {
+    const end = Math.min(segment.end, span.end);
+    covered += Math.max(0, end - Math.max(cursor, span.start));
+    cursor = Math.max(cursor, end);
+  }
+  // Small timestamp discrepancies are expected between ASR and alignment.
+  const length = segment.end - segment.start;
+  return length > 0 && length - covered <= Math.min(.08, length * .1);
+}

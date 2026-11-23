@@ -2,13 +2,13 @@
 // Rules: does not import learning modules and never touches the learning database (ell-db).
 import { $, $$, esc, toast, confirmDialog, swipeToDelete } from './ui.js';
 import { sdb, newId, commit, undo, redo, saveVersion, restoreVersion, liveBlocks, allBlocksMap, sourcesMap, newBlock, tokensOf, blockDur, linkToLab } from './studio-db.js';
-import { parseScript, SUB_EXT, isJa, langFromName, autoPair, alignJa } from './studio-subs.js';
+import { parseScript, withoutPlainScriptHeaders, SUB_EXT, isJa, langFromName, autoPair, alignJa } from './studio-subs.js';
 import * as ops from './studio-ops.js';
 import { fingerprint, zipWrite, zipRead } from './common-pack.js';
 import { decodeTo16k, openTranscriber, speechPieces, captureTo16k, QUALITY, recognisePiece } from './asr.js';
 import { extractPhrases, extractWords } from './studio-words.js';
 import { findCandidates, applySpans } from './studio-names.js';
-import { alignScript, scriptToLines } from './studio-align.js';
+import { alignScript, scriptToLines, hasReplacementAudio } from './studio-align.js';
 import { speechRegions, regionStatistics, snapCueToRegion } from './studio-structure.js';
 import { speechFirstPlaybackRange } from './studio-playback-boundary.js';
 import { alignUtterances } from './studio-import-align.js';
@@ -16,7 +16,7 @@ import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } f
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.20.4-safe-ui-test';
+export const STUDIO_VERSION = '0.20.7';
 const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -60,16 +60,17 @@ function parseHash() {
   const [path, q] = rest.split('?');
   return { path: path || 'sets', params: new URLSearchParams(q || '') };
 }
-let cleanup = null;
-export function unmount() { cleanup?.(); cleanup = null; }
+let cleanup = null, routeRevision = 0;
+export function unmount() { ++routeRevision; cleanup?.(); cleanup = null; }
 async function route() {
-  cleanup?.(); cleanup = null;
+  unmount();
   if (!inStudio()) return;
+  const revision = routeRevision;
   const { path, params } = parseHash();
   const screens = { sets: setsScreen, import: importScreen, set: editorScreen, versions: versionsScreen, io: ioScreen, words: wordsScreen, clean: cleanScreen };
-  try { await (screens[path] || setsScreen)(ROOT, params); }
-  catch (e) { console.error(e); ROOT.innerHTML = `<div class="card warn">エラー：${esc((e?.message || String(e)))}</div><a class="btn" href="#${BASE}sets">一覧に戻る</a>`; }
-  scrollTo(0, 0);
+  try { await (screens[path] || setsScreen)(ROOT, params, revision); }
+  catch (e) { if (revision !== routeRevision) return; console.error(e); ROOT.innerHTML = `<div class="card warn">エラー：${esc((e?.message || String(e)))}</div><a class="btn" href="#${BASE}sets">一覧に戻る</a>`; }
+  if (revision === routeRevision) scrollTo(0, 0);
 }
 const head = (title, backPath = null, right = '') => `
   <div class="st-band">制作・教材スタジオ <small>v${STUDIO_VERSION}</small></div>
@@ -249,9 +250,12 @@ async function setsScreen(el) {
 async function checkUpdate() {
   toast('最新版を確認しています…', 2000);
   try {
-    for (const r of (await navigator.serviceWorker?.getRegistrations?.()) || []) await r.update().catch(() => {});
-    for (const k of await caches.keys()) await caches.delete(k);
-  } catch {}
+    const registration = await navigator.serviceWorker?.getRegistration?.();
+    await registration?.update();
+  } catch {
+    toast('更新を確認できませんでした。接続を確認してください');
+    return;
+  }
   location.replace(location.pathname + '?v=' + Date.now() + location.hash);
 }
 
@@ -278,7 +282,7 @@ async function directScriptScreen(el, setId) {
   file.onchange = async () => { const f = file.files?.[0]; if (!f) return; area.value = await f.text(); info.textContent = `${f.name} を読み込みました`; };
   $('#directScriptSave', el).onclick = async () => {
     const raw = area.value.trim(); if (!raw) return toast('スクリプトを入力してください');
-    const parsed = parseScript(raw, file.files?.[0]?.name || 'script.txt');
+    const parsed = withoutPlainScriptHeaders(parseScript(raw, file.files?.[0]?.name || 'script.txt'), raw, [set.title, file.files?.[0]?.name]);
     const lines = scriptToLines(parsed.cues.map((c) => c.text).join('\n'));
     if (!lines.length) return toast('英文を読み取れませんでした');
     if (!(await confirmDialog({title:'スクリプトを追加', body:`<p>${lines.length}行を教材「${esc(set.title)}」に追加します。既存の字幕・時刻は変更しません。</p>`,okLabel:'追加する'}))) return;
@@ -292,13 +296,14 @@ async function directScriptScreen(el, setId) {
 // ================= bulk import =================
 async function importScreen(el, params) {
   if (params?.get('script') === '1' && params.get('to')) return directScriptScreen(el, params.get('to'));
+  let dropImportedEdges = false;
   const files = { media: [], subs: [] };   // analysed entries
   let sets = null, storeMode = 'store', groupMode = 'file', videoQ = (() => { try { return localStorage.getItem('st-quality') || 'std'; } catch { return 'std'; } })(), autoTrimOn = (() => { try { return localStorage.getItem('st-autoTrim') !== '0'; } catch { return true; } })();
   // 1.17.8: the screen-recording start sound has its own cut (a fixed length from the start, measured 0.45 s), apart from the automatic cut
   let recOn = (() => { try { return localStorage.getItem('st-recOn') !== '0'; } catch { return true; } })();
   // 1.17.9: start and end are set separately (defaults measured by the user: 0.52 s / 0.30 s)
   let recCut = recCutGet('S'), recEnd = recCutGet('E');
-  const trimOpt = () => (autoTrimOn || recOn ? { auto: autoTrimOn, rec: recOn ? recCut : 0, recE: recOn ? recEnd : 0 } : false);   // both off → the file as it is
+  const trimOpt = () => (autoTrimOn || recOn ? { auto: autoTrimOn, rec: recOn ? recCut : 0, recE: recOn ? recEnd : 0, dropOriginal: dropImportedEdges } : false);   // both off → the file as it is
   const toSet = params?.get('to') ? await sdb.get('sets', params.get('to')) : null;   // add to an existing set
   el.innerHTML = `${head(toSet ? `「${toSet.title}」に追加` : '一括登録', toSet ? `set?id=${toSet.id}` : 'sets')}
     ${toSet ? `<div class="notice stack small"><b>教材「${esc(toSet.title)}」に追加します。</b>同じ教材の続きの音声や、スクリプト（時刻なしのテキスト）を選んでください。追加したあと「文字起こし→照合」で、音声とスクリプトの位置を合わせます。</div>` : ''}
@@ -427,7 +432,7 @@ async function importScreen(el, params) {
       <div class="row wrap st-recrow"><span class="small">終わり ${recEnd.toFixed(2)}秒</span><button type="button" class="btn xs" data-rc="E:-0.01">−0.01</button><button type="button" class="btn xs" data-rc="E:0.01">＋0.01</button><button type="button" class="btn xs" data-rc="E:-0.05">−0.05</button><button type="button" class="btn xs" data-rc="E:0.05">＋0.05</button><button type="button" class="btn xs ghost" id="rcReset">初期値に戻す</button></div>` : ''}
       <label class="chk"><input type="checkbox" id="atr" ${autoTrimOn ? 'checked' : ''}> 前後の無音・音を自動でカット</label>
       ${!autoTrimOn && !recOn ? '<small class="muted">どちらも外すと、カットせずに元の長さのまま取り込みます。</small>' : ''}
-      ${autoTrimOn || recOn ? `<label class="chk"><input type="checkbox" id="drc" ${dropCutSetting() ? 'checked' : ''}> カットした部分（元の前後）は保存しない（容量節約・元に戻せません）</label>` : ''}
+      ${autoTrimOn || recOn ? `<label class="chk"><input type="checkbox" id="drc" ${dropImportedEdges ? 'checked' : ''}> カットした部分（元の前後）は保存しない（容量節約・元に戻せません）</label>` : ''}
       ${inc.length ? `<div class="card stack"><b>カット後の範囲を試聴（保存前）</b><small class="muted">対象ファイルの先頭・末尾を設定値に従って試聴します。自動無音検出の最終結果ではなく、画面収録音カットの指定値を確認する機能です。</small>
       <select id="cutPreviewFile">${inc.map((x,i)=>`<option value="${i}">${esc(x.media.name)}</option>`).join('')}</select>
       <div class="row wrap"><button class="btn sm" id="cutPreviewStart">▶ 冒頭を試聴</button><button class="btn sm" id="cutPreviewEnd">▶ 末尾を試聴</button><button class="btn sm" id="cutPreviewStop">■ 停止</button></div><span id="cutPreviewStatus" class="small muted"></span></div>` : ''}
@@ -449,7 +454,7 @@ async function importScreen(el, params) {
     $('#rec', el).onchange = (e) => { recOn = e.target.checked; try { localStorage.setItem('st-recOn', recOn ? '1' : '0'); } catch {} draw(); };
     $$('[data-rc]', el).forEach((b) => (b.onclick = () => { const [k, d] = b.dataset.rc.split(':'); const v = Math.max(0, Math.min(3, Math.round(((k === 'S' ? recCut : recEnd) + +d) * 100) / 100)); if (k === 'S') recCut = v; else recEnd = v; recCutSet(k, v); draw(); }));
     $('#rcReset', el)?.addEventListener('click', () => { recCut = REC_DEF.S; recEnd = REC_DEF.E; recCutSet('S', recCut); recCutSet('E', recEnd); draw(); });
-    $('#drc', el)?.addEventListener('change', (e) => setDropCut(e.target.checked));
+    $('#drc', el)?.addEventListener('change', (e) => { dropImportedEdges = e.target.checked; });
     $('#gm', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { groupMode = v; draw(); } };
     $('#incAll', el).onclick = () => { sets.forEach((s) => (s.include = true)); draw(); };
     $('#incNone', el).onclick = () => { sets.forEach((s) => (s.include = false)); draw(); };
@@ -462,9 +467,14 @@ async function importScreen(el, params) {
       previewUrl = URL.createObjectURL(m.file); previewAudio = new Audio(previewUrl);
       const a = previewAudio; const status = $('#cutPreviewStatus',el);
       status.textContent = `${which === 'end' ? '末尾' : '冒頭'} ${fmt(from)}〜${fmt(until)} を試聴中`;
-      a.ontimeupdate = () => { if (a.currentTime >= until - 0.03) { stopImportPreview(); status.textContent = '試聴終了'; } };
+      a.ontimeupdate = () => { if (previewAudio === a && !a.seeking && a.currentTime >= until) { stopImportPreview(); status.textContent = '試聴終了'; } };
       a.onended = () => { stopImportPreview(); status.textContent = '試聴終了'; };
-      a.onloadedmetadata = () => { a.currentTime = from; a.play().catch((e)=>{status.textContent = '再生できません：'+e.message; stopImportPreview();}); };
+      a.currentTime = from;
+      a.play().catch(e => {
+        if (previewAudio !== a) return;
+        status.textContent = '再生できません：' + e.message;
+        stopImportPreview();
+      });
     };
     $('#cutPreviewStart',el)?.addEventListener('click',()=>playPreview('start'));
     $('#cutPreviewEnd',el)?.addEventListener('click',()=>playPreview('end'));
@@ -564,8 +574,6 @@ async function askText(title, value = '') {
 const fmt2 = (t) => { t = Math.max(0, +t || 0); return `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, '0')}`; };
 const recCutGet = (k) => { try { const v = localStorage.getItem('st-rec' + k); return v != null && v !== '' && !isNaN(+v) ? +v : REC_DEF[k]; } catch { return REC_DEF[k]; } };
 const recCutSet = (k, v) => { try { localStorage.setItem('st-rec' + k, String(v)); } catch {} };
-const dropCutSetting = () => { try { return localStorage.getItem('st-dropCut') === '1'; } catch { return false; } };
-const setDropCut = (v) => { try { localStorage.setItem('st-dropCut', v ? '1' : '0'); } catch {} };
 // Remove the parts outside [a, b] from the saved file itself (cannot be undone). Sound only: a video is turned into its sound.
 // All items of every set that use this file are shifted so they still point at the same sound.
 async function hardTrim(srcId, a, b, say = () => {}) {
@@ -847,7 +855,8 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
         if (ja && !s.ja.parsed.timed) tracks.splice(tracks.indexOf(ja), 1);
         // a script without times: lines without sound for now ("文字起こし→照合" gives them their times);
         // the audio stays as one item to transcribe
-        const lines = scriptToLines(enCues.map((c) => c.text).join('\n'));
+        const script = withoutPlainScriptHeaders(s.en.parsed, s.en.text, [s.title, s.media?.name, s.en.name]);
+        const lines = scriptToLines(script.cues.map((c) => c.text).join('\n'));
         const jaLines = ja && !s.ja.parsed.timed && ja.cues.length === lines.length ? ja.cues.map((c) => c.text) : [];
         lines.forEach((t, i) => part.push(newBlock(setId, { segments: [], text: t, ja: jaLines[i] || '', script: true, cueRefs: { en: [], ja: [] }, sync: 'auto' })));
         if (src) {
@@ -877,7 +886,7 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
       let a = 0, b = dur || 1, trimNote = '';
       if (trimEdges && dur > 4) { try { onStep(n, group.items.length, '前後の音を調べています…'); const r = await edgesFor(src, dur, a16, trimEdges); a = r.start; b = r.end; trimNote = [r.whyStart && `始め ${fmt(a)}`, r.whyEnd && `終わり ${fmt(b)}`].filter(Boolean).join('・'); } catch { /* keep the whole file */ } }
       const shared = (await sdb.all('sets')).some((x) => x.sourceId === src.id);   // used by another set: do not cut its file
-      if (trimNote && dropCutSetting() && src.stored && !shared) {
+      if (trimNote && trimEdges?.dropOriginal && src.stored && !shared) {
         try { onStep(n, group.items.length, 'カットした部分を削っています…'); const t2 = await hardTrim(src.id, a, b, (t) => onStep(n, group.items.length, t)); const off = t2.trimmed.from; a = Math.max(0, a - off); b = Math.min(t2.duration, b - off); Object.assign(src, t2); }
         catch (e) { trimNote += `（削除はできませんでした：${e.message}）`; }
       }
@@ -890,8 +899,9 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
 }
 
 // ================= editor =================
-async function editorScreen(el, params) {
+async function editorScreen(el, params, revision) {
   let set = await sdb.get('sets', params.get('id'));
+  if (revision !== routeRevision) return;
   if (!set) return nav('sets');
   running(`教材を開く（${set.title}）`); setTimeout(() => { if (localStorage.getItem('st-running')?.startsWith('教材を開く')) running(null); }, 4000);
   let srcs = await sourcesMap();
@@ -901,6 +911,7 @@ async function editorScreen(el, params) {
   let selectMode = false, rangeMode = null, anchor = null, onlySel = false, moveMode = false, playing = null, curBlock = null;
   const reload = async () => { set = await sdb.get('sets', set.id); blocks = await liveBlocks(set); byId = Object.fromEntries(blocks.map((b) => [b.id, b])); for (const id of [...sel]) if (!byId[id]) sel.delete(id); };
   await reload();
+  if (revision !== routeRevision) return;
   const src = srcs[set.sourceId];
   el.innerHTML = `${head(set.title, 'sets', `<button class="icon-btn" id="undoB" aria-label="元に戻す">${icon('undo')}</button><button class="icon-btn" id="redoB" aria-label="やり直す">${icon('redo')}</button><button class="icon-btn st-viewb" id="viewB" aria-label="表示の切り替え"></button><button class="icon-btn" id="moreB" aria-label="メニュー">${icon('more')}</button>`)}
     <div id="relink"></div>${(() => { const x = srcs[set.sourceId]; return x?.audioError ? `<div class="notice warn small">取り込み時の音声処理で失敗したため、元のまま保存しています：${esc(x.audioError)}</div>` : ''; })()}
@@ -911,34 +922,71 @@ async function editorScreen(el, params) {
     <div id="sourceNav" class="st-source-nav"></div><div id="info" class="small muted"></div><div id="alignNote"></div>
     <div id="list" class="st-list"></div>
     <div id="bar" class="st-bar" hidden></div><div class="st-jump" id="jump"><button type="button" data-j="top" aria-label="いちばん上へ">▲</button><button type="button" data-j="bot" aria-label="いちばん下へ">▼</button></div>`;
-  // ▲▼: tap = one step, hold = continuous, double tap = edge.
-  // Pointer cancellation and leaving the button always stop scrolling.
-  { const jp = $('#jump', el); let hideT = null, frame = 0, pressed = null, moved = false;
-    const stop = () => { if (frame) cancelAnimationFrame(frame); frame = 0; pressed = null; };
-    const show = () => { jp.classList.add('on'); clearTimeout(hideT); hideT = setTimeout(() => { if (!pressed) jp.classList.remove('on'); }, 1800); };
-    const onScroll = () => { if (!el.contains(jp)) { stop(); window.removeEventListener('scroll', onScroll); return; } if (document.documentElement.scrollHeight >= innerHeight * 2.5) show(); };
-    window.addEventListener('scroll', onScroll, { passive: true });
-    for (const btn of jp.querySelectorAll('[data-j]')) {
-      const dir = btn.dataset.j === 'top' ? -1 : 1;
-      btn.setAttribute('aria-label', dir < 0 ? '上へスクロール（長押しで連続・ダブルタップで最上部）' : '下へスクロール（長押しで連続・ダブルタップで最下部）');
-      btn.addEventListener('pointerdown', e => {
-        if (e.button !== 0 || pressed) return;
-        e.preventDefault(); stop(); pressed = btn; moved = false; show();
-        try { btn.setPointerCapture(e.pointerId); } catch {}
-        let last = performance.now(), elapsed = 0;
-        const tick = now => {
-          if (pressed !== btn || !el.contains(jp)) return stop();
-          const dt = Math.min(50, now - last); last = now; elapsed += dt;
-          if (elapsed >= 280) { moved = true; window.scrollBy(0, dir * dt * .75); }
-          frame = requestAnimationFrame(tick);
-        };
-        frame = requestAnimationFrame(tick);
-      });
-      btn.addEventListener('pointerup', () => { if (pressed !== btn) return; const wasHold = moved; stop(); if (!wasHold) window.scrollBy({ top: dir * Math.max(90, innerHeight * .42), behavior: 'auto' }); show(); });
-      for (const event of ['pointercancel', 'lostpointercapture', 'pointerleave']) btn.addEventListener(event, stop);
-      btn.addEventListener('dblclick', e => { e.preventDefault(); stop(); window.scrollTo({ top: dir < 0 ? 0 : document.documentElement.scrollHeight, behavior: 'auto' }); show(); });
-      btn.addEventListener('click', e => { if (e.detail === 0) { window.scrollBy({ top: dir * Math.max(90, innerHeight * .42), behavior: 'auto' }); show(); } });
-    }
+  const jp = $('#jump', el);
+  let hideJumpTimer, jumpFrame, pressedArrow, lastArrow, lastTapAt = -Infinity;
+  let deferFollowUntil = 0;
+  const stopArrow = () => {
+    cancelAnimationFrame(jumpFrame);
+    pressedArrow = null;
+  };
+  const showArrows = () => {
+    jp.classList.add('on');
+    clearTimeout(hideJumpTimer);
+    hideJumpTimer = setTimeout(() => { if (!pressedArrow) jp.classList.remove('on'); }, 1800);
+  };
+  const showArrowsOnScroll = () => {
+    if (document.documentElement.scrollHeight >= innerHeight * 2.5) showArrows();
+  };
+  window.addEventListener('scroll', showArrowsOnScroll, { passive: true });
+  for (const button of jp.querySelectorAll('[data-j]')) {
+    const direction = button.dataset.j === 'top' ? -1 : 1;
+    const step = () => window.scrollBy(0, direction * Math.max(90, innerHeight * .42));
+    let held = false;
+    button.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || pressedArrow) return;
+      event.preventDefault();
+      pressedArrow = button;
+      held = false;
+      showArrows();
+      button.setPointerCapture?.(event.pointerId);
+      const started = performance.now();
+      let previous = started;
+      const scroll = (now) => {
+        if (pressedArrow !== button) return;
+        if (now - started >= 280) {
+          held = true;
+          deferFollowUntil = now + 1300;
+          window.scrollBy(0, direction * Math.min(50, now - previous) * .75);
+        }
+        previous = now;
+        jumpFrame = requestAnimationFrame(scroll);
+      };
+      jumpFrame = requestAnimationFrame(scroll);
+    });
+    button.addEventListener('pointerup', () => {
+      if (pressedArrow !== button) return;
+      stopArrow();
+      const now = performance.now();
+      deferFollowUntil = now + 1300;
+      if (held) lastArrow = null;
+      else if (lastArrow === button && now - lastTapAt <= 320) {
+        window.scrollTo(0, direction < 0 ? 0 : document.documentElement.scrollHeight);
+        lastArrow = null;
+      } else {
+        step();
+        lastArrow = button;
+        lastTapAt = now;
+      }
+      showArrows();
+    });
+    for (const event of ['pointercancel', 'lostpointercapture']) button.addEventListener(event, stopArrow);
+    button.addEventListener('click', (event) => {
+      if (event.detail === 0 && !event.pointerType) {
+        deferFollowUntil = performance.now() + 1300;
+        step();
+        showArrows();
+      }
+    });
   }
   const vid = $('#vid', el), list = $('#list', el), bar = $('#bar', el);
   // 1.17.4: the title bar (title・↶↷・⋯) stays on top too; the player controls stick right under it
@@ -965,7 +1013,7 @@ async function editorScreen(el, params) {
 
   // ---------- media ----------
   // iOS only lets a tap start sound if play() is called right away (no waiting before it), so everything here is synchronous
-  let seekTo = null, seeking = false;
+  let seekTo = null, seeking = false, playFromSourcePosition = false;
   // A new subtitle tap supersedes pending play() promises from earlier taps.
   let playbackRequest = 0;
   let pendingSegmentSeek = null;
@@ -979,8 +1027,15 @@ async function editorScreen(el, params) {
   function attach(sourceId, at = null) {
     const s = srcs[sourceId]; const u = mediaURL(s);
     if (!u) return false;
-    if (vid.dataset.src !== sourceId) { vid.dataset.src = sourceId; seekTo = at; vid.src = u; el.querySelector('.st-vwrap')?.classList.toggle('audio', s.kind === 'audio'); }
-    else if (at != null) vid.currentTime = at;
+    if (vid.src !== u) {
+      vid.dataset.src = sourceId;
+      seekTo = at;
+      vid.src = u;
+      el.querySelector('.st-vwrap')?.classList.toggle('audio', s.kind === 'audio');
+    } else if (at != null) {
+      if (vid.readyState < HTMLMediaElement.HAVE_METADATA) seekTo = at;
+      else vid.currentTime = at;
+    }
     return true;
   }
   function drawRelink() {
@@ -1030,6 +1085,8 @@ async function editorScreen(el, params) {
   function playBlock(b, loop = false, cont = false, from = null) {
     ++playbackRequest;
     pendingSegmentSeek = null;
+    playFromSourcePosition = false;
+    seeking = false;
     if (!b.segments.length) {
       if (cont) {
         const next = nextPlayableFrom(b);
@@ -1069,19 +1126,13 @@ async function editorScreen(el, params) {
   const tick = () => {
     // Continuous playback must not re-seek at every subtitle boundary.
     // Subtitle highlighting is driven independently by the media clock.
-    if (playing && !playing.cont && !vid.paused && !vid.seeking && !pendingSegmentSeek) {
+    if (pendingSegmentSeek && !vid.seeking && vid.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+        vid.dataset.src === pendingSegmentSeek.sourceId) pendingSegmentSeek = null;
+    if (playing && !playing.cont && !vid.paused && !vid.seeking && !pendingSegmentSeek && vid.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       const s = playing.b.segments[playing.i];
-      if (vid.currentTime >= (playing.range?.end ?? s.end) - 0.02) {
+      if (vid.currentTime >= (playing.range?.end ?? s.end)) {
         if (playing.i + 1 < playing.b.segments.length) { playing.i++; startSeg(); }
         else if (playing.loop) { playing.i = 0; startSeg(); }
-        else if (playing.cont) {
-          const n = nextPlayable(playing.b), s1 = n?.segments[0];
-          if (!n) { vid.pause(); playing = null; }
-          // Play only the time ranges assigned to surviving subtitle blocks.
-          // A removed block must not be heard as the gap between its neighbours.
-          // Always seek to the next block's exact start, even for nearby ranges.
-          else { playing = { b: n, i: 0, loop: false, cont: true }; curBlock = n; startSeg(); }
-        }
         else { vid.pause(); playing = null; }
       }
     }
@@ -1105,12 +1156,29 @@ async function editorScreen(el, params) {
     }
     $('#tnow', el).textContent = fmt(vid.currentTime || 0);
     const sk = $('#seek', el);
-    if (sk && !seeking) { const D = isFinite(vid.duration) ? vid.duration : 0; if (D && +sk.max !== D) { sk.max = D; $('#tdur', el).textContent = fmt(D); } sk.value = vid.currentTime || 0; }
+    if (sk && !seeking) {
+      const duration = Number.isFinite(vid.duration) ? vid.duration : 0;
+      const maximum = duration || 1;
+      if (+sk.max !== maximum) sk.max = maximum;
+      const label = duration ? fmt(duration) : '';
+      const durationLabel = $('#tdur', el);
+      if (durationLabel.textContent !== label) durationLabel.textContent = label;
+      sk.value = vid.currentTime || 0;
+    }
     drawSub();
     raf = requestAnimationFrame(tick);
   };
   raf = requestAnimationFrame(tick);
-  cleanup = () => { cancelAnimationFrame(raf); vid.pause(); };
+  cleanup = () => {
+    ++playbackRequest;
+    cancelAnimationFrame(raf);
+    window.removeEventListener('scroll', showArrowsOnScroll);
+    stopArrow();
+    clearTimeout(hideJumpTimer);
+    editorPlayback?.cleanup?.();
+    vid.onplay = vid.onpause = null;
+    vid.pause();
+  };
   // The highlight follows the media clock, not just the last requested block.
   // Keep explicit single-block/loop playback pinned to its requested subtitle;
   // continuous playback may move to a later subtitle as soon as its audio starts.
@@ -1120,19 +1188,18 @@ async function editorScreen(el, params) {
     if (!sid || !Number.isFinite(t)) return playing?.b || null;
     if (pendingSegmentSeek || vid.seeking || seeking) return playing?.b || curBlock || null;
     if (playing && !playing.cont) return playing.b;
-    const candidates = [];
+    let best = null, bestStart = -Infinity, bestPriority = -1;
     for (const b of blocks) for (const s of b.segments) {
-      if (s.sourceId === sid && t >= s.start && t < s.end) {
-        candidates.push({ b, start: s.start, end: s.end });
+      if (s.sourceId !== sid || t < s.start || t >= s.end) continue;
+      // Prefer the latest onset, then the active block, then aligned text.
+      const priority = b === playing?.b ? 2 : b.aligned ? 1 : 0;
+      if (s.start > bestStart || (s.start === bestStart && priority > bestPriority)) {
+        best = b;
+        bestStart = s.start;
+        bestPriority = priority;
       }
     }
-    if (!candidates.length) return playing?.cont ? null : (playing?.b || null);
-    // When multiple records overlap, prefer the latest onset. For an exact
-    // onset tie, prefer the current block, then a script-aligned record.
-    candidates.sort((a, b) => b.start - a.start ||
-      Number(b.b === playing?.b) - Number(a.b === playing?.b) ||
-      Number(Boolean(b.b.aligned)) - Number(Boolean(a.b.aligned)));
-    return candidates[0].b;
+    return best || (playing?.cont ? null : playing?.b || null);
   }
   let lastSubId = null;
   let lastHighlightedRow = null;
@@ -1176,7 +1243,7 @@ async function editorScreen(el, params) {
       const rect = row.getBoundingClientRect();
       const top = Math.min(innerHeight * 0.38, 260);
       const bottom = innerHeight - Math.min(innerHeight * 0.22, 160);
-      if (now - lastFollowAt > 500 && (rect.top < top || rect.bottom > bottom)) {
+      if (now >= deferFollowUntil && !selectMode && !arrange && now - lastFollowAt > 500 && (rect.top < top || rect.bottom > bottom)) {
         lastFollowAt = now;
         const delta = rect.top < top ? rect.top - top : rect.bottom - bottom;
         window.scrollBy({ top: delta, behavior: 'instant' });
@@ -1189,27 +1256,33 @@ async function editorScreen(el, params) {
   // Source-position navigator. Display-only: no synthetic title/subtitle blocks.
   // Gaps are ranges without a saved subtitle assignment, NOT proven silence.
   const sourceNav = $('#sourceNav', el);
+  const materialSourceIds = () => [...new Set([set.sourceId, ...blocks.flatMap(b => b.segments.map(g => g.sourceId))].filter(Boolean))];
   const sourceRanges = () => {
-    const ids = [...new Set([set.sourceId, ...blocks.flatMap(b => b.segments.map(g => g.sourceId))].filter(Boolean))];
+    const ids = materialSourceIds();
     return ids.map(id => {
       const src = srcs[id]; if (!src) return null;
       const spans = blocks.flatMap(b => b.segments.filter(g => g.sourceId === id && Number.isFinite(g.start) && Number.isFinite(g.end) && g.end > g.start).map(g => ({ start: Math.max(0,g.start), end: g.end, id:b.id, aligned:!!b.aligned })));
       spans.sort((a,b) => a.start-b.start || a.end-b.end);
-      const duration = Math.max(src.duration || 0, ...spans.map(g => g.end), 0);
+      const duration = spans.reduce((end, g) => Math.max(end, g.end), src.duration || 0);
+      const assigned = spans.filter(g => g.aligned || byId[g.id].text.trim());
       const merged = [];
-      for (const g of spans) { const last = merged.at(-1); if (last && g.start <= last.end + .08) last.end = Math.max(last.end,g.end); else merged.push({start:g.start,end:g.end}); }
+      for (const g of assigned) { const last = merged.at(-1); if (last && g.start <= last.end + .08) last.end = Math.max(last.end,g.end); else merged.push({start:g.start,end:g.end}); }
       const gaps = []; let cursor=0;
       for (const r of merged) { if (r.start-cursor >= 1.5) gaps.push({start:cursor,end:r.start}); cursor=Math.max(cursor,r.end); }
       if (duration-cursor >= 1.5) gaps.push({start:cursor,end:duration});
-      return {id,src,spans,duration,gaps};
+      return {id,src,spans,assigned,duration,gaps};
     }).filter(Boolean);
   };
   function jumpToSource(id, time, rowId=null) {
     if (!attach(id, time)) return toast('この音声ファイルを再生できません。ファイルを再選択してください');
-    ++playbackRequest; pendingSegmentSeek=null; playing=null; curBlock=null;
-    vid.pause(); vid.currentTime=time;
+    ++playbackRequest;
+    pendingSegmentSeek = null;
+    playing = null;
+    curBlock = null;
+    seeking = false;
+    playFromSourcePosition = true;
+    vid.pause();
     if (rowId) { setView('all'); goNear(rowId); }
-    else syncAt(time);
     toast(`${srcs[id]?.name || '音声'} ${fmt(time)} に移動（▶で再生）`, 2200);
   }
   function drawSourceNav() {
@@ -1219,14 +1292,47 @@ async function editorScreen(el, params) {
       <p class="small muted">色のある部分は字幕に音声時刻が割り当てられた範囲です。空白は字幕未割当の可能性がある範囲で、無音とは限りません。タップで移動します（自動再解析・保存変更なし）。</p>
       ${ranges.map((r,i)=>`<div class="st-source-item"><div class="row between"><b class="small">${i+1}. ${esc(r.src.name||'音声')}</b><small class="muted">${fmt(r.duration)}</small></div>
       <div class="st-source-track" data-source-track="${esc(r.id)}" role="slider" tabindex="0" aria-label="${esc(r.src.name||'音声')} の位置" aria-valuemin="0" aria-valuemax="${Math.ceil(r.duration)}" aria-valuenow="0">
-      ${r.spans.map(g=>`<i class="${g.aligned?'aligned':'raw'}" style="left:${100*g.start/Math.max(.1,r.duration)}%;width:${Math.max(.15,100*(g.end-g.start)/Math.max(.1,r.duration))}%"></i>`).join('')}</div>
-      <div class="row" style="flex-wrap:wrap"><button type="button" class="btn sm" data-source-start="${esc(r.id)}">先頭へ</button>${r.gaps.slice(0,12).map((g,k)=>`<button type="button" class="btn sm ghost" data-gap-source="${esc(r.id)}" data-gap-index="${k}">未割当候補 ${fmt(g.start)}–${fmt(g.end)}</button>`).join('')}${r.gaps.length>12?`<small class="muted">ほか${r.gaps.length-12}区間</small>`:''}</div></div>`).join('')}</details>`;
+      ${r.assigned.map(g=>`<i class="${g.aligned?'aligned':'raw'}" style="left:${100*g.start/Math.max(.1,r.duration)}%;width:${Math.max(.15,100*(g.end-g.start)/Math.max(.1,r.duration))}%"></i>`).join('')}</div>
+      <div class="row" style="flex-wrap:wrap"><button type="button" class="btn sm" data-source-start="${esc(r.id)}">音声の先頭へ（0秒）</button>${r.spans.length ? `<button type="button" class="btn sm ghost" data-source-first="${esc(r.id)}">最初の字幕へ</button>` : ''}${r.gaps.slice(0,12).map((g,k)=>`<button type="button" class="btn sm ghost" data-gap-source="${esc(r.id)}" data-gap-index="${k}">未割当候補 ${fmt(g.start)}–${fmt(g.end)}</button>`).join('')}${r.gaps.length>12?`<small class="muted">ほか${r.gaps.length-12}区間</small>`:''}</div></div>`).join('')}</details>`;
     sourceNav.querySelectorAll('[data-source-start]').forEach(b=>b.onclick=()=>jumpToSource(b.dataset.sourceStart,0));
-    sourceNav.querySelectorAll('[data-gap-source]').forEach(b=>{b.onclick=()=>{const r=ranges.find(x=>x.id===b.dataset.gapSource),g=r?.gaps[+b.dataset.gapIndex];if(g)jumpToSource(r.id,g.start);};});
+    sourceNav.querySelectorAll('[data-source-first]').forEach(button => {
+      button.onclick = () => {
+        const range = ranges.find(r => r.id === button.dataset.sourceFirst);
+        const first = range?.spans[0];
+        if (first) jumpToSource(range.id, first.start, first.id);
+      };
+    });
+    sourceNav.querySelectorAll('[data-gap-source]').forEach(button => {
+      button.onclick = () => {
+        const range = ranges.find(r => r.id === button.dataset.gapSource);
+        const gap = range?.gaps[Number(button.dataset.gapIndex)];
+        if (gap) openSourceGap(range.id, gap, range.src.name);
+      };
+    });
     sourceNav.querySelectorAll('[data-source-track]').forEach(track=>{
       track.onclick=e=>{const r=ranges.find(x=>x.id===track.dataset.sourceTrack);if(!r)return;const rect=track.getBoundingClientRect();jumpToSource(r.id,Math.min(r.duration,Math.max(0,(e.clientX-rect.left)/rect.width*r.duration)));};
       track.onkeydown=e=>{if(e.key!=='Enter'&&e.key!==' ')return;e.preventDefault();const r=ranges.find(x=>x.id===track.dataset.sourceTrack);if(r)jumpToSource(r.id,0);};
     });
+  }
+  function openSourceGap(sourceId, gap, name) {
+    const dlg = $('#dialog');
+    if (dlg.open) return;
+    const previewEnd = Math.min(gap.end, gap.start + 12);
+    dlg.innerHTML = `<form method="dialog" class="dlg stack">
+      <h3>字幕の未割当候補</h3><p>${esc(name)} ${fmt(gap.start)}〜${fmt(gap.end)}</p>
+      <button type="button" class="btn" id="gapPreview">▶ 試聴（最大12秒）</button>
+      <button class="btn primary" value="analyze">この区間を文字起こし・照合</button>
+      <button class="btn ghost" value="cancel">閉じる</button></form>`;
+    $('#gapPreview', dlg).onclick = () => playBlock({segments:[{sourceId,start:gap.start,end:previewEnd}]});
+    dlg.returnValue = '';
+    dlg.onclose = () => {
+      ++playbackRequest;
+      vid.pause();
+      playing = null;
+      if (dlg.returnValue === 'analyze' && revision === routeRevision)
+        importBySpeechStructure({ sourceId, ...gap });
+    };
+    dlg.showModal();
   }
   function drawList() {
     const rs = ops.ranges(set.order.filter((id) => byId[id]), sel);
@@ -2059,6 +2165,9 @@ async function editorScreen(el, params) {
       const latest=byId[x.blockId];
       if(!latest){skips.push('対象行なし: '+x.text);continue;}
       if(latest.segments?.length){skips.push('既に音声あり: '+x.text);continue;}
+      if (latest.sync === 'manual' || latest.text !== x.text || (x.blockRev != null && latest.rev !== x.blockRev)) {
+        skips.push('手動調整済み・解析後に編集: ' + x.text); continue;
+      }
       if(!set.order.includes(latest.id)){skips.push('教材の行一覧に存在しない: '+x.text);continue;}
       if(!srcs[x.sourceId]){skips.push('音声ファイルID不明: '+x.text);continue;}
       changes.push({...latest,segments:[{sourceId:x.sourceId,start:x.start,end:x.end}],aligned:true,sync:'auto',structureAlign:{method:'speech-first',score:x.score,at:Date.now()},lineage:{op:'structure-align',from:[`${latest.id}@${latest.rev}`],at:Date.now(),score:x.score}});
@@ -2077,10 +2186,10 @@ async function editorScreen(el, params) {
 
   // Opt-in: boundaries first, independent ASR per utterance, then monotone script alignment.
   // Preview only: no ASR rows or script changes are persisted before explicit approval.
-  async function importBySpeechStructure() {
-    const sl=scriptLines();
+  async function importBySpeechStructure(range = null) {
+    const sl=scriptLines().filter(b => b.sync !== 'manual');
     if(!sl.length)return toast('先に完全なスクリプトを取り込んでください',4500);
-    const sources=Object.values(srcs).filter(x=>x.stored ? x.blob : sessionFiles.get(x.id));
+    const sources=materialSourceIds().map(id => srcs[id]).filter(x => x && (x.stored ? x.blob : sessionFiles.get(x.id)));
     if(!sources.length)return toast('音声ファイルを選び直してください',4500);
     // Explicit source and time window; default remains the original first 30 utterances.
     // Only the selected window is ASR'd; all timestamps remain source-absolute.
@@ -2092,7 +2201,7 @@ async function editorScreen(el, params) {
       return parts.reduce((acc,x)=>acc*60+x,0);
     };
     const defaultSource=sources.length===1?sources[0]:sources.find(x=>blocks.some(b=>b.segments[0]?.sourceId===x.id))||sources[0];
-    const cfg=await new Promise(resolve=>{
+    const cfg=range ? {source:sources.find(x => x.id === range.sourceId), start:range.start, end:range.end} : await new Promise(resolve=>{
       const dlg=$('#dialog');
       if(dlg.open){dlg.onclose=null;dlg.close();}
       dlg.innerHTML=`<form method="dialog" class="dlg stack"><h3>発話を先に区切って照合（試験版）</h3>
@@ -2121,27 +2230,37 @@ async function editorScreen(el, params) {
       dlg.onclose=()=>resolve(dlg.returnValue==='go'?selected:null);
       dlg.showModal();
     });
-    if(!cfg)return;
+    if(!cfg?.source || revision !== routeRevision)return;
     const chosen=cfg.source;
     let tr=null;const dlg=$('#dialog');let cancelled=false;
-    await new Promise(r=>setTimeout(r,60));if(dlg.open){dlg.onclose=null;dlg.close();}
+    await new Promise(r=>setTimeout(r,60));
+    if (revision !== routeRevision || dlg.open) return;
     dlg.innerHTML='<form method="dialog" class="dlg stack"><h3>発話区間を解析中</h3><p id="structMsg">音声を準備しています…</p><div id="structCap"></div><button class="btn ghost" value="cancel">中止</button></form>';
     dlg.onclose=()=>{cancelled=true;tr?.close();};dlg.showModal();
-    const say=t=>{const e=$('#structMsg',dlg);if(e)e.textContent=t;};
+    const progress = $('#structMsg', dlg);
+    const say = text => { if (progress.isConnected) progress.textContent = text; };
     const lock=await navigator.wakeLock?.request?.('screen').catch(()=>null);
     let result=[];
     try {
       const blob=chosen.stored?chosen.blob:sessionFiles.get(chosen.id);
       const decoded=await sourceAudio16k(chosen,blob,{box:$('#structCap',dlg),say});
-      const audio=decoded.audio;highPass(audio);
-      const regions=speechRegions(audio,16000).filter(r=>r.end-r.start>=.2);
+      if (cancelled || revision !== routeRevision) return;
+      const audio=decoded.audio;
+      const fromSample = Math.floor(cfg.start * 16000);
+      const toSample = Math.min(audio.length, Math.ceil(cfg.end * 16000));
+      if (toSample <= fromSample) throw new Error('指定範囲に音声がありません');
+      const windowAudio = audio.subarray(fromSample, toSample);
+      highPass(windowAudio);
+      const offset = fromSample / 16000;
+      const regions = speechRegions(windowAudio, 16000).filter(r => r.end-r.start >= .2)
+        .map(r => ({start: r.start + offset, end: r.end + offset}));
       if(!regions.length)throw new Error('発話区間を検出できませんでした');
       const picked=regions.filter(r=>r.end>cfg.start && r.start<cfg.end).slice(0,30);
       if(!picked.length)throw new Error('指定範囲に発話が見つかりませんでした');
       say(`${regions.length}発話を検出。指定範囲 ${fmt(cfg.start)}〜${Number.isFinite(cfg.end)?fmt(cfg.end):'末尾'} の ${picked.length}発話を文字起こしします…`);
       tr=openTranscriber('en',say,{quality:'acc'});
       const utterances=[];
-      for(let k=0;k<picked.length&&!cancelled;k++){
+      for(let k=0;k<picked.length&&!cancelled&&revision===routeRevision;k++){
         const r=picked[k];say(`発話 ${k+1}/${picked.length}：${fmt(r.start)}〜${fmt(r.end)}`);
         const cues=await recognisePiece(tr,audio,Math.max(cfg.start,r.start-.12),Math.min(decoded.duration,cfg.end,r.end+.12));
         utterances.push({...r,text:(cues.raw||cues.map(x=>x.text).join(' ')).trim()});
@@ -2151,15 +2270,18 @@ async function editorScreen(el, params) {
         result=proposals.map(p=>({b:sl[p.scriptIndex],u:utterances[p.utteranceIndex],score:p.score})).filter(x=>!x.b.segments.length);
       }
     }catch(e){if(!cancelled)toast('解析失敗：'+(e?.message||e),6000);}
-    finally{tr?.close();lock?.release?.();if(dlg.open){dlg.onclose=null;dlg.close();}}
+    finally{tr?.close();lock?.release?.();if(dlg.open && dlg.contains(progress)){dlg.onclose=null;dlg.close();}}
+    if (revision !== routeRevision) return;
     if(cancelled)return toast('中止しました（データ変更なし）');
     if(!result.length)return confirmDialog({title:'安全な一致候補がありません',body:'発話区間は検出しましたが、認識結果とスクリプトの強い一致が得られませんでした。字幕は変更していません。短い単語や重複する例文は誤対応防止のため保留します。',okLabel:'閉じる',cancelLabel:null});
     // Store candidates BEFORE displaying them. No audio blobs are duplicated.
-    const draft=result.map(({b,u,score})=>({blockId:b.id,sourceId:chosen.id,start:u.start,end:u.end,score,text:b.text}));
+    const draft=result.map(({b,u,score})=>({blockId:b.id,blockRev:b.rev,sourceId:chosen.id,start:u.start,end:u.end,score,text:b.text}));
     const freshForDraft=await sdb.get('sets',set.id);
-    await sdb.put('sets',{...freshForDraft,speechFirstDraft:draft});
+    const prior = freshForDraft.speechFirstDraft || [];
+    const priorIds = new Set(prior.map(x => x.blockId));
+    await sdb.put('sets',{...freshForDraft,speechFirstDraft:[...prior,...draft.filter(x => !priorIds.has(x.blockId))]});
     const ids=await pickSpeechFirstCandidates(draft);
-    if(!ids)return;
+    if(!ids || revision !== routeRevision)return;
     if(!ids.size)return toast('候補が選択されていません',3500);
     await saveSpeechFirstCandidates(draft.filter(x=>ids.has(x.blockId)),ids.size);
   }
@@ -2306,9 +2428,9 @@ async function editorScreen(el, params) {
   // ---------- script ↔ audio: the transcription (with mistakes) gives the times, the script gives the text ----------
   function scriptLines() { return set.order.map((id) => byId[id]).filter((b) => b && !b.segments.length && b.text.trim()); }
   async function runAlign({ afterAsr = 0 } = {}) {
-    const sl = scriptLines();
+    const sl = scriptLines().filter(b => b.sync !== 'manual');
     if (!sl.length) return toast('音声の付いていないスクリプトの行がありません（「⋯」→「スクリプト・音声を追加」でテキストを入れます）', 4500);
-    const heard = blocks.filter((b) => b.segments.length === 1 && b.text.trim() && !b.aligned);
+    const heard = blocks.filter((b) => b.segments.length === 1 && b.text.trim() && !b.aligned && b.sync !== 'manual');
     if (!heard.length) {
       if (blocks.some((b) => b.segments.length && !b.text.trim())) {
         if (await confirmDialog({ title: '先に文字起こしをします', body: '<p>照合には、音声のおおまかな文字起こしが必要です（間違いがあっても大丈夫です）。終わったら続けて照合します。</p>', okLabel: '文字起こしへ' })) { await new Promise((r) => setTimeout(r, 60)); return runAsr(); }
@@ -2334,13 +2456,7 @@ async function editorScreen(el, params) {
         const b = byId[id], n = tokensOf(b.text).length;
         changed.set(id, { ...b, segments: [{ sourceId: sid, start: t.start, end: t.end }], aligned: true, sync: 'auto', align: n ? [{ s: 0, e: n - 1, v0: 0, v1: +(t.end - t.start).toFixed(2) }] : [], lineage: { op: 'align', from: [`${b.id}@${b.rev}`], at: Date.now() } });
       }
-      r.covered.forEach((id) => del.add(id));
       remaining = remaining.filter((b) => !r.times.has(b.id));
-    }
-    if (!changed.size && del.size) {   // everything heard is already matched (the same part recorded again)
-      if (await confirmDialog({ title: 'すでに照合済みの部分でした', body: `<p>この音声の文字起こしは、すでに音声の付いているスクリプトの行と同じ内容でした（重なり）。</p><p class="small">重なった文字起こし ${del.size}行を削除しますか？（↶で戻せます）</p>`, okLabel: '削除する' }))
-        await run('重なった文字起こしを削除', { blocks: [...del].map((id) => ({ ...byId[id], deleted: true })), order: set.order.filter((id) => !del.has(id)) });
-      return;
     }
     if (!changed.size) {
       crumb(`照合0行：認識語${total}・一致${matched}`);
@@ -2348,19 +2464,11 @@ async function editorScreen(el, params) {
         <p class="small muted">調べた文字起こし（${heard.length}行・${[...new Set(heard.map((b) => srcs[b.segments[0].sourceId]?.name || '?'))].map(esc).join('、')}）：<br>「${esc(heard.slice(0, 4).map((b) => b.text).join(' / ').slice(0, 160))}…」</p>
         <p class="hint">内容が英文になっていない・同じ短い言葉の繰り返しの場合は、別の音声トラック（マイク側など）を文字にしています。「⋯」→ 音声トラックの選択で切り替えてから、もう一度文字起こししてください。</p>`, okLabel: '閉じる', cancelLabel: null });
     }
-    // recognised lines that overlap a timed script line (same file) for most of their length, or that repeat
-    // script lines already timed by another recording, are not kept (no double lines like "Almost there?" / "Oh, most there?")
-    const timedLines = [...changed.values(), ...blocks.filter((b) => b.aligned && !changed.has(b.id))];
-    for (const h of heard) {
-      if (del.has(h.id)) continue;
-      const g = h.segments[0], d = Math.max(0.05, g.end - g.start);
-      const ov = timedLines.filter((t) => t.segments[0]?.sourceId === g.sourceId).reduce((a, t) => a + Math.max(0, Math.min(g.end, t.segments[0].end) - Math.max(g.start, t.segments[0].start)), 0);
-      if (ov / d >= 0.5) del.add(h.id);
-    }
-    const rest = heard.filter((h) => !del.has(h.id));
-    if (rest.length && timedLines.length) {
-      const bySrc2 = new Map(); for (const b of rest) { const k = b.segments[0].sourceId; if (!bySrc2.has(k)) bySrc2.set(k, []); bySrc2.get(k).push(b); }
-      for (const [, l] of bySrc2) { const r2 = alignScript(timedLines.map((b) => ({ id: b.id, text: b.text })), l.sort((a, b) => a.segments[0].start - b.segments[0].start).map((b) => ({ id: b.id, start: b.segments[0].start, end: b.segments[0].end, text: b.text }))); r2.covered.forEach((id) => del.add(id)); }
+    // Remove duplicated display rows only where this operation assigned the same audio.
+    // Similar text elsewhere in this file (or another file) can be an intentional repeat.
+    const replacements = [...changed.values()].flatMap(b => b.segments);
+    for (const row of heard) {
+      if (hasReplacementAudio(row.segments[0], replacements)) del.add(row.id);
     }
     // order: script order stays; recognised lines that were not in the script are placed by time among the aligned lines
     const cur = (id) => changed.get(id) || byId[id];
@@ -2401,14 +2509,14 @@ async function editorScreen(el, params) {
 
   // the whole set: start of the first item and end of the last item that has sound
   const edgesOf = () => { const withSeg = set.order.map((id) => byId[id]).filter((b) => b?.segments.length); return withSeg.length ? { first: withSeg[0], last: withSeg[withSeg.length - 1] } : null; };
-  async function applyTrim(start, end, label) {
+  async function applyTrim(start, end, label, dropOriginal = false) {
     const e = edgesOf(); if (!e) return toast('音声のある項目がありません');
     const f = structuredClone(e.first), l = e.first.id === e.last.id ? f : structuredClone(e.last);
     const s0 = f.segments[0], s1 = l.segments[l.segments.length - 1];
     if (start != null) { if (start >= s0.end - 0.2) return toast('開始が最初の項目の終わりより後になります'); s0.start = +start.toFixed(2); f.sync = 'manual'; f.align = []; }
     if (end != null) { if (end <= s1.start + 0.2) return toast('終了が最後の項目の始まりより前になります'); s1.end = +end.toFixed(2); l.sync = 'manual'; l.align = []; }
     await run(label, { blocks: f === l ? [f] : [f, l] });
-    await maybeDrop();
+    if (dropOriginal) await maybeDrop();
   }
   // after a cut: optionally remove the cut parts from the saved file
   async function maybeDrop() {
@@ -2418,7 +2526,6 @@ async function editorScreen(el, params) {
     const a = e.first.segments[0].start, b = e.last.segments.at(-1).end;
     if (a < 0.05 && (!src.duration || b > src.duration - 0.05)) return;
     const others = (await sdb.all('sets')).filter((x) => x.id !== set.id && x.sourceId === sid).length;
-    if (!dropCutSetting()) return;
     if (!(await confirmDialog({ title: 'カットした部分を削除しますか？', body: `<p>${fmt(a)} より前と ${fmt(b)} より後を、保存したファイルから削ります（容量が減ります）。</p><p class="hint">元に戻せません。${src.kind !== 'audio' ? '動画は音声だけになります。' : ''}${others ? `このファイルを使うほかの教材（${others}件）からも、その部分はなくなります。` : ''}</p>`, okLabel: '削除する', cancelLabel: '残す', danger: true }))) return;
     try { await hardTrim(sid, a, b, (t) => toast(t, 3000)); toast('カットした部分を削除しました'); route(); }
     catch (err) { toast('削除できませんでした：' + (err?.message || err), 4000); }
@@ -2441,6 +2548,7 @@ async function editorScreen(el, params) {
   }
   async function trimDialog() {
     const e = edgesOf(); if (!e) return toast('音声のある項目がありません');
+    let dropOriginal = false;
     let st = e.first.segments[0].start, en = e.last.segments.at(-1).end; const st0 = st, en0 = en;   // reset = the position when the dialog opened
     const dlg = $('#dialog'); await new Promise((q) => setTimeout(q, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
     const draw = () => {
@@ -2453,9 +2561,9 @@ async function editorScreen(el, params) {
         <div class="st-segrow st-cutrow"><div class="row"><b class="grow">終了 <span id="eLbl">${fmt2(en)}</span></b><button type="button" class="btn sm ghost" id="eReset">リセット</button></div>
           <div class="st-cutgrid"><button type="button" class="btn sm" data-d="e:-0.5">−0.5</button><button type="button" class="btn sm" data-d="e:-0.1">−0.1</button><button type="button" class="btn sm" data-d="e:-0.01">−0.01</button><button type="button" class="btn sm" data-d="e:0.01">＋0.01</button><button type="button" class="btn sm" data-d="e:0.1">＋0.1</button><button type="button" class="btn sm" data-d="e:0.5">＋0.5</button></div>
           <div class="row"><button type="button" class="btn sm" id="eNow">今の位置</button><button type="button" class="btn sm grow" id="ePlay">▶︎ 終了の3秒前から聞く</button></div></div>
-        <label class="chk"><input type="checkbox" id="tDrop" ${dropCutSetting() ? 'checked' : ''}> カットした部分は保存しない（元に戻せません）</label>
+        <label class="chk"><input type="checkbox" id="tDrop" ${dropOriginal ? 'checked' : ''}> カットした部分は保存しない（元に戻せません）</label>
         <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">保存</button></div></form>`;
-      $('#tDrop', dlg).onchange = (ev) => setDropCut(ev.target.checked);
+      $('#tDrop', dlg).onchange = (ev) => { dropOriginal = ev.target.checked; };
       const fileEnd = srcs[e.last.segments.at(-1).sourceId]?.duration || en0;
       $('#tRec', dlg).onclick = () => { st = Math.min(en - 0.3, recCutGet('S')); en = Math.max(st + 0.3, +(fileEnd - recCutGet('E')).toFixed(2)); upd(); };
       $('#sReset', dlg).onclick = () => { st = st0; upd(); }; $('#eReset', dlg).onclick = () => { en = en0; upd(); };
@@ -2475,7 +2583,7 @@ async function editorScreen(el, params) {
     };
     draw(); dlg.returnValue = ''; dlg.showModal();
     await new Promise((q) => (dlg.onclose = q)); vid.pause(); playing = null;
-    if (dlg.returnValue === 'ok') await applyTrim(st !== e.first.segments[0].start ? st : null, en !== e.last.segments.at(-1).end ? en : null, '前後をカット');
+    if (dlg.returnValue === 'ok') await applyTrim(st !== e.first.segments[0].start ? st : null, en !== e.last.segments.at(-1).end ? en : null, '前後をカット', dropOriginal);
   }
   async function chooseTrackAgain() {
     const list = Object.values(srcs).filter((x) => x.audio?.count > 1 && x.derived !== 'audio16k' && blocks.some((b) => b.segments.some((g) => g.sourceId === x.id)));
@@ -2540,7 +2648,10 @@ async function editorScreen(el, params) {
   $('#arrB', el).onclick = () => { arrange = !arrange; if (arrange) { arrangeBase = (set.undo || []).length; selectMode = false; sel.clear(); onlySel = false; vid.pause(); playing = null; } drawList(); };
   $('#pp', el).onclick = () => {
     if (!vid.paused) return vid.pause();
-    if (playing) { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} return vid.play().catch(() => {}); }   // resume where it stopped
+    if (playing || playFromSourcePosition) {
+      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
+      return vid.play().catch(() => {});
+    }
     const at = vid.dataset.src && blockAtTime();
     const b = (at?.segments.length ? at : nextPlayableFrom(curBlock)) || blocks.find((x) => x.segments.length);
     if (b) return playBlock(b, false, true, b === at && vid.dataset.src ? vid.currentTime : null);
@@ -2560,7 +2671,12 @@ async function editorScreen(el, params) {
   const sk = $('#seek', el);
   sk.addEventListener('input', () => { ++playbackRequest; pendingSegmentSeek = null; seeking = true; vid.currentTime = +sk.value; $('#tnow', el).textContent = fmt(+sk.value); });
   sk.addEventListener('change', () => { seeking = false; vid.currentTime = +sk.value; syncAt(+sk.value); });
-  sk.addEventListener('touchend', () => setTimeout(() => { if (seeking) { seeking = false; syncAt(+sk.value); } }, 50));
+  sk.addEventListener('touchend', () => {
+    const request = playbackRequest;
+    setTimeout(() => {
+      if (request === playbackRequest && seeking) { seeking = false; syncAt(+sk.value); }
+    }, 50);
+  });
   $('#back3', el).onclick = () => jump(-3);
   $('#fwd3', el).onclick = () => jump(3);
   $('#moreB', el).onclick = async () => {

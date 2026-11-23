@@ -137,3 +137,20 @@ a.st-setrow { -webkit-touch-callout: none; -webkit-user-select: none; user-selec
 .st-source-track i { position: absolute; top: 0; height: 100%; pointer-events: none; background: #588a83; opacity: .8; }
 .st-source-track i.raw { background: #8798a2; opacity: .55; }
 .st-source-boundary { padding: 5px 9px; font-size: .75rem; border-left: 3px solid #588a83; background: #588a8315; }
+
+/* Studio text selection is reserved for English subtitles and editable fields. */
+body:has(#main .st-band) :is(#main, #dialog) {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+body:has(#main .st-band) :is(.st-en, .st-en2, #main input, #main textarea, #dialog input, #dialog textarea) {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+body:has(#main .st-band) .st-log {
+  -webkit-user-select: none;
+  user-select: none;
+}
+.st-jump button { touch-action: none; }

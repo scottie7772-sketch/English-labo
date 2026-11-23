@@ -26,6 +26,7 @@ const sessionFiles = new Map();   // sourceId -> File (for "保存しない" med
 const urlCache = new Map();
 const nav = (path) => { location.hash = '#' + BASE + path; };
 const fmt = (s) => (s == null || isNaN(s) ? '--:--' : `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`);
+const parseClock = (v) => { const m = String(v).trim().match(/^(?:(\d+):)?([0-5]?\d)(?:\.(\d{1,3}))?$/); return m ? Number(m[1]||0)*60+Number(m[2])+Number('0.'+(m[3]||'0')) : NaN; };
 const fmtMin = (s) => `${Math.floor(s / 60)}分${String(Math.round(s % 60)).padStart(2, '0')}秒`;
 const fmtSize = (n) => (n > 1 << 30 ? (n / (1 << 30)).toFixed(2) + ' GB' : n > 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB');
 const icon = (n) => ({ back: '‹', undo: '↶', redo: '↷', play: '▶︎', pause: '❚❚', more: '⋯' }[n] || n);
@@ -1147,6 +1148,14 @@ async function editorScreen(el, params, revision) {
         }
       }
     }
+    if (editorPlayback?.dlg?.open) {
+      editorPlayback.dlg.querySelectorAll('.st-trk[data-source-id]').forEach(track=>{
+        const head=track.querySelector('.st-playhead');if(!head)return;
+        head.hidden=track.dataset.sourceId!==vid.dataset.src;
+        const lo=+track.dataset.lo,hi=+track.dataset.hi;
+        if(hi>lo)head.style.left=Math.max(0,Math.min(100,(vid.currentTime-lo)/(hi-lo)*100))+'%';
+      });
+    }
     $('#tnow', el).textContent = fmt(vid.currentTime || 0);
     const sk = $('#seek', el);
     if (sk && !seeking) {
@@ -1864,22 +1873,38 @@ async function editorScreen(el, params, revision) {
       <p id="rsAnchors" class="small muted"></p>
       <label class="chk"><input id="rsExpand" type="checkbox"> 探索範囲を広げる</label>
       <label class="field"><span>音声候補</span><select id="rsCandidate"></select></label>
-      <div class="row wrap"><label class="field grow"><span>開始（秒）</span><input id="rsStart" type="number" min="0" step="any"></label><label class="field grow"><span>終了（秒）</span><input id="rsEnd" type="number" min="0" step="any"></label></div>
-      <div class="row wrap"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div>
+      <div class="row wrap"><label class="field grow"><span>開始（分:秒.小数）</span><input id="rsStart" type="text" inputmode="decimal" placeholder="14:03.0"></label><label class="field grow"><span>終了（分:秒.小数）</span><input id="rsEnd" type="text" inputmode="decimal" placeholder="14:10.6"></label></div>
+      <div class="st-rescue-timeline"><div class="st-rescue-track" id="rsTrack"><i id="rsSelection"></i><b id="rsHead"></b></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div></div><div class="row wrap"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div>
       <p id="rsReason" class="small muted"></p>
       <div class="row end">
         <button class="btn ghost" value="cancel">やめる</button>
         <button id="rsEditAnchor" class="btn" value="anchor" hidden>既存字幕の境界を確認</button>
         <button id="rsSaved" class="btn" value="saved">既存ASRと照合</button>
         <button id="rsLocal" class="btn" value="local">指定区間を再解析</button>
-        <button id="rsApply" class="btn primary" value="ok">1行に手動で割り当て</button>
+        <button id="rsGap" class="btn" value="gap" hidden>前後の間を仮割当</button><button id="rsApply" class="btn primary" value="ok">1行に手動で割り当て</button>
       </div></form>`;
     const pick=$('#rsCandidate',dlg),st=$('#rsStart',dlg),en=$('#rsEnd',dlg);
     const mode=$('#rsMode',dlg),count=$('#rsCount',dlg),rows=$('#rsRows',dlg),hint=$('#rsModeHint',dlg);
     const currentRows=()=>missing.slice(0,+count.value);
     const pickRange = () => opt[Number(pick.value)];
     const apply = $('#rsApply',dlg), saved = $('#rsSaved',dlg), localButton = $('#rsLocal',dlg);
-    const editAnchor = $('#rsEditAnchor',dlg), expand = $('#rsExpand',dlg);
+    const editAnchor = $('#rsEditAnchor',dlg), expand = $('#rsExpand',dlg), gapButton=$('#rsGap',dlg);
+    let rescueClock = null;
+    const stopClock = () => { if (rescueClock) cancelAnimationFrame(rescueClock); rescueClock=null; };
+    const drawClock = () => {
+      const c=pickRange(), a=parseClock(st.value), z=parseClock(en.value);
+      const track=$('#rsTrack',dlg),head=$('#rsHead',dlg),sel=$('#rsSelection',dlg);
+      if (!c || !Number.isFinite(a) || !Number.isFinite(z) || z<=a) return;
+      const lo=Math.max(0,Math.min(c.start,a)-3), hi=Math.max(lo+1,Math.max(c.end,z)+3);
+      const pct=t=>Math.max(0,Math.min(100,100*(t-lo)/(hi-lo)));
+      sel.style.left=pct(a)+'%'; sel.style.width=Math.max(0,pct(z)-pct(a))+'%';
+      head.style.left=pct(vid.currentTime)+'%'; head.hidden=vid.dataset.src!==c.sid;
+      $('#rsClockStart',dlg).textContent=fmt(lo); $('#rsClockEnd',dlg).textContent=fmt(hi);
+      $('#rsClockNow',dlg).textContent=vid.dataset.src===c.sid?fmt(vid.currentTime):'未再生';
+    };
+    const clockTick=()=>{ if (!dlg.open) return; drawClock(); rescueClock=requestAnimationFrame(clockTick); };
+    st.addEventListener('input',drawClock); en.addEventListener('input',drawClock);
+    $('#rsTrack',dlg).onclick=e=>{const c=pickRange();if(!c)return;const a=parseClock(st.value),z=parseClock(en.value);if(!Number.isFinite(a)||!Number.isFinite(z))return;const lo=Math.max(0,Math.min(c.start,a)-3),hi=Math.max(lo+1,Math.max(c.end,z)+3);const t=lo+(e.clientX-e.currentTarget.getBoundingClientRect().left)/e.currentTarget.clientWidth*(hi-lo);if(vid.dataset.src===c.sid)vid.currentTime=Math.max(0,t);drawClock();};
     const refreshRows = () => {
       const selected = currentRows();
       rows.innerHTML = selected.map((b,i) => `<div>${i+1}. ${esc(b.text)}</div>`).join('');
@@ -1894,12 +1919,14 @@ async function editorScreen(el, params, revision) {
     const update = () => {
       const c = pickRange();
       stopRescuePreview();
-      st.value = c ? String(c.start) : '';
-      en.value = c ? String(c.end) : '';
+      st.value = c ? fmt(c.start) : '';
+      en.value = c ? fmt(c.end) : '';
       st.disabled = en.disabled = !c || Boolean(c.review);
       $('#rsPlay',dlg).disabled = !c;
       editAnchor.hidden = !c?.review;
       $('#rsReason',dlg).textContent = c ? c.kind : '候補がありません。探索範囲を広げてください。';
+      gapButton.hidden = !(mode.value === 'prose' && c && !c.review && currentRows().length === 1 && c.kind.includes('アンカー間'));
+      drawClock();
       refreshRows();
     };
     const describe = a => a ? `${a.manual ? '手動' : '自動'} ${srcs[a.sourceId]?.name || '音声'} ${fmt(a.start)}〜${fmt(a.end)}「${a.row.text.slice(0,45)}」` : 'なし';
@@ -1911,22 +1938,24 @@ async function editorScreen(el, params, revision) {
       pick.innerHTML = opt.map((c,i) => `<option value="${i}">${esc(srcs[c.sid]?.name || '音声')} / ${esc(c.kind)} / ${fmt(c.start)}–${fmt(c.end)}</option>`).join('');
       update();
     };
-    mode.onchange = count.onchange = refreshRows;
+    mode.onchange = count.onchange = () => { refreshRows(); const c=pickRange();gapButton.hidden=!(mode.value==='prose'&&c&&!c.review&&currentRows().length===1&&c.kind.includes('アンカー間')); };
     pick.onchange = update;
     expand.onchange = refreshCandidates;
     refreshCandidates();
     $('#rsStop',dlg).onclick = stopRescuePreview;
     $('#rsPlay',dlg).onclick = () => {
-      const c = pickRange(), a = Number(st.value), z = Number(en.value);
-      if (!c || !st.value || !en.value || a < 0 || z <= a) return toast('開始・終了を確認してください');
+      const c = pickRange(), a = parseClock(st.value), z = parseClock(en.value);
+      if (!c || !Number.isFinite(a) || !Number.isFinite(z) || a < 0 || z <= a) return toast('開始・終了を確認してください');
       stopRescuePreview();
       playBlock({segments:[{sourceId:c.sid,start:a,end:Math.min(z,a+30)}]});
     };
     dlg.returnValue = '';
     dlg.showModal();
+    rescueClock=requestAnimationFrame(clockTick);
     await new Promise(resolve => dlg.onclose = resolve);
+    stopClock();
     stopRescuePreview();
-    const action = dlg.returnValue, c = pickRange(), a = Number(st.value), z = Number(en.value);
+    const action = dlg.returnValue, c = pickRange(), a = parseClock(st.value), z = parseClock(en.value);
     const selected = currentRows(), targets = new Set(selected.map(row => row.id));
     const prose = mode.value === 'prose';
     if (action === 'cancel' || !action) return;
@@ -1940,10 +1969,20 @@ async function editorScreen(el, params, revision) {
       return editBlock(anchor,{protectNeighbours:true, onFinish:() => rescueUnassigned(id)});
     }
     if (action === 'saved' && !prose) return previewVocabAlignment(targets);
-    if (!c || c.review || !st.value || !en.value || a < 0 || z-a < .12) return toast('音声範囲を確認してください');
+    if (!c || c.review || !Number.isFinite(a) || !Number.isFinite(z) || a < 0 || z-a < .12) return toast('音声範囲を確認してください');
     const range = {sid:c.sid,start:a,end:z};
     if (action === 'local') return reanalyseRescueRange(c.sid,a,z,targets,prose ? {rows:selected,expected} : null);
     if (action === 'saved') return previewProseAssignment(selected,range,{expected});
+    if (action === 'gap') {
+      if (!prose || selected.length!==1 || !c.kind.includes('アンカー間')) return toast('前後アンカーに挟まれた1行のみ仮割当できます');
+      const ok=await confirmDialog({title:'前後の間を仮割当',body:`<p>${esc(selected[0].text)}</p><p>${fmt(a)}〜${fmt(z)} を推定区間として登録します。正確な発話境界は未検証です。</p>`,okLabel:'仮割当'});
+      if (!ok) return;
+      await reload();
+      const row=byId[selected[0].id];
+      if (!row || row.rev!==selected[0].rev || row.segments.length || rescueVersion()!==expected) return toast('字幕が更新されています。再探索してください');
+      if (blocks.some(b=>b.id!==row.id&&b.segments.some(g=>g.sourceId===c.sid&&g.start<z-.05&&g.end>a+.05)&&(b.aligned||b.sync==='manual'))) return toast('既存区間と重複します');
+      return run('前後アンカー間の仮割当',{blocks:[{...row,segments:[{sourceId:c.sid,start:a,end:z}],sync:'estimated',align:[],lineage:{op:'prose-anchor-gap-trial',from:[`${row.id}@${row.rev}`],at:Date.now()}}]});
+    }
     if (action !== 'ok') return;
     if (prose) {
       if (selected.length === 1) return previewProseAssignment(selected,range,{manual:true,expected});
@@ -2140,7 +2179,7 @@ async function editorScreen(el, params, revision) {
         <div class="st-toks">${toks.map((w, i) => `<button type="button" class="st-tok ${(work.holes || []).some((h) => i >= h.s && i <= h.e) ? 'hole' : ''}" data-t="${i}">${esc(w)}</button>`).join('')}</div>
         <label class="field"><span>和訳</span><textarea id="eJa" rows="2">${esc(work.ja || '')}</textarea></label>
         <div class="stack">${work.segments.map((s, i) => `<div class="st-segrow"><b>区間${i + 1}</b> <small class="muted">${esc(srcs[s.sourceId]?.name || '')}</small>
-          <div class="st-trim" data-trim="${i}"><div class="st-trk"><i class="st-origin"></i><i class="sel" data-slide="${i}" title="長さを固定して移動"></i><b class="h" data-h="start"></b><b class="h" data-h="end"></b></div><div class="row small muted"><span class="st-tl0"></span><span class="grow"></span><span>中央をドラッグ＝長さ固定で移動／薄枠＝元の位置</span><span class="grow"></span><span class="st-tl1"></span></div></div>
+          <div class="st-trim" data-trim="${i}"><div class="st-trk"><i class="st-origin"></i><i class="st-playhead"></i><i class="sel" data-slide="${i}" title="長さを固定して移動"></i><b class="h" data-h="start"></b><b class="h" data-h="end"></b></div><div class="row small muted"><span class="st-tl0"></span><span class="grow"></span><span>中央をドラッグ＝長さ固定で移動／薄枠＝元の位置</span><span class="grow"></span><span class="st-tl1"></span></div></div>
           <div class="row wrap"><button type="button" class="btn xs" data-slide-step="${i}:-0.1">◀ 0.10秒</button><button type="button" class="btn xs" data-slide-step="${i}:-0.05">◀ 0.05秒</button><button type="button" class="btn xs" data-slide-step="${i}:0.05">0.05秒 ▶</button><button type="button" class="btn xs" data-slide-step="${i}:0.1">0.10秒 ▶</button><button type="button" class="btn xs ghost" data-slide-reset="${i}">元の位置</button><span class="small muted" data-slide-delta="${i}"></span></div>
           <div class="row"><button type="button" class="btn xs" data-pseg="${i}:all">${icon('play')} 区間</button><button type="button" class="btn xs" data-pseg="${i}:head">頭2秒</button><button type="button" class="btn xs" data-pseg="${i}:tail">後ろ2秒</button></div>
           <div class="row"><span class="small">開始 ${fmt(s.start)}</span><button type="button" class="btn xs" data-adj="${i}:start:-0.1">−0.1</button><button type="button" class="btn xs" data-adj="${i}:start:0.1">＋0.1</button><button type="button" class="btn xs" data-now="${i}:start">今の位置</button></div>
@@ -2195,15 +2234,18 @@ async function editorScreen(el, params, revision) {
         const i = +box.dataset.trim, sg = work.segments[i], original = originalSegments[i];
         const D = srcs[sg.sourceId]?.duration || sg.end + 8;
         // Focus on a short time window, not the entire recording. Show original position.
-        const lo = Math.max(0, Math.min(sg.start, original?.start ?? sg.start) - 1.5);
-        const hi = Math.max(lo + 0.5, Math.min(D, Math.max(sg.end, original?.end ?? sg.end) + 1.5));
+        const lo = Math.max(0, Math.min(sg.start, original?.start ?? sg.start) - 15);
+        const hi = Math.max(lo + 0.5, Math.min(D, Math.max(sg.end, original?.end ?? sg.end) + 15));
         const trk = $('.st-trk', box);
         const pct = (t) => Math.max(0, Math.min(100, (t - lo) / (hi - lo) * 100));
+        trk.dataset.sourceId=sg.sourceId;trk.dataset.lo=String(lo);trk.dataset.hi=String(hi);
         const pos = () => {
           const L = pct(sg.start), R = pct(sg.end);
           $('.sel', trk).style.cssText = `left:${L}%;width:${Math.max(0,R-L)}%`;
           $('[data-h=start]', trk).style.left = `${L}%`;
           $('[data-h=end]', trk).style.left = `${R}%`;
+          const playhead=$('.st-playhead',trk);
+          if(playhead){playhead.hidden=vid.dataset.src!==sg.sourceId;playhead.style.left=pct(vid.currentTime)+'%';}
           const origin = $('.st-origin', trk);
           if (original?.sourceId === sg.sourceId) origin.style.cssText = `left:${pct(original.start)}%;width:${Math.max(0,pct(original.end)-pct(original.start))}%`;
           else origin.hidden = true;

@@ -17,7 +17,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
 export const STUDIO_VERSION = '0.20.4-safe-ui-test';
-const LIMIT = { video: 15 * 60, audio: 100 * 60 };   // one import: video up to 15 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
+const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
 const urlCache = new Map();
@@ -303,7 +303,7 @@ async function importScreen(el, params) {
   el.innerHTML = `${head(toSet ? `「${toSet.title}」に追加` : '一括登録', toSet ? `set?id=${toSet.id}` : 'sets')}
     ${toSet ? `<div class="notice stack small"><b>教材「${esc(toSet.title)}」に追加します。</b>同じ教材の続きの音声や、スクリプト（時刻なしのテキスト）を選んでください。追加したあと「文字起こし→照合」で、音声とスクリプトの位置を合わせます。</div>` : ''}
     <div class="card stack">
-      <p class="small">動画・音声と、英語・日本語の字幕（SRT・VTT・TXT・CSV）をまとめて選びます。ファイル名・言語・長さから自動で組み合わせます。<b>1回の取り込みは合計で、動画15分・音声100分まで</b>。</p>
+      <p class="small">動画・音声と、英語・日本語の字幕（SRT・VTT・TXT・CSV）をまとめて選びます。ファイル名・言語・長さから自動で組み合わせます。<b>1回の取り込みは合計で、動画45分・音声100分まで</b>。</p>
       <label class="btn" for="fz">📦 ZIPを選ぶ（フォルダを圧縮したもの）</label><input type="file" id="fz" hidden>
       <label class="btn" for="fm">🎬 動画・音声を選ぶ（複数可）</label><input type="file" id="fm" multiple hidden>
       <label class="btn" for="fs">📄 字幕・スクリプトを選ぶ（複数可）</label><input type="file" id="fs" multiple hidden>
@@ -406,7 +406,7 @@ async function importScreen(el, params) {
       <h2 class="sec">組み合わせ（${sets.length}件）</h2>
       <div class="row"><button class="btn sm" id="incAll">すべて入れる</button><button class="btn sm" id="incNone">すべて外す</button></div>
       ${tv || !ta ? meter(tv, LIMIT.video, '🎬 動画', overV) : ''}${ta ? meter(ta, LIMIT.audio, '🎧 音声', overA) : ''}
-      ${over ? `<p class="warn-text small">${overV ? '動画の合計が15分' : '音声の合計が100分'}を超えています。いくつかのチェックを外してください。</p>` : ''}
+      ${over ? `<p class="warn-text small">${overV ? '動画の合計が45分' : '音声の合計が100分'}を超えています。いくつかのチェックを外してください。</p>` : ''}
       ${sets.map((s, i) => `<div class="card stack st-pair ${s.confidence}">
         <div class="row"><label class="chk grow"><input type="checkbox" data-inc="${i}" ${s.include ? 'checked' : ''}> <input class="st-title" data-title="${i}" value="${esc(s.title)}"></label>
           <span class="tagp">${s.confidence === 'high' ? '確か' : s.confidence === 'mid' ? 'たぶん' : '要確認'}</span></div>
@@ -447,7 +447,7 @@ async function importScreen(el, params) {
     $$('input[name=vq]', el).forEach((r) => (r.onchange = () => { videoQ = r.value; try { localStorage.setItem('st-quality', videoQ); } catch {} draw(); }));
     $('#atr', el).onchange = (e) => { autoTrimOn = e.target.checked; try { localStorage.setItem('st-autoTrim', autoTrimOn ? '1' : '0'); } catch {} draw(); };
     $('#rec', el).onchange = (e) => { recOn = e.target.checked; try { localStorage.setItem('st-recOn', recOn ? '1' : '0'); } catch {} draw(); };
-    $$('[data-rc]', el).forEach((b) => (b.onclick = () => { const [k, d] = b.dataset.rc.split(':'); const v = Math.max(0, Math.min(3, Math.round(((k === 'S' ? recCut : recEnd) + +d) * 100) / 100)); if (k === 'S') recCut = v; else recEnd = v; recCutSet(k, v); draw(); }));
+    $$('[data-rc]', el).forEach((b) => (b.onclick = () => { const [k, d] = b.dataset.rc.split(':'); const v = Math.max(0, Math.min(k === 'E' ? 5 : 3, Math.round(((k === 'S' ? recCut : recEnd) + +d) * 100) / 100)); if (k === 'S') recCut = v; else recEnd = v; recCutSet(k, v); draw(); }));
     $('#rcReset', el)?.addEventListener('click', () => { recCut = REC_DEF.S; recEnd = REC_DEF.E; recCutSet('S', recCut); recCutSet('E', recEnd); draw(); });
     $('#drc', el)?.addEventListener('change', (e) => setDropCut(e.target.checked));
     $('#gm', el).onclick = (e) => { const v = e.target.dataset.v; if (v) { groupMode = v; draw(); } };
@@ -1254,7 +1254,7 @@ async function editorScreen(el, params) {
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
         <span class="grow st-txt" data-play="${b.id}"><small class="muted">${b.segments.length ? `${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)}` : estMap.has(b.id) ? `≈${fmt(estMap.get(b.id).t)}（推定）` : '--:--'} ${badges}</small>
           ${b.label ? `<b class="small">${esc(b.label)}</b>` : ''}<span class="st-en2">${holeHTML(b) || `<span class="muted">（英文なし${b.label ? '・✎で追加' : ''}）</span>`}</span><span class="st-ja2">${esc(b.ja || '')}</span></span>
-        ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
+        ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `${!b.segments.length && b.text.trim() ? `<button type="button" class="btn xs ghost" data-rescue="${b.id}">音声を割当</button>` : ''}<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
     })()).join('') + (folds.has('__end') ? foldHTML(folds.get('__end')) : '') || `<p class="empty">${filtering ? (view === 'done' ? '照合済みの行はまだありません' : view === 'rest' ? '残っている文字起こしはありません' : '未照合の行はありません（すべて照合済み）') : '項目がありません'}</p>`;
     if (filtering && view === 'rest' && shown.length) {
       list.insertAdjacentHTML('afterbegin', `<div class="notice row small"><span class="grow">スクリプトと照合できなかった文字起こし・文字にできなかった部分：${shown.length}行</span><button class="btn sm" id="restRedo">起こし直す→照合</button><button class="btn sm danger" id="restDel">すべて削除</button></div>`);
@@ -1266,6 +1266,7 @@ async function editorScreen(el, params) {
         toast(`${ids.size}行を削除しました（↶で戻せます）`, 2500);
       };
     }
+    $$('[data-rescue]', list).forEach(x => x.onclick = () => rescueUnassigned(x.dataset.rescue));
     $$('[data-source-row]', list).forEach(x=>x.onclick=()=>{const b=byId[x.dataset.row];jumpToSource(x.dataset.sourceRow,b?.segments.find(g=>g.sourceId===x.dataset.sourceRow)?.start||0,b?.id);});
     $$('[data-unfold]', list).forEach((x) => (x.onclick = () => { const id = x.dataset.oid; setView('all'); goNear(id); }));
     $('#undoB', el).disabled = !(set.undo || []).length; $('#redoB', el).disabled = !(set.redo || []).length;
@@ -1549,6 +1550,104 @@ async function editorScreen(el, params) {
     if (updates.length) await run('構造を使った再照合', {blocks:updates});
   }
 
+  // Trial: assign an existing source-time range to consecutive untimed script rows.
+  // This does NOT modify/copy audio, does not overwrite any timed/manual row,
+  // and deliberately does not pretend that proportional boundaries are ASR-verified.
+  async function rescueUnassigned(id) {
+    const ix = set.order.indexOf(id);
+    if (ix < 0 || byId[id]?.segments.length) return toast('音声なしの字幕を選んでください');
+    const missing = [];
+    for (let j = ix; j < set.order.length && missing.length < 12; j++) {
+      const b = byId[set.order[j]];
+      if (!b || b.segments.length || !b.text.trim()) break;
+      missing.push(b);
+    }
+    if (!missing.length) return;
+    const before = set.order.slice(0, ix).reverse().map(k => byId[k]).find(b => b?.segments.length && b.aligned);
+    const after = set.order.slice(ix + missing.length).map(k => byId[k]).find(b => b?.segments.length && b.aligned);
+    const preferred = before?.segments.at(-1)?.sourceId === after?.segments[0]?.sourceId ? before.segments.at(-1).sourceId : before?.segments.at(-1)?.sourceId || after?.segments[0]?.sourceId || set.sourceId;
+    const ranges = sourceRanges();
+    const choices = [];
+    for (const r of ranges) {
+      // Untimed regions are suggestions, not proof that speech is present.
+      for (const g of r.gaps) if (g.end - g.start >= .4)
+        choices.push({sid:r.id,start:g.start,end:g.end,kind:'字幕未割当',priority:r.id===preferred?0:2});
+      // ASR rows that were not aligned are another possible source of sound.
+      for (const b of blocks) if (!b.aligned && b.segments.length === 1 && b.segments[0].sourceId===r.id) {
+        const g=b.segments[0];
+        if(g.end-g.start>=.4) choices.push({sid:r.id,start:g.start,end:g.end,kind:'未照合ASR',priority:r.id===preferred?1:3});
+      }
+    }
+    const lo = before?.segments.at(-1), hi = after?.segments[0];
+    if(lo && hi && lo.sourceId===hi.sourceId && hi.start-lo.end>=.35)
+      choices.push({sid:lo.sourceId,start:lo.end,end:hi.start,kind:'前後の照合済み字幕の間',priority:-1});
+    choices.sort((a,b)=>a.priority-b.priority || (a.sid===preferred?0:1)-(b.sid===preferred?0:1) || a.start-b.start);
+    const uniq=[];const keys=new Set();
+    for(const c of choices){const k=`${c.sid}:${c.start.toFixed(2)}:${c.end.toFixed(2)}`;if(!keys.has(k)){keys.add(k);uniq.push(c);}}
+    if(!uniq.length) return toast('割当候補がありません。音声を取り込んでから試してください');
+    const dlg=$('#dialog');
+    const opt=uniq.slice(0,50);
+    dlg.innerHTML=`<form method="dialog" class="dlg stack st-edit"><h3>音声なし字幕の救済（試験版）</h3>
+      <p class="small">${missing.length}行を対象に、音声の未割当範囲を提案します。<b>自動的な音声認識・発話境界の確定は行いません。</b>試聴してから反映してください。</p>
+      <label class="field"><span>教材の種類</span><select id="rsMode"><option value="prose">朗読・会話（従来どおり）</option><option value="vocab">金フレ型（見出し語・例文・繰り返し）</option></select></label>
+      <label class="field"><span>今回割り当てる行数</span><select id="rsCount">${missing.map((b,i)=>`<option value="${i+1}" ${i===missing.length-1?'selected':''}>${i+1}行</option>`).join('')}</select></label>
+      <div class="small" id="rsRows" style="max-height:7rem;overflow:auto">${missing.map((b,i)=>`<div>${i+1}. ${esc(b.text)}</div>`).join('')}</div>
+      <p id="rsModeHint" class="small muted">朗読・会話は従来どおり文章の長さを使って仮分割します。</p>
+      <label class="field"><span>音声候補</span><select id="rsCandidate">${opt.map((c,i)=>`<option value="${i}">${esc(srcs[c.sid]?.name||'音声')} / ${esc(c.kind)} / ${fmt(c.start)}–${fmt(c.end)}</option>`).join('')}</select></label>
+      <div class="row wrap"><label class="field grow"><span>開始（秒）</span><input id="rsStart" type="number" min="0" step="0.01"></label><label class="field grow"><span>終了（秒）</span><input id="rsEnd" type="number" min="0" step="0.01"></label></div>
+      <div class="row wrap"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div>
+      <p class="small muted">複数行は英文の長さに応じて仮分割します。無音・話速を解析した境界ではありません。反映後に各行の✎から調整できます。既存の音声区間は変更しません。↶で取り消せます。</p>
+      <div class="row end"><button class="btn ghost" value="cancel">やめる</button><button class="btn primary" value="ok">確認して割り当て</button></div></form>`;
+    const pick=$('#rsCandidate',dlg),st=$('#rsStart',dlg),en=$('#rsEnd',dlg);
+    const mode=$('#rsMode',dlg),count=$('#rsCount',dlg),rows=$('#rsRows',dlg),hint=$('#rsModeHint',dlg);
+    const currentRows=()=>missing.slice(0,+count.value);
+    const refreshRows=()=>{
+      const selected=currentRows();
+      rows.innerHTML=selected.map((b,i)=>`<div>${i+1}. ${esc(b.text)}</div>`).join('');
+      const repeated=selected.filter((b,i)=>i>0&&b.text.trim().toLowerCase()===selected[i-1].text.trim().toLowerCase()).length;
+      hint.textContent=mode.value==='vocab'
+        ?`金フレ型：短い見出し語を例文と混同せず、${selected.length}発話を順番に別区間として仮分割します。同一例文の連続 ${repeated}組は統合しません。境界は未検証なので必ず試聴してください。`
+        :'朗読・会話は従来どおり文章の長さを使って仮分割します。';
+    };
+    mode.onchange=refreshRows;count.onchange=refreshRows;refreshRows();
+    const update=()=>{const c=opt[+pick.value];st.value=c.start.toFixed(2);en.value=c.end.toFixed(2);};
+    pick.onchange=update;update();
+    let listener=null;
+    const stop=()=>{if(listener){vid.removeEventListener('timeupdate',listener);listener=null;}vid.pause();};
+    $('#rsStop',dlg).onclick=stop;
+    $('#rsPlay',dlg).onclick=()=>{stop();const c=opt[+pick.value],a=+st.value,z=+en.value;
+      if(!Number.isFinite(a)||!Number.isFinite(z)||z<=a)return toast('開始・終了を確認してください');
+      if(!attach(c.sid,a))return toast('音声ファイルを再選択してください');
+      ++playbackRequest;pendingSegmentSeek=null;playing=null;vid.pause();vid.currentTime=a;
+      listener=()=>{if(vid.dataset.src!==c.sid||vid.currentTime>=z-.025)stop();};
+      vid.addEventListener('timeupdate',listener);vid.play().catch(()=>stop());};
+    dlg.returnValue='';dlg.showModal();
+    await new Promise(resolve=>dlg.onclose=resolve);stop();
+    if(dlg.returnValue!=='ok')return;
+    const c=opt[+pick.value],a=+st.value,z=+en.value;
+    const duration=srcs[c.sid]?.duration;
+    if(!Number.isFinite(a)||!Number.isFinite(z)||a<0||z-a<.2||(Number.isFinite(duration)&&z>duration+.1))return toast('音声範囲が不正です');
+    const selectedRows=currentRows();
+    if(selectedRows.some(b=>byId[b.id]?.segments.length))return toast('対象の字幕が更新されました。もう一度選んでください');
+    // Never overlap an already aligned/manual segment: this is a safe trial.
+    const conflict=blocks.some(b=>b.segments.some(g=>g.sourceId===c.sid&&g.start<z-.05&&g.end>a+.05)&&(b.aligned||b.sync==='manual'));
+    if(conflict)return toast('照合済み・手動編集済みの音声と重なります。範囲を狭めてください',4500);
+    // Vocab: each displayed row represents a separate utterance, including repeated
+    // identical example sentences. Never merge repetitions or match a headword
+    // merely because its token occurs inside a neighboring example.
+    // The duration model is only a preview proposal, not an acoustic boundary.
+    const weights=selectedRows.map(b=>mode.value==='vocab'
+      ?Math.max(7, b.text.trim().split(/\s+/).filter(Boolean).length*0.45+3)
+      :Math.max(4,b.text.trim().length));
+    const sum=weights.reduce((v,w)=>v+w,0);
+    let at=a;
+    const updates=selectedRows.map((b,i)=>{const end=i===selectedRows.length-1?z:a+(z-a)*weights.slice(0,i+1).reduce((v,w)=>v+w,0)/sum;
+      const result={...b,segments:[{sourceId:c.sid,start:+at.toFixed(2),end:+end.toFixed(2)}],sync:'estimated',align:[],lineage:{op:mode.value==='vocab'?'vocab-rescue-trial':'manual-rescue-trial',from:[`${b.id}@${b.rev}`],at:Date.now()}};at=end;return result;});
+    if(updates.some(b=>b.segments[0].end-b.segments[0].start<.12))return toast('区間が短すぎます。対象行を減らすか範囲を広げてください');
+    const ok=await confirmDialog({title:'推定位置を割り当てますか？',body:`<p>${updates.length}行に ${esc(srcs[c.sid]?.name||'音声')} の ${fmt(a)}–${fmt(z)} を割り当てます。</p><p class="small">英文の長さによる仮分割です。正しい発話位置は試聴・手動カットで確認してください。元音声は変更しません。</p>`,okLabel:'割り当てる'});
+    if(ok)await run('音声なし字幕への仮割当', {blocks:updates});
+  }
+
   // ---------- actions (each = one undoable operation) ----------
   const ordered = () => ops.orderedSelection(set.order, sel).map((id) => byId[id]).filter(Boolean);
   async function run(label, changes) {
@@ -1652,13 +1751,14 @@ async function editorScreen(el, params) {
     let last = -1, lastSid = null; const back = new Set();
     for (const id of ids) { const g = byId[id].segments[0]; if (!g) continue; if (g.sourceId === lastSid && g.start < last - 1) back.add(id); last = g.end; lastSid = g.sourceId; }
     const dlg = $('#dialog');
-    dlg.innerHTML = `<form method="dialog" class="dlg stack st-full"><div class="row"><h3 class="grow">スクリプト全文（${ids.length}行）</h3><button type="button" class="btn sm" id="fRange">範囲を選ぶ</button><button class="btn sm ghost" value="x">閉じる</button></div>
+    dlg.innerHTML = `<form method="dialog" class="dlg stack st-full"><div class="row"><h3 class="grow">スクリプト全文（${ids.length}行）</h3><button type="button" class="btn sm" id="fMulti">行を選択</button><button type="button" class="btn sm" id="fRange">範囲を選ぶ</button><button class="btn sm ghost" value="x">閉じる</button></div>
       <label class="field"><span>スクリプト内を検索（英語・日本語、部分一致）</span><input id="fSearch" type="search" placeholder="例：presence / A seasonal menu" autocomplete="off" autocapitalize="off" spellcheck="false"></label><div class="row small muted" id="fSearchCount" aria-live="polite">検索語を入力すると一致行を絞り込みます</div><div id="fBar" class="row wrap small" hidden></div>
       <p class="small muted">✓ 照合済み　○ 音声なし　起 照合できなかった文字起こし　♪ 音声あり（未照合）　<b class="warn-text">↺</b> 時間が前に戻っている行（順番の入れ違い）</p>
       <ol class="st-fulllist">${ids.map((id, i) => { const b = byId[id], [m, c] = mark(b); return `<li class="${c}" data-go="${id}"><span class="st-fm">${m}</span><span class="st-ft">${tm(b)}${back.has(id) ? ' <b class="warn-text">↺</b>' : ''}</span><span class="st-fx">${esc(b.text || b.label || '（英文なし）')}</span></li>`; }).join('')}</ol></form>`;
     dlg.returnValue = ''; dlg.showModal();
     // 1.18.1: range: tap the first and the last line, then delete (the script lines only, or every line in the range)
     let picking = false, a0 = null, a1 = null;
+    let multi = false; const picked = new Set();
     const lis = $$('[data-go]', dlg);
     const search = $('#fSearch', dlg), searchCount = $('#fSearchCount', dlg);
     const applySearch = () => {
@@ -1667,10 +1767,23 @@ async function editorScreen(el, params) {
       searchCount.textContent = q ? `一致 ${n} / ${ids.length}行（タップで該当行へ移動）` : `全 ${ids.length}行`;
     };
     search.addEventListener('input', applySearch); applySearch();
-    const mark2 = () => { const i0 = ids.indexOf(a0), i1 = ids.indexOf(a1 ?? a0); lis.forEach((x, k) => x.classList.toggle('st-fsel', a0 != null && k >= Math.min(i0, i1) && k <= Math.max(i0, i1))); };
+    const mark2 = () => { const i0 = ids.indexOf(a0), i1 = ids.indexOf(a1 ?? a0); lis.forEach((x, k) => { const chosen = multi ? picked.has(x.dataset.go) : picking && a0 != null && k >= Math.min(i0, i1) && k <= Math.max(i0, i1); x.classList.toggle('st-fsel', chosen); x.setAttribute('aria-selected', String(chosen)); }); };
     const inRange = () => { const i0 = ids.indexOf(a0), i1 = ids.indexOf(a1 ?? a0); return ids.slice(Math.min(i0, i1), Math.max(i0, i1) + 1).map((id) => byId[id]); };
     const fBar = $('#fBar', dlg);
-    const drawFB = () => { fBar.hidden = !picking;
+    const drawFB = () => { fBar.hidden = !(picking || multi);
+      if (multi) {
+        fBar.innerHTML = `<span class="grow">${picked.size}行を選択</span><button type="button" class="btn xs" id="fAllVisible">表示中を全選択</button><button type="button" class="btn xs danger" id="fDelPicked" ${picked.size ? '' : 'disabled'}>選択行を削除</button><button type="button" class="btn xs" id="fCancelMulti">やめる</button>`;
+        $('#fAllVisible', fBar).onclick = () => { lis.filter(x => !x.hidden).forEach(x => picked.add(x.dataset.go)); mark2(); drawFB(); };
+        $('#fCancelMulti', fBar).onclick = () => { multi = false; picked.clear(); $('#fMulti', dlg).textContent = '行を選択'; mark2(); drawFB(); };
+        $('#fDelPicked', fBar).onclick = () => {
+          const targets = ids.filter(id => picked.has(id)).map(id => byId[id]).filter(Boolean);
+          // Close before showing the confirmation dialog; keep the saved records undoable.
+          dlg.onclose = null;
+          dlg.addEventListener('close', () => setTimeout(() => bulkDel(targets, 'スクリプト確認で選択した行'), 0), { once: true });
+          dlg.close();
+        };
+        return;
+      }
       if (!picking) return;
       if (a0 == null || a1 == null) { fBar.innerHTML = `<span class="grow">${a0 == null ? '始めの行' : '終わりの行'}をタップ</span><button type="button" class="btn xs" id="fCancel">やめる</button>`; }
       else { const r = inRange(), na = r.filter((b) => !b.segments.length && b.text.trim());
@@ -1680,8 +1793,10 @@ async function editorScreen(el, params) {
         $('#fDelS', fBar).onclick = () => after(() => bulkDel(na, '選んだ範囲の音声のないスクリプト行'));
         $('#fDelA', fBar).onclick = () => after(() => bulkDel(r, '選んだ範囲の行')); }
       $('#fCancel', fBar).onclick = () => { picking = false; a0 = a1 = null; mark2(); drawFB(); }; };
-    $('#fRange', dlg).onclick = () => { search.value = ''; applySearch(); picking = true; a0 = a1 = null; mark2(); drawFB(); };
+    $('#fMulti', dlg).onclick = () => { multi = !multi; picking = false; a0 = a1 = null; picked.clear(); $('#fMulti', dlg).textContent = multi ? '選択を終了' : '行を選択'; mark2(); drawFB(); };
+    $('#fRange', dlg).onclick = () => { multi = false; picked.clear(); $('#fMulti', dlg).textContent = '行を選択'; search.value = ''; applySearch(); picking = true; a0 = a1 = null; mark2(); drawFB(); };
     lis.forEach((x) => (x.onclick = () => { const id = x.dataset.go;
+      if (multi) { if (picked.has(id)) picked.delete(id); else picked.add(id); mark2(); drawFB(); return; }
       if (picking) { if (a0 == null || a1 != null) { a0 = id; a1 = null; } else a1 = id; mark2(); drawFB(); return; }
       dlg.close(); if (view !== 'all') setView('all'); setTimeout(() => goNear(id), 50); }));
   }
@@ -1773,13 +1888,8 @@ async function editorScreen(el, params) {
           if (label) label.textContent = `元の開始から ${d >= 0 ? '+' : ''}${d.toFixed(2)}秒`;
         };
         pos();
-        const preview = () => {
-          if (attach(sg.sourceId, sg.start)) {
-            ++playbackRequest; pendingSegmentSeek = null; playing = null; vid.play().catch(() => {});
-            clearTimeout(trimBars.t);
-            trimBars.t = setTimeout(() => vid.pause(), Math.min(1.5, sg.end - sg.start) * 1000 / (vid.playbackRate || 1));
-          }
-        };
+        // Use the same seek-aware media-clock range player as the 区間 button.
+        const preview = () => playRange(sg.sourceId, sg.start, sg.end);
         const startDrag = (h, edge) => (e) => {
           e.preventDefault(); h.setPointerCapture(e.pointerId); readText();
           const x0 = e.clientX, start0 = sg.start, end0 = sg.end, dur = end0 - start0;
@@ -1821,6 +1931,8 @@ async function editorScreen(el, params) {
       readText();
       if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return toast('再生範囲を確認してください');
       ++playbackRequest; pendingSegmentSeek = null; playing = null;
+      editorPlayback?.cleanup?.(); editorPlayback = null;
+      vid.pause();
       if (!attach(sid, from)) return toast('ファイルを選んでください');
       if (editorPlayback?.cleanup) editorPlayback.cleanup();
       const preview = { dlg, kind: 'range', loop: false, started: true, done: false,
@@ -1886,6 +1998,17 @@ async function editorScreen(el, params) {
       <div class="row"><button type="button" class="btn xs" id="nmAll">すべて選ぶ</button><button type="button" class="btn xs" id="nmNone">すべて外す</button></div>
       ${cands.map((c, i) => `<div class="row st-nmrow"><input type="checkbox" data-ci="${i}" ${c.checked ? 'checked' : ''}><button type="button" class="btn xs" data-pl="${i}">▶︎</button><span class="small grow">${hl(c)}${c.kind === 'variant' ? ' <span class="tagp">登録した例</span>' : ''}</span></div>`).join('')}
       <div class="row end"><button class="btn ghost" value="cancel">やめる</button><button class="btn primary" value="ok">チェックした箇所を置き換え</button></div></form>`;
+    // Keep decision buttons visible while only the comparison rows scroll.
+    dlg.style.maxHeight = 'min(90dvh, 90vh)';
+    dlg.style.overflow = 'hidden';
+    const cmpForm = $('.st-cmp-fixed', dlg);
+    if (cmpForm) {
+      cmpForm.style.cssText += ';display:flex;flex-direction:column;max-height:calc(min(90dvh, 90vh) - 2rem);min-height:0;overflow:hidden;gap:0';
+      const cmpScroll = $('.st-cmp-scroll', cmpForm);
+      if (cmpScroll) cmpScroll.style.cssText = 'overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;min-height:0;flex:1 1 auto;padding-bottom:12px';
+      const cmpActions = $('.st-cmp-actions', cmpForm);
+      if (cmpActions) cmpActions.style.cssText += ';flex:0 0 auto;padding:12px 0 max(8px, env(safe-area-inset-bottom));border-top:1px solid var(--border, rgba(128,128,128,.3));background:var(--surface, inherit)';
+    }
     $$('[data-pl]', dlg).forEach((x) => (x.onclick = () => playBlock(byId[cands[+x.dataset.pl].id])));
     $('#nmAll', dlg).onclick = () => $$('[data-ci]', dlg).forEach((x) => (x.checked = true));
     $('#nmNone', dlg).onclick = () => $$('[data-ci]', dlg).forEach((x) => (x.checked = false));
@@ -1956,13 +2079,13 @@ async function editorScreen(el, params) {
     if (!results.length) return;
     await new Promise((r) => setTimeout(r, 60));
     // compare: choose old / new per line (new text is editable)
-    dlg.innerHTML = `<form method="dialog" class="dlg stack st-cmp"><h3>結果を比べる</h3><p class="small muted">${cancelled ? '途中で中止しました。終わった行だけ表示しています。' : ''}行ごとに使う方を選びます。新しい文は直せます。</p>
+    dlg.innerHTML = `<form method="dialog" class="dlg stack st-cmp st-cmp-fixed"><div class="st-cmp-scroll"><h3>結果を比べる</h3><p class="small muted">${cancelled ? '途中で中止しました。終わった行だけ表示しています。' : ''}行ごとに使う方を選びます。新しい文は直せます。</p>
       ${results.map((r, i) => { const same = r.neu === r.b.text, empty = !r.neu; return `<div class="card stack st-cmprow">
         <div class="row"><button type="button" class="btn xs" data-pl="${i}">▶︎</button><small class="muted grow">${fmt(r.b.segments[0].start)}–${fmt(r.b.segments.at(-1).end)}${same ? '・同じ結果' : ''}</small></div>
         <label class="chk"><input type="radio" name="c${i}" value="old" ${same || empty ? 'checked' : ''}> 今：${esc(r.b.text || '（なし）')}</label>
         <label class="chk"><input type="radio" name="c${i}" value="new" ${same || empty ? '' : 'checked'} ${empty ? 'disabled' : ''}> 新：</label>
         <textarea rows="2" data-nt="${i}" ${empty ? 'disabled placeholder="（文字にできませんでした）"' : ''}>${esc(r.neu)}</textarea></div>`; }).join('')}
-      <div class="row end"><button class="btn ghost" value="cancel">反映しない</button><button class="btn primary" value="ok">反映</button></div></form>`;
+      </div><div class="row end st-cmp-actions"><button class="btn ghost" value="cancel">反映しない</button><button class="btn primary" value="ok">反映</button></div></form>`;
     $$('[data-pl]', dlg).forEach((x) => (x.onclick = () => playBlock(results[+x.dataset.pl].b)));
     $$('[data-nt]', dlg).forEach((x) => (x.oninput = () => { const r = $(`input[name=c${x.dataset.nt}][value=new]`, dlg); if (r) r.checked = true; }));
     dlg.returnValue = ''; dlg.showModal();
@@ -2307,7 +2430,7 @@ async function editorScreen(el, params) {
   }
   // ---------- script ↔ audio: the transcription (with mistakes) gives the times, the script gives the text ----------
   function scriptLines() { return set.order.map((id) => byId[id]).filter((b) => b && !b.segments.length && b.text.trim()); }
-  async function runAlign({ afterAsr = 0 } = {}) {
+  async function runAlign({ afterAsr = 0, mode = "standard" } = {}) {
     const sl = scriptLines();
     if (!sl.length) return toast('音声の付いていないスクリプトの行がありません（「⋯」→「スクリプト・音声を追加」でテキストを入れます）', 4500);
     const heard = blocks.filter((b) => b.segments.length === 1 && b.text.trim() && !b.aligned);
@@ -2329,7 +2452,7 @@ async function editorScreen(el, params) {
       const cues = list0.slice().sort((a, b) => a.segments[0].start - b.segments[0].start).map((b) => ({ id: b.id, start: b.segments[0].start, end: b.segments[0].end, text: b.text }));
       const rem = new Set(remaining.map((b) => b.id));
       const lines = set.order.map((id) => byId[id]).filter((b) => b && (rem.has(b.id) || (isAnchor(b) && !changed.has(b.id))));
-      const r = alignScript(lines.map((b) => ({ id: b.id, text: b.text })), cues);
+      const r = alignScript(lines.map((b) => ({ id: b.id, text: b.text })), cues, { mode });
       for (const id of [...r.times.keys()]) if (!rem.has(id)) r.times.delete(id);   // landmark lines keep their sound
       matched += r.matched; total += r.total;
       for (const [id, t] of r.times) {
@@ -2577,6 +2700,7 @@ async function editorScreen(el, params) {
       <button class="btn" value="add">スクリプトを直接追加</button>
       <button class="btn" value="addMedia">音声・動画を追加</button>
       <button class="btn" value="align">スクリプトと照合</button>
+      <button class="btn" value="alignProse">朗読・会話向け：緩めのスクリプト照合（試験版）</button>
       <button class="btn" value="refine">音声位置を一括自動調整（試験版）</button>
       <button class="btn" value="realign">構造を使った再照合（プレビュー）</button>
       <button class="btn" value="structImport">発話を先に区切って照合（試験版）</button>
@@ -2613,6 +2737,7 @@ async function editorScreen(el, params) {
       if (v === 'add') nav(`import?to=${set.id}&script=1`);
       if (v === 'addMedia') nav(`import?to=${set.id}`);
       if (v === 'align') runAlign();
+      if (v === 'alignProse') runAlign({ mode: 'prose' });
       if (v === 'refine') refineBoundaries();
       if (v === 'realign') previewStructuralRealign();
       if (v === 'structImport') importBySpeechStructure();

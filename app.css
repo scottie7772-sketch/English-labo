@@ -1313,3 +1313,14 @@ dialog.st-rescue-dialog .field select { box-sizing: border-box; max-width: 100%;
 .st-edit .st-editor-sticky { flex-wrap: nowrap; }
 .st-edit .st-editor-sticky h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .st-edit .st-editor-sticky button { white-space: nowrap; }
+
+/* Both range handles below the bar: short start needle, long end needle.
+   Different stem lengths make overlapping timestamps distinguishable. */
+.st-rescue-track,.st-trk { margin-top:8px!important; margin-bottom:54px!important; overflow:visible!important; }
+.st-range-pointer.st-range-start,.st-range-pointer.st-range-end {top:100%!important;bottom:auto!important;height:45px!important;min-height:45px!important;}
+.st-range-pointer.st-range-start::after,.st-range-pointer.st-range-end::after {clip-path:none!important;left:12px!important;width:4px!important;border-radius:3px!important;top:0!important;}
+.st-range-pointer.st-range-start::after {height:16px!important;background:var(--text,#d9e8e2)!important;}
+.st-range-pointer.st-range-end::after {height:34px!important;background:#68c4a2!important;}
+.st-range-pointer.st-range-start::before,.st-range-pointer.st-range-end::before {content:'';position:absolute;left:8px;top:0;width:12px;height:7px;border-radius:3px;background:inherit;}
+.st-range-pointer.st-range-start::before {background:var(--text,#d9e8e2)!important;}
+.st-range-pointer.st-range-end::before {background:#68c4a2!important;}

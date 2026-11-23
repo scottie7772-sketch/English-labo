@@ -2036,7 +2036,7 @@ async function editorScreen(el, params, revision) {
       <label class="chk"><input id="rsExpand" type="checkbox"> 探索範囲を広げる</label>
       <label class="field"><span>音声候補</span><select id="rsCandidate"></select></label>
       <div class="row wrap"><label class="field grow"><span>開始（分:秒.小数）</span><input id="rsStart" type="text" inputmode="decimal" placeholder="14:03.0"></label><label class="field grow"><span>終了（分:秒.小数）</span><input id="rsEnd" type="text" inputmode="decimal" placeholder="14:10.6"></label></div>
-      <div class="st-rescue-timeline"><div class="row st-rescue-hscroll"><button type="button" class="btn sm" id="rsView">ファイル全体を表示</button><button type="button" class="btn sm" id="rsStartZero">開始を先頭へ</button><button type="button" class="btn sm" id="rsEndLast">終了を末尾へ</button></div><p class="small muted">バーの下の開始ポインターと上の終了ポインターをドラッグして調整できます。中央をタップすると再生位置を移動します。</p><div class="st-rescue-track" id="rsTrack" style="position:relative;touch-action:none;min-height:44px"><i id="rsSelection" style="pointer-events:none"></i><b id="rsHead" style="pointer-events:none"></b><button type="button" class="st-range-pointer st-range-start" id="rsHandleStart" aria-label="割当開始をドラッグ"></button><button type="button" class="st-range-pointer st-range-end" id="rsHandleEnd" aria-label="割当終了をドラッグ"></button></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div><div class="row wrap st-preview-controls"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsPlayHead">▶ 頭2秒</button><button type="button" class="btn sm" id="rsPlayLast">▶ 後ろ2秒</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div></div>
+      <div class="st-rescue-timeline"><div class="row st-rescue-hscroll"><button type="button" class="btn sm" id="rsView">ファイル全体を表示</button><button type="button" class="btn sm" id="rsStartZero">開始を先頭へ</button><button type="button" class="btn sm" id="rsEndLast">終了を末尾へ</button></div><p class="small muted">バーの下にある短い開始ポインターと長い終了ポインターをドラッグして調整できます。中央をタップすると再生位置を移動します。</p><div class="st-rescue-track" id="rsTrack" style="position:relative;touch-action:none;min-height:44px"><i id="rsSelection" style="pointer-events:none"></i><b id="rsHead" style="pointer-events:none"></b><button type="button" class="st-range-pointer st-range-start" id="rsHandleStart" aria-label="割当開始をドラッグ"></button><button type="button" class="st-range-pointer st-range-end" id="rsHandleEnd" aria-label="割当終了をドラッグ"></button></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div><div class="row wrap st-preview-controls"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsPlayHead">▶ 頭2秒</button><button type="button" class="btn sm" id="rsPlayLast">▶ 後ろ2秒</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div></div>
       <div class="small st-rescue-script" id="rsRows" style="max-height:7rem;overflow:auto">${missing.map((b,i)=>`<div>${i+1}. ${esc(b.text)}</div>`).join('')}</div>
       <p id="rsReason" class="small muted"></p><p class="small muted">朗読の手動割当は「今回割り当てる行数」を1行にしてください。時刻は例 14:03.0 と入力できます。</p>
       <div class="row end st-rescue-hscroll">
@@ -2829,7 +2829,7 @@ async function editorScreen(el, params, revision) {
     if(!sl.length)return toast('先に完全なスクリプトを取り込んでください',4500);
     const sources=materialSourceIds().map(id => srcs[id]).filter(x => x && (x.stored ? x.blob : sessionFiles.get(x.id)));
     if(!sources.length)return toast('音声ファイルを選び直してください',4500);
-    // Explicit source and time window; default remains the original first 30 utterances.
+    // Analyze all speech regions in sequential batches; preserve source-absolute timestamps.
     // Only the selected window is ASR'd; all timestamps remain source-absolute.
     const parseClock = value => {
       const v=String(value||'').trim();
@@ -2844,8 +2844,9 @@ async function editorScreen(el, params, revision) {
       if(dlg.open){dlg.onclose=null;dlg.close();}
       dlg.innerHTML=`<form method="dialog" class="dlg stack"><h3>発話を先に区切って照合（試験版）</h3>
         <label>音声ファイル<select id="structSource">${sources.map(x=>`<option value="${esc(x.id)}" ${x.id===defaultSource.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>
-        <p class="small">開始・終了時刻を指定できます。空欄の終了時刻はファイル末尾です。最大30発話を解析します。</p>
-        <div class="row"><label class="field grow">開始（分:秒）<input id="structStart" inputmode="decimal" value="00:00" placeholder="05:00"></label><label class="field grow">終了（分:秒）<input id="structEnd" inputmode="decimal" placeholder="空欄なら最後まで"></label></div>
+        <p class="small">発話を30件ずつ、指定範囲の末尾まで自動で順番に解析します。終了を空欄にするとファイル末尾まで解析します。</p>
+        <div class="row" style="flex-wrap:wrap"><label class="field grow">開始（分）<input id="structStartMin" type="number" min="0" step="1" inputmode="numeric" value="0"></label><label class="field grow">開始（秒）<input id="structStartSec" type="number" min="0" max="59" step="1" inputmode="numeric" value="0"></label></div>
+        <div class="row" style="flex-wrap:wrap"><label class="field grow">終了（分・空欄で末尾）<input id="structEndMin" type="number" min="0" step="1" inputmode="numeric" placeholder="末尾まで"></label><label class="field grow">終了（秒）<input id="structEndSec" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="0"></label></div>
         <p class="hint">無料・端末内処理。音声の途中からでもスクリプト全体から一致候補を探します。既存の保存結果と手動編集は上書きしません。処理中は画面を開いたままにしてください。</p>
         <p id="structRangeError" class="warn-text small" aria-live="polite"></p>
         <div class="row end"><button class="btn ghost" value="cancel">キャンセル</button><button class="btn primary" value="go">解析を開始</button></div></form>`;
@@ -2855,9 +2856,13 @@ async function editorScreen(el, params, revision) {
         const submit=e.submitter;
         if(submit?.value!=='go')return;
         const sid=dlg.querySelector('#structSource').value;
-        const start=parseClock(dlg.querySelector('#structStart').value);
-        const rawEnd=dlg.querySelector('#structEnd').value.trim();
-        const end=rawEnd?parseClock(rawEnd):Infinity;
+        const startMin=dlg.querySelector('#structStartMin').value;
+        const startSec=dlg.querySelector('#structStartSec').value;
+        const endMin=dlg.querySelector('#structEndMin').value;
+        const endSec=dlg.querySelector('#structEndSec').value;
+        const validClock=(m,sec)=>/^\d+$/.test(m)&&/^\d+$/.test(sec)&&Number(sec)<60;
+        const start=validClock(startMin,startSec)?Number(startMin)*60+Number(startSec):NaN;
+        const end=endMin.trim()===''&&endSec.trim()===''?Infinity:(validClock(endMin||'0',endSec||'0')?Number(endMin||0)*60+Number(endSec||0):NaN);
         const source=sources.find(x=>x.id===sid);
         const duration=Number(source?.duration);
         if(!source||!Number.isFinite(start)||start<0||!Number.isFinite(end)&&end!==Infinity||end<=start||(Number.isFinite(duration)&&duration>0&&start>=duration)){
@@ -2893,13 +2898,13 @@ async function editorScreen(el, params, revision) {
       const regions = speechRegions(windowAudio, 16000).filter(r => r.end-r.start >= .2)
         .map(r => ({start: r.start + offset, end: r.end + offset}));
       if(!regions.length)throw new Error('発話区間を検出できませんでした');
-      const picked=regions.filter(r=>r.end>cfg.start && r.start<cfg.end).slice(0,30);
+      const picked=regions.filter(r=>r.end>cfg.start && r.start<cfg.end);
       if(!picked.length)throw new Error('指定範囲に発話が見つかりませんでした');
-      say(`${regions.length}発話を検出。指定範囲 ${fmt(cfg.start)}〜${Number.isFinite(cfg.end)?fmt(cfg.end):'末尾'} の ${picked.length}発話を文字起こしします…`);
+      say(`${regions.length}発話を検出。指定範囲の ${picked.length}発話を30件ずつ自動解析します…`);
       tr=openTranscriber('en',say,{quality:'acc'});
       const utterances=[];
       for(let k=0;k<picked.length&&!cancelled&&revision===routeRevision;k++){
-        const r=picked[k];say(`発話 ${k+1}/${picked.length}：${fmt(r.start)}〜${fmt(r.end)}`);
+        const r=picked[k];say(`第${Math.floor(k/30)+1}/${Math.ceil(picked.length/30)}組・発話 ${k+1}/${picked.length}：${fmt(r.start)}〜${fmt(r.end)}`);
         const cues=await recognisePiece(tr,audio,Math.max(cfg.start,r.start-.12),Math.min(decoded.duration,cfg.end,r.end+.12));
         utterances.push({...r,text:(cues.raw||cues.map(x=>x.text).join(' ')).trim()});
       }

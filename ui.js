@@ -100,3 +100,28 @@ export function toEyeLine(node, ratio = 0.4) {
   if (!node) return;
   requestAnimationFrame(() => { node.style.marginTop = ''; const r = node.getBoundingClientRect(); const d = innerHeight * ratio - (r.top + scrollY + r.height / 2); if (d > 0) node.style.marginTop = `${Math.round(d)}px`; });
 }
+
+// A non-destructive close control for every shared app dialog.
+function ensureDialogClose() {
+  const dlg = document.querySelector('#dialog');
+  const form = dlg?.querySelector('form');
+  if (!form || form.querySelector('.dlg-global-close')) return;
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'btn ghost dlg-global-close';
+  close.textContent = '閉じる';
+  close.setAttribute('aria-label', 'このウィンドウを閉じる（キャンセル）');
+  close.addEventListener('click', () => dlg.close('cancel'));
+  form.prepend(close);
+}
+if (typeof MutationObserver !== 'undefined') {
+  const installDialogClose = () => {
+    const dlg = document.querySelector('#dialog');
+    if (!dlg) return;
+    const observer = new MutationObserver(ensureDialogClose);
+    observer.observe(dlg, { childList: true, subtree: true });
+    ensureDialogClose();
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installDialogClose, { once: true });
+  else installDialogClose();
+}

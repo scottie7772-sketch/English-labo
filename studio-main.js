@@ -2939,6 +2939,13 @@ async function editorScreen(el, params, revision) {
       <label class="field"><span>元音声・動画</span><select id="wholeSplitSource">${opts}</select></label>
       <label class="field"><span>分割時刻（分:秒.小数）</span><input id="wholeSplitAt" inputmode="decimal" placeholder="20:30.5"></label>
       <p id="wholeSplitInfo" class="small muted"></p>
+      <div class="card stack"><b>分割前の音声確認</b><p class="small muted">境界の直前・直後をそれぞれ約4秒再生します。</p>
+        <div class="row wrap"><button type="button" class="btn sm" id="splitHearBefore">前半の終わりを聴く</button><button type="button" class="btn sm" id="splitHearAfter">後半の始まりを聴く</button><button type="button" class="btn sm ghost" id="splitHearStop">停止</button></div>
+        <audio id="splitHearAudio" controls preload="none" style="width:100%;max-width:100%"></audio>
+        <p class="small muted" id="splitHearStatus">時刻を指定して試聴してください</p>
+      </div>
+      <label class="field"><span>スクリプトの分け方</span><select id="splitScriptPolicy"><option value="shared">安全優先：時刻未割当の文章を前後両方に残す</option><option value="strict">分離優先：時刻が分かる文章だけ各教材に入れる（未割当は元教材に保持）</option></select></label>
+      <p class="small muted">境界をまたぐ音声付き文章は両方に残し、要確認にします。元教材は削除しません。</p>
       <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">前半・後半の教材を作成</button></div></form>`;
     const pick = $('#wholeSplitSource',dlg), field = $('#wholeSplitAt',dlg), info = $('#wholeSplitInfo',dlg);
     const refresh = () => {
@@ -2949,9 +2956,32 @@ async function editorScreen(el, params, revision) {
     field.oninput = refresh;
     pick.onchange();
     if (vid.dataset.src === pick.value && vid.currentTime > 0) { field.value = fmt(vid.currentTime); refresh(); }
+    const preview = $('#splitHearAudio',dlg), previewStatus = $('#splitHearStatus',dlg);
+    let previewEnd = null;
+    const stopPreview = () => { preview.pause(); previewEnd = null; };
+    const playPreview = async (side) => {
+      stopPreview();
+      const source = srcs[pick.value], duration = Number(source?.duration) || 0, at = parseClock(field.value);
+      if (!Number.isFinite(at) || at <= .1 || at >= duration - .1) return toast('先に有効な分割時刻を入力してください');
+      const url = mediaURL(source);
+      if (!url) return toast('音声が端末にありません。元ファイルを再接続してください');
+      const begin = side === 'before' ? Math.max(0,at-4) : at;
+      previewEnd = side === 'before' ? at : Math.min(duration,at+4);
+      previewStatus.textContent = `${side === 'before' ? '前半の終わり' : '後半の始まり'}：${fmt(begin)}〜${fmt(previewEnd)}`;
+      if (preview.src !== url) preview.src = url;
+      try { preview.currentTime = begin; await preview.play(); } catch (e) { previewStatus.textContent = `試聴できません：${e.message}`; }
+    };
+    preview.addEventListener('timeupdate', () => { if (previewEnd != null && preview.currentTime >= previewEnd - .04) stopPreview(); });
+    $('#splitHearBefore',dlg).onclick = () => playPreview('before');
+    $('#splitHearAfter',dlg).onclick = () => playPreview('after');
+    $('#splitHearStop',dlg).onclick = stopPreview;
+    pick.addEventListener('change',stopPreview);
+    field.addEventListener('input',stopPreview);
     dlg.returnValue = ''; dlg.onclose = null; dlg.showModal();
     await new Promise(resolve => { dlg.onclose = resolve; });
+    stopPreview(); preview.removeAttribute('src'); preview.load();
     if (dlg.returnValue !== 'ok') return;
+    const scriptPolicy = $('#splitScriptPolicy',dlg).value;
     const sid = pick.value, duration = Number(srcs[sid]?.duration) || 0, at = parseClock(field.value);
     if (!Number.isFinite(at) || at <= 0.1 || at >= duration - 0.1) return toast(`分割時刻は 0:00.0〜${fmt(duration)} の内側に指定してください`, 5500);
     const original = set.order.map(id => byId[id]).filter(Boolean);
@@ -2974,8 +3004,8 @@ async function editorScreen(el, params, revision) {
           const crosses=gs.some(g => g.start < boundary && g.end > boundary);
           out.push({...structuredClone(b),id:newId('b_'),setId:nid,rev:0,deleted:false,segments:clipped,
             ...(crosses?{aligned:false,sync:'estimated',splitNeedsReview:true}:{})});
-        } else if (b.text?.trim()) {
-          // Unassigned script lines have no reliable time: preserve in both sets for manual review.
+        } else if (b.text?.trim() && scriptPolicy === 'shared') {
+          // Safe mode: duplicate unassigned lines for review; strict mode keeps them only in the original.
           out.push({...structuredClone(b),id:newId('b_'),setId:nid,rev:0,deleted:false,splitNeedsReview:true});
         }
       }
@@ -2989,7 +3019,7 @@ async function editorScreen(el, params, revision) {
       for (const t of await sdb.byIndex('tracks','setId',set.id)) await sdb.put('tracks',{...structuredClone(t),id:newId('t_'),setId:nid});
       return ns;
     };
-    try { await make(true); await make(false); toast('前半・後半を独立した教材として作成しました。境界付近と未割当の字幕を確認してください。',6500); nav('sets'); }
+    try { await make(true); await make(false); toast('前半・後半の教材を作成しました。分割位置と字幕の割当を確認してください。',6500); nav('sets'); }
     catch(e) { logErr(`教材の分割に失敗：${e.message}`); }
   }
 

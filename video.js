@@ -101,7 +101,14 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true 
     // the studio's cut (start/end) = the range covered by the items: playback stays inside it
     const segs = mat.items.flatMap((it) => (it.segments || []).filter((g) => g.media === m.id));
     delete v.trim;
-    if (segs.length) { const a0 = Math.min(...segs.map((g) => g.start)), a1 = Math.max(...segs.map((g) => g.end)); if (a0 > 0.05 || (m.duration && a1 < m.duration - 0.05)) v.trim = { start: a0, end: a1, why: 'スタジオのカット' }; }
+    const split = mat.set?.splitRange;
+    if (split?.sourceId === m.id && Number.isFinite(split.start) && Number.isFinite(split.end) && split.end > split.start) {
+      // A split material must use its explicit source bounds, not the first/last subtitle.
+      v.trim = { start: split.start, end: Math.min(split.end, m.duration || split.end), why: 'スタジオの分割範囲' };
+    } else if (segs.length) {
+      const a0 = Math.min(...segs.map((g) => g.start)), a1 = Math.max(...segs.map((g) => g.end));
+      if (a0 > 0.05 || (m.duration && a1 < m.duration - 0.05)) v.trim = { start: a0, end: a1, why: 'スタジオのカット' };
+    }
     if (freshBlob) await putVideoBlob(v.id, freshBlob);
     await saveVideoMeta(v);
     const fresh = mat.items.filter((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja))
@@ -652,7 +659,7 @@ export async function videoPlay(el, params) {
     }
     if (v.trim && !vid.seeking) {
       if (t < v.trim.start - 0.05) vid.currentTime = v.trim.start;
-      else if (t >= v.trim.end && !vid.paused && !(ab?.b != null)) { vid.pause(); vid.currentTime = Math.max(v.trim.start, v.trim.end - 0.05); }
+      else if (t >= v.trim.end) { if (!vid.paused) vid.pause(); vid.currentTime = Math.max(v.trim.start, v.trim.end - 0.05); }
     }
     if (Date.now() - seekT > 200 || vid.paused) { seekT = Date.now(); drawSeek?.(); }   // the bar: 5 times a second while playing (was a timer that never stopped)
     if (Date.now() - saveT > 3000) { saveT = Date.now(); savePos(); }
@@ -664,7 +671,7 @@ export async function videoPlay(el, params) {
     if (!vid) return; const t = vid.currentTime; if (Math.abs(t - savedT) < 0.5) return; savedT = t;
     const cur = await db.get('videos', v.id); if (cur) { cur.lastTime = t; cur.playedAt = Date.now(); await saveVideoMeta(cur); }
   }
-  const playFrom = (c) => { if (!vid || !c) return; vid.currentTime = c.start + 0.01; stepCue = c; revealedCue = null; if (loop) { loop = { start: c.start, end: c.end }; loopN = 0; } vid.play(); };
+  const playFrom = (c) => { if (!vid || !c) return; vid.currentTime = v.trim ? Math.max(v.trim.start, Math.min(v.trim.end - 0.05, c.start + 0.01)) : c.start + 0.01; stepCue = c; revealedCue = null; if (loop) { loop = { start: c.start, end: c.end }; loopN = 0; } vid.play(); };
 
   // ---- cloze grading ----
   async function gradeHole(c, hi, ok) {

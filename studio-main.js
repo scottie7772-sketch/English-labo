@@ -3772,7 +3772,7 @@ async function buildMaterial(set) {
   const blocks = await liveBlocks(set), srcs = await sourcesMap(), tracks = await sdb.byIndex('tracks', 'setId', set.id);
   const media = [...new Set(blocks.flatMap((b) => b.segments.map((s) => s.sourceId)))].map((id) => srcs[id]).filter(Boolean);
   const manifest = { format: 'elpack', formatVersion: 2, packId: newId('pk_'), materialId: set.id, title: set.title, lang: 'en', source: { app: 'Englabo Studio', appVersion: STUDIO_VERSION }, createdAt: new Date().toISOString() };
-  const material = { set: { id: set.id, title: set.title },
+  const material = { set: { id: set.id, title: set.title, ...(set.splitRange ? { splitRange: structuredClone(set.splitRange) } : {}) },
     items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, holes: b.holes, label: b.label })),
     media: media.map((m) => ({ id: m.id, kind: m.kind, name: m.name, size: m.size, mime: m.mime, duration: m.duration, included: !!(m.stored ? m.blob : sessionFiles.get(m.id)) })) };
   return { manifest, material, media, blocks, tracks };

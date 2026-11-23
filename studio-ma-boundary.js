@@ -76,7 +76,7 @@ function scriptEdge(row, heard, side) {
   return null;
 }
 
-export function proposeMaSeam(seam, chunks, duration) {
+export function proposeMaSeam(seam, chunks, duration, window = null) {
   const heard = chunks.flatMap(cue => {
     const ts = words(cue.text);
     return ts.length === 1 && Number.isFinite(cue.start) && cue.start >= 0 &&
@@ -87,6 +87,11 @@ export function proposeMaSeam(seam, chunks, duration) {
   const head = seam.right && scriptEdge(seam.right, heard, 'start');
   const hold = reason => ({ changes: [], confidence: 'review', reason });
   if ((seam.left && !tail) || (seam.right && !head)) return hold('正解スクリプトの境界語を特定できません');
+  if (window && [tail, head].filter(Boolean).some(anchor =>
+    (window.start > .02 && anchor.first < window.start + .08) ||
+    (window.end < duration - .02 && anchor.last > window.end - .08))) {
+    return hold('再認識した区間の端に境界語があり、切れている可能性があります');
+  }
   if (tail && head && (tail.time > head.time + .025 || head.time - tail.time > 1.5)) return hold('前後の英文の時刻が矛盾しています');
   const split = tail && head ? (tail.time + head.time) / 2 : null;
   const changes = [];
@@ -132,7 +137,7 @@ export function maBoundaryUpdates(blocks, proposals) {
     const g = updates.get(row.id), old = segment(row), duration = g.end - g.start;
     const remap = t => Math.max(0, Math.min(duration, round(t + old.start - g.start)));
     const align = (row.align || []).map(a => ({ ...a, v0: remap(a.v0), v1: remap(a.v1) })).filter(a => a.v1 > a.v0);
-    return { ...row, segments: [g], align, maBoundaryChecked: true };
+    return { ...row, segments: [g], align };
   });
 }
 

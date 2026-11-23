@@ -1,3 +1,4 @@
+import { readScriptJa, planScriptJa } from './video-script-ja.js';
 // Phase 6: Video Lab (local videos + SRT/VTT subtitles + word registration linked to video position)
 import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, swipeToDelete } from './ui.js';
@@ -7,7 +8,7 @@ import { pickWordsDialog } from './pick.js';
 import { headKey, wordsByHead, findDuplicate, newWord, newSense, saveWord, splitList } from './words.js';
 import { clozeHTML, toggleToken, candidates } from './cloze.js';
 import { translationRows, planTranslations } from './video-translations.js';
-import { readVideoJa, videoJaView, videoJaSource, parseJaPatch, cueStamps, saveVideoJa, removeVideoJaInTx } from './video-ja.js';
+import { readVideoJa, videoJaView, videoJaSource, compareVideoCues, parseJaPatch, cueStamps, saveVideoJa, removeVideoJaInTx } from './video-ja.js';
 import { recordAnswer } from './judge.js';
 
 // ---------- subtitles ----------
@@ -39,7 +40,7 @@ export function toSRT(cues, field) {
 const fmtT = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
 const parseT = (v) => { v = String(v).trim(); if (!v) return NaN; if (v.includes(':')) { const [m, s] = v.split(':'); return +m * 60 + +s; } return +v; };
 const fmtSize = (n) => (n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB');
-async function cuesOf(videoId) { return (await db.byIndex('cues', 'videoId', videoId)).sort((a, b) => a.start - b.start); }
+async function cuesOf(videoId) { return (await db.byIndex('cues', 'videoId', videoId)).sort(compareVideoCues); }
 async function replaceCues(videoId, cues) {
   const old = await db.byIndex('cues', 'videoId', videoId);
   await db.tx(['cues'], 'readwrite', (t) => { const os = t.objectStore('cues'); old.forEach((c) => os.delete(c.id)); cues.forEach((c) => os.put(c)); });
@@ -487,14 +488,14 @@ export async function videoPlay(el, params) {
     </div></div></div>
     <div class="vsheet" id="shMake" hidden><div class="vsheet-in card stack"><div class="row between"><b>字幕・日本語訳</b><button class="btn sm" data-shclose>閉じる</button></div><div id="make">
       <div class="stack">
-        <p class="hint">字幕の自動作成・前後のカット・スクリプト合わせは<b>教材スタジオ</b>で行います（ここは再生と学習用）。字幕ファイル（SRT/VTT）の読み込みと日本語訳の依頼はここでもできます。</p>
-        <button class="btn" id="exportJa" ${cues.some(c => c.en) ? '' : 'disabled'}>翻訳用の字幕IDと英文を書き出す</button>
+        <p class="hint">字幕の自動作成・前後のカット・スクリプト合わせは<b>教材スタジオ</b>で行います（ここは再生と学習用）。日本語訳は英文と訳文のJSONから追加できます。章番号が分かる場合は chapter を指定できます。</p>
+        <button class="btn" id="exportJa" ${cues.some(c => c.en) ? '' : 'disabled'}>翻訳用の字幕情報を書き出す（JSON）</button>
         <button class="btn" id="clearJa" ${jaRecords.some(row => row.refs?.length) || cues.some(c => jaFor(c) || jaView.needsReview(c)) ? '' : 'hidden'}>日本語訳だけ削除</button>
         <button class="btn" id="reviewJa" ${jaView.review.length ? '' : 'hidden'}>日本語訳の要確認を表示</button>
         <button class="btn" id="askClaude" ${cues.some((c) => c.en) ? '' : 'disabled'}>翻訳依頼文をコピー</button>
         <button class="btn" data-paste="ja">返ってきた日本語訳を貼り付け</button>
         <label class="btn" for="fEn">${esc(TL)}字幕ファイル（SRT/VTT）を読み込む</label>
-        <label class="btn" for="fJa">日本語訳を読み込む（差分JSONなど）</label>
+        <label class="btn" for="fJa">日本語訳を読み込む（英文照合・字幕ID）</label>
         <button class="btn" data-paste="en">${esc(TL)}字幕を貼り付け</button>
       </div></div></div></div>
     <p class="small muted center" id="modeTxt"></p>
@@ -1064,7 +1065,7 @@ export async function videoPlay(el, params) {
   $('#clearJa', el).onclick = clearJa;
   $('#reviewJa', el).onclick = showJaReview;
   $('#askClaude', el).onclick = async () => {
-    const text = `各字幕の日本語訳を作り、教材IDを維持して {"materialId":"…","translations":[{"cueIds":["字幕ID"],"ja":"訳文"}]} 形式のJSONだけ返してください。1つの訳が複数字幕に対応する場合は cueIds に全IDを入れてください。同じ字幕に複数の訳文が対応する場合は別々の行にしてください。英文や時刻は出力に含めないでください。\n\n${jaSource()}`;
+    const text = `order の順に文脈を確認して各字幕を日本語に訳し、教材IDと cueId を維持して {"materialId":"…","translations":[{"cueIds":["字幕ID"],"ja":"訳文"}]} 形式のJSONだけ返してください。1つの訳が複数字幕に対応する場合は cueIds に全IDを入れてください。同じ字幕に複数の訳文が対応する場合は別々の行にしてください。英文・表示順・時刻は出力に含めないでください。\n\n${jaSource()}`;
     try { await navigator.clipboard.writeText(text); toast('翻訳依頼文をコピーしました'); }
     catch { pasteShow(text); }
   };
@@ -1154,10 +1155,20 @@ export async function videoPlay(el, params) {
     try {
       const expected = cueStamps(base);
       const structured = /^[\[{]/.test(text.trim());
-      let patch, unmatched = [];
+      let patch, unmatched = [], scriptReview = [];
       if (structured) {
-        patch = parseJaPatch(text, v.id);
-        unmatched = [...patch.keys()].filter(id => !expected.has(id));
+        const data = JSON.parse(text);
+        const idPatch = Array.isArray(data?.translations) && (data.translations.some(row => row && Object.hasOwn(row, 'cueIds')) ||
+          !data.translations.length && data.materialId != null);
+        if (idPatch) {
+          patch = parseJaPatch(text, v.id);
+          unmatched = [...patch.keys()].filter(id => !expected.has(id));
+        } else {
+          const result = planScriptJa(base, readScriptJa(data, v.id, v.name));
+          patch = result.patch;
+          scriptReview = result.review;
+          unmatched = scriptReview.map(row => row.number);
+        }
       } else {
         const rows = timed.length ? timed.map(row => ({ ...row, ja: row.text })) : translationRows(text);
         const old = planTranslations(base, rows);
@@ -1167,11 +1178,14 @@ export async function videoPlay(el, params) {
       const targets = new Map(base.map(c => [c.id, c.en]));
       const flagged = base.filter(c => patch.has(c.id) && (jaView.needsReview(c) || (c.translationRevision && !jaFor(c))));
       const dlg = $('#dialog');
+      const reviewDetails = scriptReview.length ? `<details><summary>要確認の入力を表示</summary><ol class="small">${scriptReview.map(row =>
+        `<li value="${row.number}">${esc(row.en)}<br>${esc(row.reason)}</li>`).join('')}</ol></details>` : '';
+      const deletionCount = [...patch.values()].filter(values => !values.length).length;
       const sample = [...patch].filter(([id]) => targets.has(id)).slice(0, 10).map(([id, values]) =>
-        `<li>${esc(targets.get(id))}<br>${esc(values.map(value => value.ja ?? value).join(' / '))}</li>`).join('');
+        `<li>${esc(targets.get(id))}<br>${values.length ? esc(values.map(value => value.ja ?? value).join(' / ')) : '日本語訳を削除'}</li>`).join('');
       if (!(await confirmDialog({
         title: '日本語訳の対応を確認',
-        body: `<p>教材 ${esc(v.name)}・取込対象 ${patch.size}件。</p>${unmatched.length ? `<p>要確認 ${unmatched.length}件。対応先 ${unmatched.slice(0, 10).map(esc).join('、')}</p>` : ''}
+        body: `<p>教材 ${esc(v.name)}・取込対象 ${patch.size}件${deletionCount ? `（訳を削除 ${deletionCount}件）` : ''}。</p>${reviewDetails}${unmatched.length ? `<p>要確認 ${unmatched.length}件。対応先 ${unmatched.slice(0, 10).map(esc).join('、')}</p>` : ''}
           ${sample ? `<ol class="small">${sample}</ol>` : ''}
           ${flagged.length ? `<p>編集後に訳の確認が必要な字幕を選んでください。</p><div class="stack">${flagged.map((cue, i) => `<label class="chk">
             <input type="checkbox" data-ja-confirm="${i}"><span>${esc(cue.en)}<br>${esc(patch.get(cue.id).map(value => value.ja ?? value).join(' / '))}</span></label>`).join('')}</div>` : ''}`,
@@ -1191,7 +1205,7 @@ export async function videoPlay(el, params) {
   async function pasteDialog(lang) {
     const dlg = $('#dialog');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${lang === 'en' ? TL + '字幕' : '日本語訳'}を貼り付け</h3>
-      <textarea id="pt" rows="10" placeholder="${lang === 'ja' ? '教材IDと字幕IDを含む差分JSONを貼り付け' : '1&#10;00:00:01,000 --> 00:00:03,500&#10;Hello, everyone.'}" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+      <textarea id="pt" rows="10" placeholder="${lang === 'ja' ? '英文と日本語訳のJSON、または字幕IDの差分JSONを貼り付け' : '1&#10;00:00:01,000 --> 00:00:03,500&#10;Hello, everyone.'}" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
       <div class="row end"><button class="btn ghost" value="cancel">キャンセル</button><button class="btn primary" value="ok">取り込む</button></div></form>`;
     dlg.returnValue = '';
     dlg.onclose = () => { if (dlg.returnValue === 'ok') importText($('#pt', dlg).value, lang); };
@@ -1233,7 +1247,7 @@ export async function videoPlay(el, params) {
       c.en = newEn;
       await db.put('cues', c);
       if (isNew) cues.push(c);
-      cues.sort((a, b) => a.start - b.start);
+      cues.sort(compareVideoCues);
       curId = null; await refreshJa(); toast('保存しました');
     };
     dlg.showModal();
@@ -1292,10 +1306,10 @@ export async function videoPlay(el, params) {
     const dlg = $('#dialog');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(v.name)}</h3>
       <label class="btn" for="fEn" data-close>${esc(TL)}字幕ファイルを読み込む</label>
-      <label class="btn" for="fJa" data-close>日本語訳を読み込む（差分JSONなど）</label>
+      <label class="btn" for="fJa" data-close>日本語訳を読み込む（英文照合・字幕ID）</label>
       <button class="btn" value="pen">${esc(TL)}字幕を貼り付け</button>
       <button class="btn" value="pja">日本語訳を貼り付け</button>
-      <button class="btn" value="copy" ${cues.some((c) => c.en) ? '' : 'disabled'}>${esc(TL)}字幕ID＋英文を書き出す</button>
+      <button class="btn" value="copy" ${cues.some((c) => c.en) ? '' : 'disabled'}>${esc(TL)}字幕ID・英文・表示順を書き出す</button>
       <button class="btn" value="rename">名前を変更</button>
       <button class="btn danger" value="del">動画を削除</button>
       <button class="btn ghost" value="cancel">閉じる</button></form>`;

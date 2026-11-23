@@ -63,7 +63,7 @@ function audioPresentation(d, list, movieScale, trackScale) {
   return null;
 }
 
-export async function probe(blob) {
+export async function probe(blob, { presentation = false } = {}) {
   const tops = await topBoxes(blob);
   const ftyp = tops.find((b) => b.type === 'ftyp');
   const moovBox = tops.find((b) => b.type === 'moov');
@@ -71,8 +71,8 @@ export async function probe(blob) {
   if (moovBox.size > 200 * 1024 * 1024) throw new Error('目次が大きすぎます');
   const buf = await blob.slice(moovBox.off, moovBox.off + moovBox.size).arrayBuffer();
   const d = new DataView(buf); const moov = { body: moovBox.hdr, end: moovBox.size };
-  const mvhd = find(d, moov, 'mvhd');
-  const scaleOffset = mvhd && mvhd.body + (d.getUint8(mvhd.body) === 1 ? 20 : 12);
+  const mvhd = presentation ? find(d, moov, 'mvhd') : null;
+  const scaleOffset = mvhd && mvhd.body < mvhd.end && mvhd.body + (d.getUint8(mvhd.body) === 1 ? 20 : 12);
   const movieScale = scaleOffset && scaleOffset + 4 <= mvhd.end ? R32(d, scaleOffset) : 0;
   const tracks = [];
   for (const trak of children(d, moov.body, moov.end).filter((c) => c.type === 'trak')) {
@@ -87,7 +87,7 @@ export async function probe(blob) {
     let name = ''; for (let o = hdlr.body + 24; o < hdlr.end; o++) { const c = d.getUint8(o); if (!c) break; name += String.fromCharCode(c); }
     const kind = handler === 'soun' ? 'audio' : handler === 'vide' ? 'video' : handler;
     const t = { id, kind, handler, lang, name: name.trim(), timescale, duration: duration / timescale, codec: '', channels: 0, rate: 0, asc: null, enabled: !!(d.getUint32(tkhd.body) & 1) };
-    if (kind === 'audio') t.presentation = audioPresentation(d, find(d, trak, 'edts', 'elst'), movieScale, timescale);
+    if (presentation && kind === 'audio') t.presentation = audioPresentation(d, find(d, trak, 'edts', 'elst'), movieScale, timescale);
     const stsd = find(d, stbl, 'stsd');
     if (stsd) {
       const e = children(d, stsd.body + 8, stsd.end)[0];

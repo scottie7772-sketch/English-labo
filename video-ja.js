@@ -141,8 +141,12 @@ export function planJaWrites(materialId, cues, records, patch, expected, { clear
   return { puts, deletes, needsReview };
 }
 
+export const compareVideoCues = (a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
 export const videoJaSource = (materialId, cues) => ({
-  materialId, cues: cues.filter(c => c.en).map(({ id, en }) => ({ cueId: id, en })),
+  materialId,
+  // Preserve the visible position even where a legacy Japanese-only row is skipped.
+  cues: cues.flatMap(({ id, en }, index) => en?.trim() ? [{ cueId: id, en, order: index + 1 }] : []),
 });
 
 export const cueStamps = cues => new Map(cues.map(c => [c.id, digest(c)]));

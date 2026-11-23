@@ -19,7 +19,7 @@ import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange,
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.8';
+export const STUDIO_VERSION = '0.21.9';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -1157,7 +1157,7 @@ async function editorScreen(el, params, revision) {
     }
     return null;
   }
-  function playBlock(b, loop = false, cont = false, from = null) {
+  function playBlock(b, loop = false, cont = false, from = null, previewNeighbours = null) {
     ++playbackRequest;
     pendingSegmentSeek = null;
     playFromSourcePosition = false;
@@ -1174,7 +1174,7 @@ async function editorScreen(el, params, revision) {
     }
     let i = 0;
     if (from != null) { const k = b.segments.findIndex((x) => x.sourceId === vid.dataset.src && from >= x.start && from < x.end - 0.05); if (k >= 0) i = k; else from = null; }
-    playing = { b, i, loop, cont, range: null }; curBlock = b;
+    playing = { b, i, loop, cont, range: null, previewNeighbours }; curBlock = b;
     startSeg(from);
   }
   function startSeg(from = null) {
@@ -1182,7 +1182,7 @@ async function editorScreen(el, params, revision) {
     const s = p.b.segments[p.i];
     // Playback-only padding for saved speech-first matches; never rewrite their timings.
     // Explicit user seeks and manually edited blocks keep their exact requested start.
-    p.range = from == null ? speechFirstPlaybackRange(p.b, s, blocks, srcs[s.sourceId]?.duration ?? Infinity) : null;
+    p.range = from == null ? speechFirstPlaybackRange(p.b, s, p.previewNeighbours ?? blocks, srcs[s.sourceId]?.duration ?? Infinity) : null;
     const target = from ?? p.range?.start ?? s.start;
     const request = ++playbackRequest;
     pendingSegmentSeek = { request, sourceId: s.sourceId, time: target };
@@ -1671,7 +1671,7 @@ async function editorScreen(el, params, revision) {
           let read = null;
           if (blob && src.duration > 0) {
             if (isContainer(src, blob)) {
-              const info = await probeSource(src, blob).catch(() => null);
+              const info = await probe(blob, { presentation: true }).catch(() => null);
               const tracks = info ? audioTracks(info) : [];
               const track = tracks.find(t => t.id === src.audio?.trackId) ||
                 (src.audio?.index != null ? tracks[src.audio.index] : tracks.length === 1 ? tracks[0] : null);
@@ -1707,7 +1707,8 @@ async function editorScreen(el, params, revision) {
             held.push({ label, reason: '単語時刻を取得できません' }); continue;
           }
           if (cancelled || !progress.open || revision !== routeRevision) return;
-          const result = proposeMaSeam(seam, chunks.map(c => ({ ...c, start: c.start + input.start, end: c.end + input.start })), src.duration);
+          const result = proposeMaSeam(seam, chunks.map(c => ({ ...c, start: c.start + input.start, end: c.end + input.start })), src.duration,
+            { start: input.start, end: input.start + input.audio.length / 16000 });
           if (result.changes.length) proposals.push({ ...result, label, reason });
           else if (result.reason) held.push({ label, reason: result.reason });
           else unchanged++;
@@ -1740,12 +1741,18 @@ async function editorScreen(el, params, revision) {
     let previewing = false;
     for (const button of $$('[data-ma-play]', dlg)) button.onclick = () => {
       const [i, j, version] = button.dataset.maPlay.split(':');
-      const { row, side, time } = proposals[Number(i)].changes[Number(j)];
-      const g = row.segments[0], bound = version === 'new' ? time : g[side];
-      const start = side === 'start' ? bound : Math.max(g.start, Math.min(bound, g.end) - 2.5);
-      const end = side === 'end' ? bound : Math.min(g.end, Math.max(bound, g.start) + 2.5);
+      const proposal = proposals[Number(i)];
+      const { row } = proposal.changes[Number(j)];
+      if (version === 'old') {
+        previewing = true;
+        playBlock(row);
+        return;
+      }
+      const updates = maBoundaryUpdates(snapshot, [proposal]);
+      if (!updates) return toast('この補正は別の字幕区間と競合しています');
+      const replacements = new Map(updates.map(row => [row.id, row]));
       previewing = true;
-      playBlock({ ...row, maBoundaryChecked: true, segments: [{ ...g, start, end }] });
+      playBlock(replacements.get(row.id), false, false, null, blocks.map(b => replacements.get(b.id) ?? b));
     };
     const ok = await confirm;
     if (previewing) { ++playbackRequest; pendingSegmentSeek = null; playing = null; vid.pause(); }

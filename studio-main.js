@@ -13,23 +13,29 @@ import { speechRegions, regionStatistics, snapCueToRegion } from './studio-struc
 import { speechFirstPlaybackRange, nextSourceSegment } from './studio-playback-boundary.js';
 import { planVocabAlignment, isVocabTarget, unassignedVocabRanges, vocabKey, isVocabHead } from './studio-vocab-align.js';
 import { maSeams, maWindow, inspectMaSeam, proposeMaSeam, maBoundaryUpdates, wavRangeReader } from './studio-ma-boundary.js';
-import { createRescueSearch } from './studio-prose-rescue.js';
+import { createRescueSearch, sameRescueVersion, rescuePreviewRange } from './studio-prose-rescue.js';
 import { alignUtterances } from './studio-import-align.js';
 import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.9';
+export const STUDIO_VERSION = '0.21.10';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
 const urlCache = new Map();
 const nav = (path) => { location.hash = '#' + BASE + path; };
-const fmt = (s) => (s == null || isNaN(s) ? '--:--' : `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`);
+const formatClock = (seconds, digits) => {
+  if (!Number.isFinite(seconds) || seconds < 0) return '--:--';
+  const scale = 10 ** digits, ticks = Math.round(seconds * scale);
+  return `${Math.floor(ticks / (60 * scale))}:${((ticks % (60 * scale)) / scale).toFixed(digits).padStart(3 + digits, '0')}`;
+};
+const fmt = seconds => formatClock(seconds, 1);
+const rescueClockValue = seconds => formatClock(seconds, 3);
 const parseClock = (v) => {
   const raw = String(v).trim().replace(/[：]/g, ':').replace(/[，、]/g, ',').replace(/,/g, '.');
-  const m = raw.match(/^(?:(\d+):)?(\d{1,2})(?:\.(\d{1,3}))?$/);
+  const m = raw.match(/^(?:(\d+):)?(\d+)(?:\.(\d{1,3}))?$/);
   if (!m || (m[1] != null && Number(m[2]) >= 60)) return NaN;
   return Number(m[1] || 0) * 60 + Number(m[2]) + Number('0.' + (m[3] || '0'));
 };
@@ -2097,16 +2103,8 @@ async function editorScreen(el, params, revision) {
   // Preserve existing occupied intervals; trim rescue proposals to one continuous free span.
   // Multiple disconnected spans are never stitched together into one subtitle.
   function rescueUnoccupied(segment, excluding = new Set()) {
-    const occupied = blocks.filter(b => !b.deleted && !excluding.has(b.id) && (b.aligned || b.sync === 'manual' || b.segments?.length))
-      .flatMap(b => (b.segments || []).filter(g => g.sourceId === segment.sourceId && Number.isFinite(g.start) && Number.isFinite(g.end))
-        .map(g => ({start:g.start,end:g.end}))).sort((a,b)=>a.start-b.start);
-    let fragments=[{start:segment.start,end:segment.end}];
-    for (const o of occupied) fragments=fragments.flatMap(f => {
-      if (o.end <= f.start || o.start >= f.end) return [f];
-      return [{start:f.start,end:Math.min(f.end,o.start)},{start:Math.max(f.start,o.end),end:f.end}]
-        .filter(x=>x.end-x.start>=.12);
-    });
-    return fragments.map(f=>({...segment,...f})).filter(f=>f.end-f.start>=.12);
+    const search = createRescueSearch(blocks.filter(b => !excluding.has(b.id)), materialSourceIds(), srcs);
+    return search.availableRanges(segment);
   }
   function rescuePreferredFragment(segment, excluding = new Set()) {
     const free=rescueUnoccupied(segment,excluding);
@@ -2158,7 +2156,7 @@ async function editorScreen(el, params, revision) {
     await reload();
     if (revision !== routeRevision) return;
     const guardedSet = rescueVersion();
-    if (expected && JSON.stringify(guardedSet) !== JSON.stringify(expected)) {
+    if (expected && !sameRescueVersion(guardedSet, expected)) {
       toast('前後の割当が更新されたため、候補を再計算しました');
       return rescueUnassigned(rows[0].id);
     }
@@ -2170,7 +2168,7 @@ async function editorScreen(el, params, revision) {
     const rawProposed = manual ? [{row:currentRows[0],segment:{sourceId:range.sid,start:range.start,end:range.end},evidence:[]}] :
       search.assignments(currentRows,range,local);
     const proposed = rawProposed.map(x => ({...x,segment:rescuePreferredFragment(x.segment,new Set(currentRows.map(r=>r.id)))}));
-    if (proposed.some(x => !x.segment)) return toast('既存区間を除くと割当可能な音声がありません');
+    if (proposed.some(x => !x.segment)) return toast('指定範囲に未使用の音声がありません。照合済み・手動調整済みの区間を確認してください', 5500);
     if (!proposed.length) {
       return confirmDialog({title:'行ごとの区間を確認できませんでした',
         body:'<p>指定範囲では本文と順序が一意に一致する音声がそろっていません。範囲を広げるか、行数を減らして再解析・試聴してください。1行なら開始と終了を指定して割り当てられます。</p>',
@@ -2213,7 +2211,7 @@ async function editorScreen(el, params, revision) {
     const expected = rescueVersion();
     if (!group) return toast('音声なしの字幕を選んでください');
     const selectedIndex = group.rows.findIndex(b => b.id === id);
-    const first = Math.min(selectedIndex,Math.max(0,group.rows.length-12));
+    const first = selectedIndex;
     const missing = group.rows.slice(first,first+12);
     let opt = [];
     const dlg=$('#dialog');
@@ -2264,8 +2262,8 @@ async function editorScreen(el, params, revision) {
           const rect=$('#rsTrack',dlg).getBoundingClientRect();if(!rect.width)return;
           const t=bounds.lo+rescueClamp((ev.clientX-rect.left)/rect.width,0,1)*(bounds.hi-bounds.lo);
           const a=parseClock(st.value),z=parseClock(en.value);
-          if(edge==='start'&&Number.isFinite(z))st.value=fmt(rescueClamp(t,0,z-.1));
-          if(edge==='end'&&Number.isFinite(a))en.value=fmt(rescueClamp(t,a+.1,bounds.D));
+          if(edge==='start'&&Number.isFinite(z))st.value=rescueClockValue(rescueClamp(t,0,z-.1));
+          if(edge==='end'&&Number.isFinite(a))en.value=rescueClockValue(rescueClamp(t,a+.1,bounds.D));
           drawClock();
         };
         const done=()=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',done);handle.removeEventListener('pointercancel',done);};
@@ -2274,8 +2272,8 @@ async function editorScreen(el, params, revision) {
     };
     rescueHandle('start');rescueHandle('end');
     $('#rsView',dlg).onclick=()=>{rescueFullView=!rescueFullView;$('#rsView',dlg).textContent=rescueFullView?'周辺を拡大':'ファイル全体を表示';drawClock();};
-    $('#rsStartZero',dlg).onclick=()=>{if(st.disabled)return;st.value=fmt(0);drawClock();};
-    $('#rsEndLast',dlg).onclick=()=>{if(en.disabled)return;const b=rescueBounds();if(b)en.value=fmt(b.D);drawClock();};
+    $('#rsStartZero',dlg).onclick=()=>{if(st.disabled)return;st.value=rescueClockValue(0);drawClock();};
+    $('#rsEndLast',dlg).onclick=()=>{if(en.disabled)return;const b=rescueBounds();if(b)en.value=rescueClockValue(b.D);drawClock();};
     let rescueClock = null;
     const stopClock = () => { if (rescueClock) cancelAnimationFrame(rescueClock); rescueClock=null; };
     const drawClock = () => {
@@ -2308,14 +2306,14 @@ async function editorScreen(el, params, revision) {
     const update = () => {
       const c = pickRange();
       stopRescuePreview();
-      st.value = c ? fmt(c.start) : '';
-      en.value = c ? fmt(c.end) : '';
+      st.value = c ? rescueClockValue(c.start) : '';
+      en.value = c ? rescueClockValue(c.end) : '';
       st.disabled = en.disabled = !c || Boolean(c.review);
       st.title = en.title = c?.review ? 'これは既存字幕の確認用です。下の「手動で時刻指定」を選んでください。' : ''; 
       $('#rsPlay',dlg).disabled = $('#rsPlayHead',dlg).disabled = $('#rsPlayLast',dlg).disabled = !c;
       editAnchor.hidden = !c?.review;
       $('#rsReason',dlg).textContent = c ? c.kind : '候補がありません。探索範囲を広げてください。';
-      gapButton.hidden = !(mode.value === 'prose' && c && !c.review && currentRows().length === 1 && c.kind.includes('アンカー間'));
+      gapButton.hidden = !(mode.value === 'prose' && c && !c.review && currentRows().length === 1 && group.rows.length === 1 && c.inside);
       drawClock();
       refreshRows();
     };
@@ -2344,24 +2342,21 @@ async function editorScreen(el, params, revision) {
       pick.value=String(firstEditable>=0?firstEditable:0);
       update();
     };
-    mode.onchange = count.onchange = () => { refreshRows(); const c=pickRange();gapButton.hidden=!(mode.value==='prose'&&c&&!c.review&&currentRows().length===1&&c.kind.includes('アンカー間')); };
+    mode.onchange = count.onchange = () => { refreshRows(); const c=pickRange();gapButton.hidden=!(mode.value==='prose'&&c&&!c.review&&currentRows().length===1&&group.rows.length===1&&c.inside); };
     pick.onchange = update;
     expand.onchange = refreshCandidates;
     refreshCandidates();
     $('#rsStop',dlg).onclick = stopRescuePreview;
-    $('#rsPlay',dlg).onclick = () => {
-      const c = pickRange(), a = parseClock(st.value), z = parseClock(en.value);
-      if (!c || !Number.isFinite(a) || !Number.isFinite(z) || a < 0 || z <= a) return toast('開始・終了を確認してください');
-      stopRescuePreview();
-      playBlock({segments:[{sourceId:c.sid,start:a,end:Math.min(z,a+30)}]});
-    };
-    $('#rsPlayHead',dlg).onclick = () => { const c=pickRange(),a=parseClock(st.value),z=parseClock(en.value); if(c&&Number.isFinite(a)&&Number.isFinite(z)&&z>a)playRange(c.sid,a,Math.min(z,a+2)); };
-    $('#rsPlayLast',dlg).onclick = () => {
-      const c=pickRange(),a=parseClock(st.value),z=parseClock(en.value);
-      if (!c || !Number.isFinite(a) || !Number.isFinite(z) || z<=a) return toast('開始・終了を確認してください');
-      stopRescuePreview();
-      playRange(c.sid,Math.max(a,z-2),z);
-    };
+    for (const [button, part] of [['rsPlay', 'all'], ['rsPlayHead', 'head'], ['rsPlayLast', 'tail']]) {
+      $('#' + button, dlg).onclick = () => {
+        const c = pickRange();
+        const duration = c && (vid.dataset.src === c.sid && Number.isFinite(vid.duration) ? vid.duration : srcs[c.sid]?.duration);
+        const range = rescuePreviewRange(parseClock(st.value), parseClock(en.value), duration, part);
+        if (!c || !range) return toast('開始・終了を確認してください');
+        stopRescuePreview();
+        playBlock({segments:[{sourceId:c.sid,...range}]});
+      };
+    }
     dlg.returnValue = '';
     dlg.showModal();
     rescueClock=requestAnimationFrame(clockTick);
@@ -2387,15 +2382,17 @@ async function editorScreen(el, params, revision) {
     if (action === 'local') return reanalyseRescueRange(c.sid,a,z,targets,prose ? {rows:selected,expected} : null);
     if (action === 'saved') return previewProseAssignment(selected,range,{expected});
     if (action === 'gap') {
-      if (!prose || selected.length!==1 || !c.kind.includes('アンカー間')) return toast('前後アンカーに挟まれた1行のみ仮割当できます');
+      if (!prose || selected.length!==1 || group.rows.length!==1 || !c.inside) return toast('前後アンカーに挟まれた1行のみ仮割当できます');
       const ok=await confirmDialog({title:'前後の間を仮割当',body:`<p>${esc(selected[0].text)}</p><p>${fmt(a)}〜${fmt(z)} を推定区間として登録します。正確な発話境界は未検証です。</p>`,okLabel:'仮割当'});
       if (!ok) return;
       await reload();
+      if (revision !== routeRevision) return;
+      const guardedSet = rescueVersion();
       const row=byId[selected[0].id];
-      if (!row || row.rev!==selected[0].rev || row.segments.length || rescueVersion()!==expected) return toast('字幕が更新されています。再探索してください');
+      if (!row || row.rev!==selected[0].rev || row.segments.length || !sameRescueVersion(guardedSet, expected)) return toast('字幕が更新されています。再探索してください');
       const trimmed=rescuePreferredFragment({sourceId:c.sid,start:a,end:z},new Set([row.id]));
-      if (!trimmed) return toast('既存区間を除くと割当可能な音声がありません');
-      return run('前後アンカー間の仮割当',{blocks:[{...row,segments:[trimmed],sync:'estimated',align:[],lineage:{op:'prose-anchor-gap-trial',from:[`${row.id}@${row.rev}`],at:Date.now()}}]});
+      if (!trimmed) return toast('指定範囲に未使用の音声がありません。照合済み・手動調整済みの区間を確認してください', 5500);
+      return run('前後アンカー間の仮割当',{blocks:[{...row,segments:[trimmed],sync:'estimated',align:[],lineage:{op:'prose-anchor-gap-trial',from:[`${row.id}@${row.rev}`],at:Date.now()}}],guardedSet});
     }
     if (action !== 'ok') return;
     if (prose) {
@@ -2644,7 +2641,10 @@ async function editorScreen(el, params, revision) {
     // 1.17.6: trim bar like the iPhone video editor: drag the two edges; on release the edge is played
     function trimBars() {
       $$('[data-pseg]', dlg).forEach((x) => (x.onclick = () => { const [i, k] = x.dataset.pseg.split(':'); const g = work.segments[+i]; if (!g) return;
-        if (k === 'all') playRange(g.sourceId, g.start, g.end); else if (k === 'head') playRange(g.sourceId, g.start, Math.min(g.end, g.start + 2)); else playRange(g.sourceId, Math.max(g.start, g.end - 2), g.end); }));
+        const duration = vid.dataset.src === g.sourceId && Number.isFinite(vid.duration) ? vid.duration : srcs[g.sourceId]?.duration;
+        const range = k === 'all' ? {start:g.start,end:g.end} : rescuePreviewRange(g.start,g.end,duration,k);
+        if (!range) return toast('再生範囲を確認してください');
+        playRange(g.sourceId,range.start,range.end); }));
       if (!$('#eFollow', dlg) && work.segments.length) { const st = $('.st-segrow', dlg); st?.insertAdjacentHTML('beforebegin', `<label class="chk small"><input type="checkbox" id="eFollow" ${follow ? 'checked' : ''}> 前後の行もつなげて動かす（音のダブり・抜けを防ぐ）</label>`);
         $('#eFollow', dlg).onchange = (e) => { follow = e.target.checked; try { localStorage.setItem('st-follow', follow ? '1' : '0'); } catch {} }; }
       $$('[data-range-view]', dlg).forEach((x) => (x.onclick = () => { readText(); fullRangeView = !fullRangeView; draw(); }));
@@ -2758,7 +2758,7 @@ async function editorScreen(el, params, revision) {
       vid.addEventListener('seeked', ready);
       ready();
       vid.play().catch((e) => {
-        if (editorPlayback !== preview) return;
+        if (editorPlayback !== preview || e?.name === 'AbortError') return;
         preview.stopped = true;
         toast('範囲を再生できません：' + (e?.message || '再生操作をやり直してください'));
       });

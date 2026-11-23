@@ -4,6 +4,14 @@ const key = text => words(text).map(word => word.w).join(' ');
 const valid = g => g.sourceId && Number.isFinite(g.start) && Number.isFinite(g.end) && g.start >= 0 && g.end > g.start;
 const script = b => Boolean(b.text?.trim()) && (!b.asr || b.aligned || b.sync === 'manual');
 const missing = b => !b.segments.length && b.sync !== 'manual';
+export const sameRescueVersion = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+export function rescuePreviewRange(start, end, duration, part = 'all') {
+  if (![start, end].every(Number.isFinite) || start < 0) return null;
+  const limit = Number.isFinite(duration) && duration > 0 ? Math.min(end, duration) : end;
+  if (limit <= start) return null;
+  if (part === 'tail') return { start: Math.max(start, limit - 2), end: limit };
+  return { start, end: Math.min(limit, start + (part === 'head' ? 2 : 30)) };
+}
 const overlaps = (a, b) => a.start < b.end && b.start < a.end;
 const occupied = (file,g) => {
   const i = lowerBound(file.covered,span => span.end <= g.start);
@@ -36,11 +44,12 @@ function freeRanges(spans, start, end) {
 
 // Build from the current saved rows. Nothing in this index is persisted.
 export function createRescueSearch(blocks, sourceIds, sources) {
-  const rows = blocks.filter(script);
+  const rows = blocks.filter(b => !b.deleted && script(b));
   const sourceOrder = new Map(sourceIds.map((id, index) => [id,index]));
   const files = new Map(sourceIds.map(id => [id,{duration:sources[id]?.duration || 0, assigned:[], evidence:[]}]));
   const reasons = new Map();
   for (const b of blocks) {
+    if (b.deleted) continue;
     const spans = b.segments.filter(g => valid(g) && files.has(g.sourceId));
     if (!spans.length) continue;
     if (script(b) || b.sync === 'manual') {
@@ -241,5 +250,11 @@ export function createRescueSearch(blocks, sourceIds, sources) {
   const isFree = segment => valid(segment) && files.has(segment.sourceId) &&
     segment.end <= files.get(segment.sourceId).duration &&
     !occupied(files.get(segment.sourceId),segment);
-  return {byRow,search,estimates,assignments,isFree};
+  const availableRanges = segment => {
+    const file = files.get(segment.sourceId);
+    if (!file || !valid(segment)) return [];
+    return freeRanges(file.covered, segment.start, Math.min(segment.end, file.duration))
+      .map(range => ({ ...segment, ...range }));
+  };
+  return {byRow,search,estimates,assignments,isFree,availableRanges};
 }

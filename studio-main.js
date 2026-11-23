@@ -1902,7 +1902,7 @@ async function editorScreen(el, params, revision) {
       <label class="chk"><input id="rsExpand" type="checkbox"> 探索範囲を広げる</label>
       <label class="field"><span>音声候補</span><select id="rsCandidate"></select></label>
       <div class="row wrap"><label class="field grow"><span>開始（分:秒.小数）</span><input id="rsStart" type="text" inputmode="decimal" placeholder="14:03.0"></label><label class="field grow"><span>終了（分:秒.小数）</span><input id="rsEnd" type="text" inputmode="decimal" placeholder="14:10.6"></label></div>
-      <div class="st-rescue-timeline"><div class="st-rescue-track" id="rsTrack"><i id="rsSelection"></i><b id="rsHead"></b></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div></div><div class="row wrap"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div>
+      <div class="st-rescue-timeline"><div class="row wrap"><button type="button" class="btn sm" id="rsView">ファイル全体を表示</button><button type="button" class="btn sm" id="rsStartZero">開始を先頭へ</button><button type="button" class="btn sm" id="rsEndLast">終了を末尾へ</button></div><p class="small muted">左右の丸いハンドルをドラッグして開始・終了を調整できます。中央をタップすると再生位置を移動します。</p><div class="st-rescue-track" id="rsTrack" style="position:relative;touch-action:none;min-height:44px"><i id="rsSelection" style="pointer-events:none"></i><b id="rsHead" style="pointer-events:none"></b><button type="button" id="rsHandleStart" aria-label="割当開始をドラッグ" style="position:absolute;z-index:4;top:4px;width:28px;height:36px;transform:translateX(-50%);border-radius:14px;border:2px solid currentColor;background:var(--surface,#fff);touch-action:none;cursor:ew-resize"></button><button type="button" id="rsHandleEnd" aria-label="割当終了をドラッグ" style="position:absolute;z-index:4;top:4px;width:28px;height:36px;transform:translateX(-50%);border-radius:14px;border:2px solid currentColor;background:var(--surface,#fff);touch-action:none;cursor:ew-resize"></button></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div></div><div class="row wrap"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div>
       <p id="rsReason" class="small muted"></p><p class="small muted">朗読の手動割当は「今回割り当てる行数」を1行にしてください。時刻は例 14:03.0 と入力できます。</p>
       <div class="row end">
         <button class="btn ghost" value="cancel">やめる</button>
@@ -1917,22 +1917,56 @@ async function editorScreen(el, params, revision) {
     const pickRange = () => opt[Number(pick.value)];
     const apply = $('#rsApply',dlg), saved = $('#rsSaved',dlg), localButton = $('#rsLocal',dlg);
     const editAnchor = $('#rsEditAnchor',dlg), expand = $('#rsExpand',dlg), gapButton=$('#rsGap',dlg);
+    let rescueFullView = false;
+    const rescueBounds = () => {
+      const c=pickRange(), a=parseClock(st.value), z=parseClock(en.value);
+      if (!c) return null;
+      const duration=Number(srcs[c.sid]?.duration);
+      const D=Number.isFinite(duration)&&duration>0 ? duration : Math.max(c.end,z||0,a||0)+5;
+      const lo=rescueFullView?0:Math.max(0,Math.min(c.start,Number.isFinite(a)?a:c.start)-15);
+      const hi=rescueFullView?D:Math.max(lo+1,Math.min(D,Math.max(c.end,Number.isFinite(z)?z:c.end)+15));
+      return {lo,hi,D};
+    };
+    const rescueClamp=(v,min,max)=>Math.max(min,Math.min(max,v));
+    const rescueHandle=(edge)=>{
+      const handle=$('#rsHandle'+(edge==='start'?'Start':'End'),dlg);
+      handle.addEventListener('pointerdown',e=>{
+        const c=pickRange(),bounds=rescueBounds();if(!c||c.review||!bounds)return;
+        e.preventDefault();e.stopPropagation();handle.setPointerCapture(e.pointerId);
+        const move=ev=>{
+          const rect=$('#rsTrack',dlg).getBoundingClientRect();if(!rect.width)return;
+          const t=bounds.lo+rescueClamp((ev.clientX-rect.left)/rect.width,0,1)*(bounds.hi-bounds.lo);
+          const a=parseClock(st.value),z=parseClock(en.value);
+          if(edge==='start'&&Number.isFinite(z))st.value=fmt(rescueClamp(t,0,z-.1));
+          if(edge==='end'&&Number.isFinite(a))en.value=fmt(rescueClamp(t,a+.1,bounds.D));
+          drawClock();
+        };
+        const done=()=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',done);handle.removeEventListener('pointercancel',done);};
+        handle.addEventListener('pointermove',move);handle.addEventListener('pointerup',done);handle.addEventListener('pointercancel',done);
+      });
+    };
+    rescueHandle('start');rescueHandle('end');
+    $('#rsView',dlg).onclick=()=>{rescueFullView=!rescueFullView;$('#rsView',dlg).textContent=rescueFullView?'周辺を拡大':'ファイル全体を表示';drawClock();};
+    $('#rsStartZero',dlg).onclick=()=>{if(st.disabled)return;st.value=fmt(0);drawClock();};
+    $('#rsEndLast',dlg).onclick=()=>{if(en.disabled)return;const b=rescueBounds();if(b)en.value=fmt(b.D);drawClock();};
     let rescueClock = null;
     const stopClock = () => { if (rescueClock) cancelAnimationFrame(rescueClock); rescueClock=null; };
     const drawClock = () => {
       const c=pickRange(), a=parseClock(st.value), z=parseClock(en.value);
       const track=$('#rsTrack',dlg),head=$('#rsHead',dlg),sel=$('#rsSelection',dlg);
       if (!c || !Number.isFinite(a) || !Number.isFinite(z) || z<=a) return;
-      const lo=Math.max(0,Math.min(c.start,a)-3), hi=Math.max(lo+1,Math.max(c.end,z)+3);
+      const bounds=rescueBounds();if(!bounds)return;const {lo,hi}=bounds;
       const pct=t=>Math.max(0,Math.min(100,100*(t-lo)/(hi-lo)));
       sel.style.left=pct(a)+'%'; sel.style.width=Math.max(0,pct(z)-pct(a))+'%';
+      $('#rsHandleStart',dlg).style.left=pct(a)+'%';$('#rsHandleEnd',dlg).style.left=pct(z)+'%';
+      $('#rsHandleStart',dlg).disabled=$('#rsHandleEnd',dlg).disabled=Boolean(c.review);
       head.style.left=pct(vid.currentTime)+'%'; head.hidden=vid.dataset.src!==c.sid;
       $('#rsClockStart',dlg).textContent=fmt(lo); $('#rsClockEnd',dlg).textContent=fmt(hi);
       $('#rsClockNow',dlg).textContent=vid.dataset.src===c.sid?fmt(vid.currentTime):'未再生';
     };
     const clockTick=()=>{ if (!dlg.open) return; drawClock(); rescueClock=requestAnimationFrame(clockTick); };
     st.addEventListener('input',drawClock); en.addEventListener('input',drawClock);
-    $('#rsTrack',dlg).onclick=e=>{const c=pickRange();if(!c)return;const a=parseClock(st.value),z=parseClock(en.value);if(!Number.isFinite(a)||!Number.isFinite(z))return;const lo=Math.max(0,Math.min(c.start,a)-3),hi=Math.max(lo+1,Math.max(c.end,z)+3);const t=lo+(e.clientX-e.currentTarget.getBoundingClientRect().left)/e.currentTarget.clientWidth*(hi-lo);if(vid.dataset.src===c.sid)vid.currentTime=Math.max(0,t);drawClock();};
+    $('#rsTrack',dlg).onclick=e=>{const c=pickRange();if(!c)return;const a=parseClock(st.value),z=parseClock(en.value);if(!Number.isFinite(a)||!Number.isFinite(z))return;const bounds=rescueBounds();if(!bounds)return;const {lo,hi}=bounds;const t=lo+(e.clientX-e.currentTarget.getBoundingClientRect().left)/e.currentTarget.clientWidth*(hi-lo);if(vid.dataset.src===c.sid)vid.currentTime=Math.max(0,t);drawClock();};
     const refreshRows = () => {
       const selected = currentRows();
       rows.innerHTML = selected.map((b,i) => `<div>${i+1}. ${esc(b.text)}</div>`).join('');

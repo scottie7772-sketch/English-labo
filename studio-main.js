@@ -26,7 +26,12 @@ const sessionFiles = new Map();   // sourceId -> File (for "保存しない" med
 const urlCache = new Map();
 const nav = (path) => { location.hash = '#' + BASE + path; };
 const fmt = (s) => (s == null || isNaN(s) ? '--:--' : `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`);
-const parseClock = (v) => { const m = String(v).trim().match(/^(?:(\d+):)?([0-5]?\d)(?:\.(\d{1,3}))?$/); return m ? Number(m[1]||0)*60+Number(m[2])+Number('0.'+(m[3]||'0')) : NaN; };
+const parseClock = (v) => {
+  const raw = String(v).trim().replace(/[：]/g, ':').replace(/[，、]/g, ',').replace(/,/g, '.');
+  const m = raw.match(/^(?:(\d+):)?(\d{1,2})(?:\.(\d{1,3}))?$/);
+  if (!m || (m[1] != null && Number(m[2]) >= 60)) return NaN;
+  return Number(m[1] || 0) * 60 + Number(m[2]) + Number('0.' + (m[3] || '0'));
+};
 const fmtMin = (s) => `${Math.floor(s / 60)}分${String(Math.round(s % 60)).padStart(2, '0')}秒`;
 const fmtSize = (n) => (n > 1 << 30 ? (n / (1 << 30)).toFixed(2) + ' GB' : n > 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB');
 const icon = (n) => ({ back: '‹', undo: '↶', redo: '↷', play: '▶︎', pause: '❚❚', more: '⋯' }[n] || n);
@@ -2942,11 +2947,26 @@ async function editorScreen(el, params, revision) {
       info.textContent = `元ファイルの ${fmt(g.start)}〜${fmt(g.end)}（${fmt(g.end - g.start)}）`;
     };
     target.onchange = () => update(false); update(true);
+    time.addEventListener('input', () => {
+      const b = byId[target.value], g = b?.segments?.[0], at = parseClock(time.value);
+      if (!g) return;
+      const valid = Number.isFinite(at) && at > g.start + .05 && at < g.end - .05;
+      info.textContent = `選択区間：${fmt(g.start)}〜${fmt(g.end)} / 分割位置：${Number.isFinite(at) ? fmt(at) : '形式を確認'}${valid ? '（分割可能）' : '（区間外・要確認）'}`;
+    });
     dlg.returnValue = ''; dlg.onclose = null; dlg.showModal();
     await new Promise(resolve => { dlg.onclose = resolve; });
     if (dlg.returnValue !== 'ok') return;
     const b = byId[target.value], g = b?.segments?.[0], at = parseClock(time.value);
-    if (!b || !g || !Number.isFinite(at) || at <= g.start + .45 || at >= g.end - .45) return toast('分割位置は区間の内側に指定してください', 4000);
+    if (!Number.isFinite(at)) return toast('時刻は 12:34.5 の形式で入力してください', 4500);
+    if (!b || !g) return toast('分割する音声区間を選択してください', 4500);
+    if (at <= g.start + .05 || at >= g.end - .05) {
+      const matches = candidates.filter(x => x.segments[0].sourceId === g.sourceId && at > x.segments[0].start + .05 && at < x.segments[0].end - .05);
+      if (matches.length === 1) {
+        target.value = matches[0].id;
+        return toast(`指定時刻は別の区間（${fmt(matches[0].segments[0].start)}〜${fmt(matches[0].segments[0].end)}）にあります。対象を切り替えました。もう一度「2区間に分割」を押してください。`, 6500);
+      }
+      return toast(`指定時刻 ${fmt(at)} は選択区間 ${fmt(g.start)}〜${fmt(g.end)} の内側ではありません。分割する区間を選び直してください。`, 6500);
+    }
     // Recheck current block to avoid overwriting edits made in another action.
     const current = await sdb.get('blocks', b.id);
     if (!current || current.deleted || current.rev !== b.rev) return toast('対象区間が更新されています。もう一度開いてください', 4000);

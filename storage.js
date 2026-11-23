@@ -1,3 +1,4 @@
+import { removeVideoJaInTx } from './video-ja.js';
 // 容量の整理: what takes space on this iPhone and ways to free it (English Labo)
 import { db } from './db.js';
 import { $, $$, esc, toast, confirmDialog } from './ui.js';
@@ -65,8 +66,13 @@ export async function storageScreen(el) {
     const v = await db.get('videos', b.dataset.del);
     if (!(await confirmDialog({ title: '動画を全部削除', body: `<p>「${esc(v.name)}」の動画・字幕・穴埋めを消します（元に戻せません）。</p>`, okLabel: '削除', danger: true }))) return;
     const cs2 = await db.byIndex('cues', 'videoId', v.id);
-    for (const c of cs2) await db.delete('cues', c.id);
     const kept = await (await import('./studio-db.js')).releaseLabRefs([v.id]).catch(() => 0);   // the studio's sets that use these sounds keep their own copy
-    await db.delete('vblobs', v.id); await db.delete('videos', v.id); toast('削除しました'); storageScreen(el);
+    await db.tx(['videos', 'vblobs', 'cues', 'videoJa'], 'readwrite', tx => {
+      removeVideoJaInTx(tx, v.id);
+      tx.objectStore('videos').delete(v.id);
+      tx.objectStore('vblobs').delete(v.id);
+      for (const cue of cs2) tx.objectStore('cues').delete(cue.id);
+    });
+    toast('削除しました'); storageScreen(el);
   }));
 }

@@ -61,7 +61,7 @@ export async function restoreBackup(backup) {
   if (!isNaN(t)) await setMeta('lastBackupAt', t);
 }
 
-export const STORE_LABELS = { words: '単語', mastery: '習得度', masteryChanges: '習得度の変更履歴', reviews: '復習予定', sessions: '学習セッション', attempts: '回答記録', decks: '単語集', grammar: 'TOEIC問題', listening: 'リスニング問題', speaking: 'スピーキング問題', videos: '動画情報', cues: '字幕', imports: '取り込み履歴', settings: '設定', meta: 'システム情報' };
+export const STORE_LABELS = { words: '単語', mastery: '習得度', masteryChanges: '習得度の変更履歴', reviews: '復習予定', sessions: '学習セッション', attempts: '回答記録', decks: '単語集', grammar: 'TOEIC問題', listening: 'リスニング問題', speaking: 'スピーキング問題', videos: '動画情報', cues: '字幕', videoJa: '動画の日本語訳', imports: '取り込み履歴', settings: '設定', meta: 'システム情報' };
 
 function csvCell(v) {
   if (v == null) return '';

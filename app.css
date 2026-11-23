@@ -1337,3 +1337,5 @@ dialog.st-rescue-dialog .field select { box-sizing: border-box; max-width: 100%;
 }
 .vp-root[data-mode="both"][data-primary="ja"] .cue .sja { color: var(--text); font-weight: 600; }
 .vp-root[data-mode="both"][data-primary="ja"] .cue .sen { color: var(--muted); font-weight: 400; }
+
+.vp-root .sja { white-space: pre-line; }

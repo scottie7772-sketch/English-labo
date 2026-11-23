@@ -1415,7 +1415,7 @@ async function editorScreen(el, params, revision) {
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
         <span class="grow st-txt" data-play="${b.id}"><small class="muted">${b.segments.length ? `${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)}` : estMap.has(b.id) ? `≈${fmt(estMap.get(b.id).t)}（推定）` : '--:--'} ${badges}</small>
           ${b.label ? `<b class="small">${esc(b.label)}</b>` : ''}<span class="st-en2">${holeHTML(b) || `<span class="muted">（英文なし${b.label ? '・✎で追加' : ''}）</span>`}</span><span class="st-ja2">${esc(b.ja || '')}</span></span>
-        ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `${!b.segments.length && b.text.trim() ? `<button type="button" class="btn xs ghost" data-rescue="${b.id}">音声を割当</button>` : ''}<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
+        ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `${!b.segments.length && b.text.trim() ? `<button type="button" class="btn xs ghost" data-rescue="${b.id}">音声を割当</button>` : ''}${b.sync === 'estimated' && b.segments.length ? `<button type="button" class="btn xs ghost" data-reestimate="${b.id}">前後から再推定</button>` : ''}<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
     })()).join('') + (folds.has('__end') ? foldHTML(folds.get('__end')) : '') || `<p class="empty">${filtering ? (view === 'done' ? '照合済みの行はまだありません' : view === 'rest' ? '残っている文字起こしはありません' : '未照合の行はありません（すべて照合済み）') : '項目がありません'}</p>`;
     if (filtering && view === 'rest' && shown.length) {
       list.insertAdjacentHTML('afterbegin', `<div class="notice row small"><span class="grow">スクリプトと照合できなかった文字起こし・文字にできなかった部分：${shown.length}行</span><button class="btn sm" id="restRedo">起こし直す→照合</button><button class="btn sm danger" id="restDel">すべて削除</button></div>`);
@@ -1428,6 +1428,7 @@ async function editorScreen(el, params, revision) {
       };
     }
     $$('[data-rescue]', list).forEach(x => x.onclick = () => rescueUnassigned(x.dataset.rescue));
+    $$('[data-reestimate]', list).forEach(x => x.onclick = () => reestimateFromNeighbours(x.dataset.reestimate));
     $$('[data-source-row]', list).forEach(x=>x.onclick=()=>{const b=byId[x.dataset.row];jumpToSource(x.dataset.sourceRow,b?.segments.find(g=>g.sourceId===x.dataset.sourceRow)?.start||0,b?.id);});
     $$('[data-unfold]', list).forEach((x) => (x.onclick = () => { const id = x.dataset.oid; setView('all'); goNear(id); }));
     $('#undoB', el).disabled = !(set.undo || []).length; $('#redoB', el).disabled = !(set.redo || []).length;
@@ -1873,6 +1874,46 @@ async function editorScreen(el, params, revision) {
     const free=rescueUnoccupied(segment,excluding);
     // Prefer the longest continuous interval; never silently create overlapping assignments.
     return free.sort((a,b)=>(b.end-b.start)-(a.end-a.start))[0] || null;
+  }
+
+  async function reestimateFromNeighbours(id) {
+    await reload();
+    if (revision !== routeRevision) return;
+    const row = byId[id];
+    if (!row || row.sync !== 'estimated' || !row.segments?.length) return toast('再推定できる仮割当がありません');
+    const index = set.order.indexOf(id);
+    if (index < 0) return;
+    // Use script order, not current audio time. Estimated rows are not trusted anchors.
+    const reliable = b => b && b.id !== id && b.segments?.length === 1 && b.sync !== 'estimated' &&
+      (b.aligned || b.sync === 'manual') && !b.deleted;
+    let before=null, after=null;
+    for (let i=index-1;i>=0;i--) {const b=byId[set.order[i]];if(reliable(b)){before=b;break;}}
+    for (let i=index+1;i<set.order.length;i++) {const b=byId[set.order[i]];if(reliable(b)){after=b;break;}}
+    if (!before || !after) return toast('前後に照合済みのアンカーが必要です。境界を手動で確認してください');
+    const left=before.segments[0],right=after.segments[0];
+    if (left.sourceId !== right.sourceId || right.start <= left.end+.12)
+      return toast('前後のアンカーが同じ音声内で順序どおりに並んでいません');
+    const between = set.order.slice(set.order.indexOf(before.id)+1,set.order.indexOf(after.id));
+    const pending = between.map(x=>byId[x]).filter(b=>b && (b.sync==='estimated'||!b.segments?.length));
+    if (pending.length !== between.length) return toast('途中に確定済みの行があります。個別に確認してください');
+    // Multiple unresolved rows must not all receive the same gap. Split only
+    // after a separate speech alignment; this action handles a single row.
+    if (pending.length !== 1 || pending[0].id !== id)
+      return toast('間に複数の未確定行があります。先に他の行を照合してください');
+    const proposed=rescueUnoccupied({sourceId:left.sourceId,start:left.end,end:right.start},new Set([id]));
+    if (proposed.length !== 1) return toast('未使用区間が複数あります。既存区間の境界を確認してください');
+    const segment=proposed[0];
+    const ok=await confirmDialog({title:'前後から仮割当を再推定',
+      body:`<p>${esc(row.text)}</p><p>現在：${fmt(row.segments[0].start)}〜${fmt(row.segments.at(-1).end)}</p><p>再推定：${fmt(segment.start)}〜${fmt(segment.end)}</p><p class="small">前後の照合済み行の間にある未使用音声を使います。発話境界の正確さは未確認です。</p>`,
+      okLabel:'再推定して置き換える'});
+    if (!ok || revision !== routeRevision) return;
+    await reload();
+    const current=byId[id];
+    if (!current || current.rev !== row.rev || current.sync !== 'estimated') return toast('対象が更新されたため再推定を中止しました');
+    const currentFree=rescueUnoccupied(segment,new Set([id]));
+    if (currentFree.length !== 1 || Math.abs(currentFree[0].start-segment.start)>.05 || Math.abs(currentFree[0].end-segment.end)>.05)
+      return toast('他の割当が変わりました。再度お試しください');
+    return run('前後アンカーから再推定',{blocks:[{...current,segments:[segment],sync:'estimated',align:[],lineage:{op:'prose-reestimate',from:[`${current.id}@${current.rev}`],at:Date.now()}}]});
   }
 
   async function previewProseAssignment(rows, range, {local = null,manual = false,expected} = {}) {

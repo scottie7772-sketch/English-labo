@@ -42,29 +42,3 @@ export function snapCueToRegion(cue, regions) {
   if(!nearby.length || (nearby[1] && nearby[1].d-nearby[0].d<.18))return null;
   return nearby[0].r;
 }
-
-// MA scan: RMS proposes activity. Modulation and changes in zero-crossing
-// rate distinguish voice-like material from steady tones; text is separate evidence.
-export function maSpeechActivity(audio, sourceId, offset = 0) {
-  return speechRegions(audio).map(region => {
-    const levels=[], crossings=[];
-    const first=Math.max(0,Math.floor(region.start*16000));
-    const last=Math.min(audio.length,Math.floor(region.end*16000));
-    for (let i=first;i+320<=last;i+=320) {
-      let power=0, z=0;
-      for (let j=i;j<i+320;j++) {
-        power+=audio[j]**2;
-        if (j>i && (audio[j]>=0)!==(audio[j-1]>=0)) z++;
-      }
-      levels.push(Math.sqrt(power/320)); crossings.push(z/320);
-    }
-    const spread = values => {
-      const a=values.slice().sort((x,y)=>x-y);
-      const lo=a[Math.floor(a.length*.2)]||0, hi=a[Math.floor(a.length*.8)]||0;
-      return {delta:hi-lo,hi};
-    };
-    const rms=spread(levels), zcr=spread(crossings);
-    const voice = levels.length>=8 && rms.delta>rms.hi*.15 && zcr.delta>=.009;
-    return {sourceId,start:+(region.start+offset).toFixed(3),end:+(region.end+offset).toFixed(3),voice};
-  });
-}

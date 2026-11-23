@@ -9,19 +9,17 @@ import { decodeTo16k, openTranscriber, speechPieces, captureTo16k, QUALITY, reco
 import { extractPhrases, extractWords } from './studio-words.js';
 import { findCandidates, applySpans } from './studio-names.js';
 import { alignScript, scriptToLines, hasReplacementAudio } from './studio-align.js';
-import { speechRegions, regionStatistics, snapCueToRegion, maSpeechActivity } from './studio-structure.js';
+import { speechRegions, regionStatistics, snapCueToRegion } from './studio-structure.js';
 import { speechFirstPlaybackRange, nextSourceSegment } from './studio-playback-boundary.js';
 import { planVocabAlignment, isVocabTarget, unassignedVocabRanges, vocabKey } from './studio-vocab-align.js';
 import { createRescueSearch } from './studio-prose-rescue.js';
-import { planMaAudit, maConflicts, maScriptRow, freeMaSegments } from './studio-ma-audit.js';
-import { beginAsrStage, asrRetryBlocked, asrWindows } from './studio-asr-progress.js';
 import { alignUtterances } from './studio-import-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
-import { TIERS, bytesPerMin, compressAudio, estimate, cutAac, openMp3Windows } from './compress.js';
+import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.7';
-const STUDIO_UPDATED_JST = '2026-11-23 18:27 JST';
+export const STUDIO_VERSION = '0.21.5';
+const STUDIO_UPDATED_JST = '2026-11-23 14:58 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -29,10 +27,6 @@ const urlCache = new Map();
 const nav = (path) => { location.hash = '#' + BASE + path; };
 const fmt = (s) => (s == null || isNaN(s) ? '--:--' : `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`);
 const parseClock = (v) => { const m = String(v).trim().match(/^(?:(\d+):)?([0-5]?\d)(?:\.(\d{1,3}))?$/); return m ? Number(m[1]||0)*60+Number(m[2])+Number('0.'+(m[3]||'0')) : NaN; };
-const fmtInputClock = seconds => {
-  const ms=Math.round(Math.max(0,seconds)*1000);
-  return `${Math.floor(ms/60000)}:${((ms%60000)/1000).toFixed(3).padStart(6,'0')}`;
-};
 const fmtMin = (s) => `${Math.floor(s / 60)}分${String(Math.round(s % 60)).padStart(2, '0')}秒`;
 const fmtSize = (n) => (n > 1 << 30 ? (n / (1 << 30)).toFixed(2) + ' GB' : n > 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB');
 const icon = (n) => ({ back: '‹', undo: '↶', redo: '↷', play: '▶︎', pause: '❚❚', more: '⋯' }[n] || n);
@@ -287,11 +281,35 @@ async function directScriptScreen(el, setId) {
     <div class="card stack"><p class="small">音声カットや圧縮設定は不要です。英語のスクリプトを直接追加します。既存の音声と字幕時刻は変更しません。</p>
     <label class="btn" for="directScriptFile">📄 TXT・SRT・VTT・CSVを選ぶ</label><input id="directScriptFile" type="file" accept=".txt,.srt,.vtt,.csv,text/plain,text/csv" hidden>
     <label class="field"><span>または英文を貼り付ける</span><textarea id="directScriptText" rows="9" placeholder="英文を1行ずつ入力"></textarea></label>
+    <div class="card stack"><b>追加範囲を指定（任意）</b><p class="small muted">開始・終了の語句を検索し、該当する部分だけ追加できます。未指定なら全文を追加します。</p>
+    <label class="field">開始語句<input id="directStartSearch" type="search" placeholder="開始する単語"></label><button type="button" class="btn sm" id="directFindStart">開始位置を検索</button>
+    <label class="field">終了語句<input id="directEndSearch" type="search" placeholder="終了する単語"></label><button type="button" class="btn sm" id="directFindEnd">終了位置を検索</button>
+    <button type="button" class="btn sm ghost" id="directClearRange">全文に戻す</button><p id="directRangeInfo" class="small muted">全文を追加します</p></div>
     <p id="directScriptInfo" class="small muted"></p><button id="directScriptSave" class="btn primary">スクリプトを追加</button></div>`;
   const area = $('#directScriptText', el), info = $('#directScriptInfo', el), file = $('#directScriptFile', el);
   file.onchange = async () => { const f = file.files?.[0]; if (!f) return; area.value = await f.text(); info.textContent = `${f.name} を読み込みました`; };
+  let selectedStart = null, selectedEnd = null;
+  const rangeInfo = $('#directRangeInfo', el);
+  const refreshRange = () => { const a = selectedStart ?? 0, b = selectedEnd ?? area.value.length; rangeInfo.textContent = a >= b ? '開始位置が終了位置以降です' : `追加する範囲：${a + 1}〜${b}文字（全${area.value.length}文字）`; };
+  const findBoundary = (which) => {
+    const term = $(`#direct${which === 'start' ? 'Start' : 'End'}Search`, el).value.trim();
+    if (!term) return toast('検索語句を入力してください');
+    const lower = area.value.toLocaleLowerCase(), query = term.toLocaleLowerCase();
+    const prev = which === 'start' ? selectedStart : selectedEnd;
+    let at = lower.indexOf(query, prev == null ? 0 : Math.min(prev + 1, lower.length));
+    if (at < 0) at = lower.indexOf(query);
+    if (at < 0) return toast('一致する語句がありません');
+    if (which === 'start') selectedStart = at; else selectedEnd = at + term.length;
+    area.focus(); area.setSelectionRange(at, at + term.length); refreshRange();
+  };
+  $('#directFindStart', el).onclick = () => findBoundary('start');
+  $('#directFindEnd', el).onclick = () => findBoundary('end');
+  $('#directClearRange', el).onclick = () => { selectedStart = selectedEnd = null; refreshRange(); };
+  area.addEventListener('input', () => { selectedStart = selectedEnd = null; refreshRange(); });
   $('#directScriptSave', el).onclick = async () => {
-    const raw = area.value.trim(); if (!raw) return toast('スクリプトを入力してください');
+    const from = selectedStart ?? 0, to = selectedEnd ?? area.value.length;
+    if (from >= to) return toast('選択範囲を確認してください');
+    const raw = area.value.slice(from, to).trim(); if (!raw) return toast('スクリプトを入力してください');
     const parsed = withoutPlainScriptHeaders(parseScript(raw, file.files?.[0]?.name || 'script.txt'), raw, [set.title, file.files?.[0]?.name]);
     const lines = scriptToLines(parsed.cues.map((c) => c.text).join('\n'));
     if (!lines.length) return toast('英文を読み取れませんでした');
@@ -669,7 +687,7 @@ async function pickTrackDialog(src, blob, info, r) {
   return v != null ? at[+v] : null;
 }
 // 16 kHz mono sound of a source, from the chosen track. box: where a "tap to start" button can be shown for the last fallback
-async function sourceAudio16k(src, blob, { box = null, say = () => {},signal } = {}) {
+async function sourceAudio16k(src, blob, { box = null, say = () => {} } = {}) {
   if (src.derived !== 'audio16k' && isContainer(src, blob)) {
     let info = null; try { info = await probeSource(src, blob); } catch {}
     const at = info ? audioTracks(info) : [];
@@ -679,50 +697,25 @@ async function sourceAudio16k(src, blob, { box = null, say = () => {},signal } =
         let x; try { say('選んだ音声トラックを取り出しています…'); crumb(`取り出し 音声${at.indexOf(t) + 1} ${t.codec}`); x = await extractTrack(blob, t); } catch (e) { throw stageErr('音声の取り出し', e); }
         try { say('音声を展開しています…'); crumb(`展開 ${fmtSize(x.blob.size)}`); const r = await decodeTo16k(x.blob); return { ...r, method: `トラック${at.indexOf(t) + 1}を取り出し` }; } catch (e) { if (!box) throw stageErr('音声の展開', e); }
       }
-      if (box) { const r = await captureWithTap(blob, box, src.name, src.duration, at.length > 1 ? at.indexOf(t) : null,signal); return { ...r, method: '再生しながら取り出し' }; }
+      if (box) { const r = await captureWithTap(blob, box, src.name, src.duration, at.length > 1 ? at.indexOf(t) : null); return { ...r, method: '再生しながら取り出し' }; }
       throw stageErr('音声の取り出し', `この音声の形式（${t.codec}）は直接取り出せません`);
     }
   }
   try { say('音声を展開しています…'); crumb(`展開（ファイル全体）${fmtSize(blob.size)}`); const r = await decodeTo16k(blob); return { ...r, method: '展開' }; }
-  catch (e) { if (!box) throw stageErr('音声の展開', e); const r = await captureWithTap(blob, box, src.name, src.duration, null,signal); return { ...r, method: '再生しながら取り出し' }; }
-}
-
-// MP3 decoding uses a small moving window. Other supported formats keep the
-// existing decoder, with a memory budget and an explicit fallback message.
-async function openStudioAudio(source,blob,{box,say,signal} = {}) {
-  if (/\.mp3$/i.test(source.name || '') || /^(audio\/(mpeg|mp3))$/i.test(blob.type)) {
-    try { return await openMp3Windows(blob); }
-    catch (error) { if (!(source.duration>0 && source.duration<=60 && blob.size<10*1024*1024)) throw error; }
-  }
-  if (!(source.duration > 0) || source.duration > 300 || blob.size > 30*1024*1024)
-    throw new Error('この形式は全体展開が必要です。5分・30MB以下の音声、またはMP3を使用してください');
-  const decoded = await sourceAudio16k(source,blob,{box,say,signal});
-  return {
-    duration:decoded.duration,
-    read:async (a,b) => decoded.audio.slice(Math.round(a*16000),Math.round(b*16000)),
-    close:() => { decoded.audio=null; },
-  };
+  catch (e) { if (!box) throw stageErr('音声の展開', e); const r = await captureWithTap(blob, box, src.name, src.duration, null); return { ...r, method: '再生しながら取り出し' }; }
 }
 
 // shows a button in `box`; the capture starts in the tap (iPhone needs a tap to play sound)
-function captureWithTap(blob, box, name, dur, trackIndex = null,signal) {
+function captureWithTap(blob, box, name, dur, trackIndex = null) {
   return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(new Error('中止しました'));
-    const finish = (error,value) => {
-      signal?.removeEventListener('abort',abort);
-      box.innerHTML='';
-      if (error) reject(error); else resolve(value);
-    };
-    const abort = () => finish(new Error('中止しました'));
-    signal?.addEventListener('abort',abort,{once:true});
     box.innerHTML = `<div class="notice warn stack"><b>${esc(name)}</b><span class="small">このファイルからは音声を直接取り出せませんでした。<br>代わりに、音を出さずに2倍速で再生しながら取り出します（約${fmtMin((dur || 60) / 2)}・画面は開いたまま）。</span>
       <button type="button" class="btn primary" id="capGo">再生しながら取り出す</button><button type="button" class="btn ghost" id="capNo">やめる</button><div class="st-meter" hidden id="capBar"><i style="width:0%"></i><span>0%</span></div></div>`;
-    box.querySelector('#capNo').onclick = () => finish(new Error('取り出しをやめました'));
+    box.querySelector('#capNo').onclick = () => reject(new Error('取り出しをやめました'));
     box.querySelector('#capGo').onclick = () => {
-      const c = captureTo16k(blob, { trackIndex,signal,onProgress: (r) => { const m = box.querySelector('#capBar'); if (m) { m.hidden = false; m.querySelector('i').style.width = `${r * 100}%`; m.querySelector('span').textContent = `${Math.round(r * 100)}%`; } } });
+      const c = captureTo16k(blob, { trackIndex, onProgress: (r) => { const m = box.querySelector('#capBar'); if (m) { m.hidden = false; m.querySelector('i').style.width = `${r * 100}%`; m.querySelector('span').textContent = `${Math.round(r * 100)}%`; } } });
       c.startNow();   // synchronous inside the tap
       box.querySelector('#capGo').disabled = true; box.querySelector('#capNo').hidden = true;
-      c.done.then(x=>finish(null,x),finish);
+      c.done.then((x) => { box.innerHTML = ''; resolve(x); }, (e) => { box.innerHTML = ''; reject(e); });
     };
   });
 }
@@ -927,6 +920,22 @@ async function buildItems(setId, group, mode, trimEdges = false, onStep = () => 
       }
       part.push(newBlock(setId, { segments: seg(a, b), label: '', sync: dur ? 'auto' : 'estimated', ...(trimNote ? { trimNote } : {}) }));
     }
+    // Apply screen-recording cut independently to every selected timed-script media file.
+    if (src && en && s.en.parsed.timed && trimEdges && dur > 4) {
+      try {
+        const bounds = await edgesFor(src, dur, a16, trimEdges);
+        for (const block of part) {
+          const updated = [];
+          for (const g of block.segments || []) {
+            if (g.sourceId !== src.id) { updated.push(g); continue; }
+            const a = Math.max(g.start, bounds.start), b = Math.min(g.end, bounds.end);
+            if (b > a + 0.05) updated.push({...g,start:a,end:b});
+          }
+          if (updated.length !== (block.segments || []).length) block.sync = 'estimated';
+          block.segments = updated;
+        }
+      } catch (err) { crumb(`カット範囲の計算に失敗：${s.media?.name || ''} ${err.message}`); }
+    }
     tag(part); blocks.push(...part);
     a16 = null; await new Promise((r) => setTimeout(r, 250));   // let the phone free the decoded sound before the next file
   }
@@ -940,7 +949,7 @@ async function editorScreen(el, params, revision) {
   if (!set) return nav('sets');
   running(`教材を開く（${set.title}）`); setTimeout(() => { if (localStorage.getItem('st-running')?.startsWith('教材を開く')) running(null); }, 4000);
   let srcs = await sourcesMap();
-  let blocks = [], byId = {}, cancelAudioJob = null;
+  let blocks = [], byId = {};
   const sel = new Set();
   let arrange = false, drag = null, arrangeBase = 0;
   let selectMode = false, rangeMode = null, anchor = null, onlySel = false, moveMode = false, playing = null, curBlock = null;
@@ -1245,7 +1254,6 @@ async function editorScreen(el, params, revision) {
   };
   raf = requestAnimationFrame(tick);
   cleanup = () => {
-    cancelAudioJob?.();
     ++playbackRequest;
     cancelAnimationFrame(raf);
     window.removeEventListener('scroll', showArrowsOnScroll);
@@ -1269,12 +1277,7 @@ async function editorScreen(el, params, revision) {
       if (s.sourceId !== sid || t < s.start || t >= s.end) continue;
       // Prefer the latest onset, then the active block, then aligned text.
       const priority = b === playing?.b ? 2 : b.aligned ? 1 : 0;
-      // MA keeps raw ASR evidence; when it overlaps a reviewed script row,
-      // keep the script visible during continuous playback.
-      const audited = row=>row?.lineage?.op==='ma-audit' || row?.lineage?.op==='prose-rescue-match';
-      const raw = row=>row?.asr && !row.aligned;
-      if (audited(best) && raw(b)) continue;
-      if ((audited(b) && raw(best)) || s.start > bestStart || (s.start === bestStart && priority > bestPriority)) {
+      if (s.start > bestStart || (s.start === bestStart && priority > bestPriority)) {
         best = b;
         bestStart = s.start;
         bestPriority = priority;
@@ -1624,233 +1627,6 @@ async function editorScreen(el, params, revision) {
     catch (e) { toast(e?.message || String(e), 3500); }
   }
 
-  const maAuditKey = () => 'ma-audit-v1:' + set.id;
-  const maSignature = (src,blob) => JSON.stringify([src.id,src.duration,blob?.size,blob?.type,src.audio?.index,src.trimmed?.from,src.trimmed?.to]);
-
-  async function openMaAudit(focusId = null) {
-    if (cancelAudioJob || revision!==routeRevision) return;
-    await reload();
-    if (revision!==routeRevision) return;
-    const dlg=$('#dialog');
-    if (dlg.open) return;
-    const expected=rescueVersion(), ids=materialSourceIds();
-    const record=await sdb.get('meta',maAuditKey());
-    if (revision!==routeRevision || dlg.open) return;
-    const entries=record?.files || {};
-    const analysis=Object.create(null);
-    for (const sid of ids) {
-      const src=srcs[sid];
-      if (!src) continue;
-      const blob=src.stored?src.blob:sessionFiles.get(sid);
-      const saved=entries[sid];
-      if (saved?.signature===maSignature(src,blob)) {
-        const regions=saved.regions||[], cues=Object.values(saved.windows||{}).flat();
-        analysis[sid]={regions,cues};
-      }
-    }
-    const result=planMaAudit(blocks,ids,srcs,analysis);
-    const rows=result.entries.concat(result.unused.map(x=>({...x,tags:['未使用発話']})));
-    const filters=['すべて','未割当','時間推定のみ','境界要確認','重複・時刻逆転','未使用発話','手動確認済み'];
-    const selected=new Set(), high=result.entries.filter(e=>e.proposal?.high&&!e.conflict);
-    const checked=entry=>selected.has(entry.row?.id);
-    let page=0, filter='すべて';
-    const pageSize=30;
-    const span = g => g ? `${esc(srcs[g.sourceId]?.name || g.sourceId)} ${fmt(g.start)}〜${fmt(g.end)}` : '—';
-    const explain = c => c.other ? `${esc(c.reason)}「${esc(c.other.text.slice(0,70))}」 ${span(c.otherSegment)}` : esc(c.reason);
-    const shown = () => rows.filter(e => filter==='すべて' ||
-      filter==='重複・時刻逆転' && e.tags.some(tag=>tag==='重複'||tag==='時刻逆転') ||
-      filter==='境界要確認' && e.tags.some(tag=>!['時間推定のみ','手動確認済み','未割当','未使用発話'].includes(tag)) ||
-      e.tags.includes(filter));
-    if (focusId) {
-      const i=rows.findIndex(e=>e.row?.id===focusId);
-      if (i>=0) page=Math.floor(i/pageSize);
-    }
-    dlg.innerHTML=`<form method="dialog" class="dlg stack">
-      <div class="st-editor-sticky"><h3>MA型の一括監査・補正</h3><button class="btn ghost" value="cancel">閉じる</button><button id="maApply" class="btn primary" value="apply" disabled>選択分を保存</button></div>
-      <p class="small">本文の一致度と音声境界の根拠を表示します。前後アンカーと発話数だけで推定した区間は試聴して選んでください。</p>
-      <div class="row wrap"><label><span>表示 </span><select id="maFilter">${filters.map(x=>`<option>${x}</option>`).join('')}</select></label><button type="button" class="btn sm" id="maHigh">高一致候補を選択（${high.length}件）</button><button type="button" class="btn sm ghost" id="maClear">選択を解除</button></div>
-      <div class="stack" id="maRows" style="max-height:50dvh;overflow:auto"></div>
-      <div class="row wrap"><button id="maPrev" type="button" class="btn sm">前</button><span id="maPage" class="small"></span><button id="maNext" type="button" class="btn sm">次</button></div>
-      <div class="row wrap"><button class="btn" value="scan">発話探索を開始・再開</button><button class="btn" value="local">要確認の短い区間を再認識</button></div>
-      <p class="small muted">発話探索は1ファイルずつ保存します。再認識は1回最大6区間で、教材を外部送信しません。</p></form>`;
-    const button=$('#maApply',dlg), body=$('#maRows',dlg);
-    const refreshSave=()=>{button.disabled=!selected.size;button.textContent=`選択${selected.size}件を保存`;};
-    const draw=()=>{
-      const entries=shown();
-      const items=entries.slice(page*pageSize,(page+1)*pageSize);
-      body.innerHTML=items.map((e,i)=>`<article class="card stack"${e.row?.id===focusId?' style="outline:2px solid currentColor"':''}>
-        <b>${esc(e.row?.text || e.reason)}</b>
-        <small>${esc(e.tags.join('・') || '照合済み')}</small>
-        ${e.row ? `<small>現在 ${span(e.current)}</small>` : ''}
-        ${e.proposal ? `<small>候補 ${span(e.proposal.segment)} · ${esc(e.proposal.reason)}<br>本文 ${e.proposal.score ? Math.round(e.proposal.score*100)+'%' : '未確認'} ／ 境界 ${e.proposal.acoustic ? '発話候補あり' : 'ASR時刻'}</small>
-          <label class="chk"><input type="checkbox" data-ma-choose="${i}" ${checked(e)?'checked':''}>保存候補に含める</label>` : ''}
-        ${e.conflict ? `<small class="warn-text">${explain(e.conflict)}。関連する境界補正も選ぶか、個別に調整してください。</small>` : ''}
-        <div class="row wrap">
-        ${e.current ? `<button type="button" class="btn sm" data-ma-play="${i}:current">▶ 現在の区間</button>` : ''}
-        ${e.proposal || e.segment ? `<button type="button" class="btn sm" data-ma-play="${i}:proposal">▶ 候補を試聴</button>` : ''}
-        ${e.row ? `<button class="btn sm ghost" value="edit:${rows.indexOf(e)}">${e.current?'境界を編集':'音声を割当'}</button>` : ''}
-        </div></article>`).join('') || '<p class="muted">該当項目はありません</p>';
-      body.scrollTop=0;
-      $('#maPage',dlg).textContent=`${page+1} / ${Math.max(1,Math.ceil(entries.length/pageSize))} ページ・${entries.length}件`;
-      $('#maPrev',dlg).disabled=page===0;
-      $('#maNext',dlg).disabled=(page+1)*pageSize>=entries.length;
-      $$('[data-ma-choose]',body).forEach(input=>input.onchange=()=>{
-        const id=items[Number(input.dataset.maChoose)].row.id;
-        if (input.checked) selected.add(id); else selected.delete(id);
-        refreshSave();
-      });
-      $$('[data-ma-play]',body).forEach(btn=>btn.onclick=()=>{
-        const [i,kind]=btn.dataset.maPlay.split(':');
-        const e=items[Number(i)], g=kind==='current'?e.current:(e.proposal?.segment||e.segment);
-        stopRescuePreview();
-        playBlock({segments:[{...g,end:Math.min(g.end,g.start+35)}]});
-      });
-      refreshSave();
-    };
-    $('#maFilter',dlg).onchange=e=>{filter=e.target.value;page=0;draw();};
-    $('#maPrev',dlg).onclick=()=>{page--;draw();};
-    $('#maNext',dlg).onclick=()=>{page++;draw();};
-    $('#maHigh',dlg).onclick=()=>{high.forEach(e=>selected.add(e.row.id));draw();};
-    $('#maClear',dlg).onclick=()=>{selected.clear();draw();};
-    draw();
-    const action=await new Promise(resolve=>{
-      dlg.returnValue='';
-      dlg.onclose=()=>resolve(dlg.returnValue);
-      dlg.showModal();
-    });
-    stopRescuePreview();
-    await new Promise(r=>setTimeout(r,60));
-    if (dlg.open || revision!==routeRevision || !action || action==='cancel') return;
-    if (action==='scan'||action==='local') return scanMaAudio(ids,record,result,action==='local');
-    if (action.startsWith('edit:')) {
-      const e=rows[Number(action.slice(5))];
-      if (!e?.row) return;
-      if (!e.current) return rescueUnassigned(e.row.id);
-      return editBlock(byId[e.row.id],{protectNeighbours:true,onFinish:()=>openMaAudit(e.row.id)});
-    }
-    if (action!=='apply' || !selected.size) return;
-    await reload();
-    if (revision!==routeRevision) return;
-    if (JSON.stringify(rescueVersion())!==JSON.stringify(expected)) {
-      toast('字幕または境界が更新されたため、候補を再計算しました');
-      return openMaAudit(focusId);
-    }
-    const proposals=result.entries.filter(e=>checked(e)&&e.proposal).map(e=>e.proposal);
-    const conflicts=maConflicts(blocks,proposals,ids);
-    if (conflicts.length) {
-      await confirmDialog({title:'重複・順序を確認してください',
-      body:conflicts.slice(0,8).map(c=>`<p>${esc(c.row.text.slice(0,70))} / ${span(c.segment)}<br>${explain(c)}</p>`).join(''),
-      okLabel:'閉じる',cancelLabel:null});
-      await new Promise(r=>setTimeout(r,60));
-      return openMaAudit(focusId);
-    }
-    const updates=proposals.map(p=>({...byId[p.row.id],segments:[p.segment],align:[],endEst:false,
-      sync:p.high?'auto':'estimated',aligned:p.score>=.9 || p.row.aligned,
-      lineage:{op:'ma-audit',from:[`${p.row.id}@${p.row.rev}`],at:Date.now(),score:p.score}}));
-    await run('MA型の音声区間補正',{blocks:updates,guardedSet:expected});
-  }
-
-  async function scanMaAudio(ids,previous,result,local) {
-    const dlg=$('#dialog');
-    if (dlg.open || cancelAudioJob || revision!==routeRevision) return;
-    const record={key:maAuditKey(),files:previous?.files || {}};
-    const planned=new Map();
-    if (local) {
-      const needed=[
-        ...result.entries.filter(e=>e.current && e.row.sync!=='manual' && e.tags.length && !e.proposal?.high)
-          .map(e=>({...e.current,start:Math.max(0,e.current.start-1),end:e.current.end+1})),
-        ...result.entries.filter(e=>e.proposal && !e.proposal.high).map(e=>e.proposal.segment),
-        ...result.unused.filter(e=>e.reason!=='未使用区間・発話未確認').map(e=>e.segment),
-      ];
-      for (const g of needed) {
-        if (!planned.has(g.sourceId)) planned.set(g.sourceId,[]);
-        planned.get(g.sourceId).push(g);
-      }
-      if (!planned.size) return toast('再認識の対象がありません。先に発話探索を実行してください');
-    }
-    dlg.innerHTML='<form method="dialog" class="dlg stack"><h3>音声を解析中</h3><p id="maProgress">準備しています…</p><button class="btn ghost" value="cancel">中断（済んだ結果は保持）</button></form>';
-    const progress=$('#maProgress',dlg);
-    let tr, reader, cancelled=false, count=0;
-    const errors=[];
-    const stopped=()=>cancelled || !dlg.open || revision!==routeRevision;
-    const stop=()=>{cancelled=true;tr?.close();};
-    dlg.onclose=stop;
-    dlg.showModal();
-    cancelAudioJob=stop;
-    running(`MA監査（${set.title}）`);
-    try {
-      if (local) tr=openTranscriber('en',t=>{if (!stopped()) progress.textContent=t;},{quality:'fast'});
-      for (const sid of ids) {
-        if (stopped() || local && count>=6) break;
-        if (local && !planned.has(sid)) continue;
-        const src=srcs[sid], blob=src?.stored ? src.blob : sessionFiles.get(sid);
-        if (!blob) {errors.push(`${src?.name || sid}：音声ファイル未接続`);continue;}
-        const signature=maSignature(src,blob);
-        const old=record.files[sid];
-        const data=old?.signature===signature ? old : {signature,next:0,regions:[],windows:{}};
-        data.windows ||= {};
-        record.files[sid]=data;
-        if (!local && data.complete) continue;
-        try {
-          reader=await openStudioAudio(src,blob);
-          const duration=Math.min(reader.duration,src.duration||Infinity);
-          if (local) {
-            const windows=planned.get(sid).flatMap(g=>asrWindows(Math.max(0,Math.floor(g.start)),Math.min(duration,Math.ceil(g.end)),20));
-            for (const [start,end] of windows) {
-              if (stopped() || count>=6) break;
-              if (end-start<.25 || Object.keys(data.windows).length>=80) continue;
-              const key=`${start}:${end}`;
-              if (Object.hasOwn(data.windows,key)) continue;
-              crumb(`MA区間再認識 ${src.name} ${start}–${end} ${tr.model}`);
-              const audio=highPass(await reader.read(start,end));
-              if (stopped()) break;
-              const cues=await recognisePiece(tr,audio,0,audio.length/16000);
-              if (stopped()) break;
-              data.windows[key]=cues.filter(c=>!c.est&&!c.boundaryEstimated).slice(0,60)
-                .map(c=>({sourceId:sid,start:+(start+c.start).toFixed(3),end:+(start+c.end).toFixed(3),text:c.text.slice(0,900)}));
-              count++;
-              await sdb.put('meta',record);
-            }
-          } else {
-            for (const [start,end] of asrWindows(Math.min(data.next,duration),duration,40)) {
-              if (stopped()) break;
-              progress.textContent=`${src.name} ${fmt(start)}〜${fmt(end)} / ${fmt(duration)}`;
-              crumb(`MA発話探索 ${src.name} ${start}–${end}`);
-              const from=Math.max(0,start-1),to=Math.min(duration,end+1);
-              const audio=highPass(await reader.read(from,to));
-              if (stopped()) break;
-              for (const r of maSpeechActivity(audio,sid,from)) {
-                if ((r.start+r.end)/2<start || (r.start+r.end)/2>=end) continue;
-                const last=data.regions.at(-1);
-                if (last && last.end>=r.start) {last.end=Math.max(last.end,r.end);last.voice ||= r.voice;}
-                else if (data.regions.length<12000) data.regions.push(r);
-              }
-              data.next=end;
-              data.complete=end>=duration-.02;
-              count++;
-              await sdb.put('meta',record);
-              await new Promise(r=>setTimeout(r,0));
-            }
-          }
-        } catch(error) {
-          if (!stopped()) {errors.push(`${src.name}：${error.message || error}`);crumb(errors.at(-1));}
-        } finally {await reader?.close();reader=null;}
-      }
-    } catch(error) {
-      if (!stopped()) {errors.push(String(error.message||error));crumb(errors.at(-1));}
-    } finally {
-      tr?.close();
-      cancelAudioJob=null;
-      running(null);
-      if (dlg.open && dlg.contains(progress)) {dlg.onclose=null;dlg.close();}
-    }
-    if (revision!==routeRevision) return;
-    await new Promise(r=>setTimeout(r,60));
-    if (errors.length) toast(`解析できない音声：${errors.slice(0,2).join(' / ')}`,7000);
-    else if (count) toast(`${count}区間の解析結果を保存しました`);
-    if (!dlg.open) await openMaAudit();
-  }
-
   // Conservative, offline bulk boundary refinement. No ASR, no new subtitles, no new media.
   // Speech activity alone cannot distinguish adjacent spoken words: leave ambiguous boundaries unchanged.
   async function refineBoundaries() {
@@ -2060,31 +1836,22 @@ async function editorScreen(el, params, revision) {
     const blob = source?.stored ? source.blob : sessionFiles.get(sourceId);
     if (!blob) return toast('音声ファイルを選び直してください');
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end - start < .2 || end - start > 20 ||
-        end > source.duration || !(source.duration > 0) || (!prose && (source.duration > 300 || blob.size > 25 * 1024 * 1024))) {
-      return toast(prose ? '開始・終了を音声の長さに合わせて20秒以内で指定してください' : '開始・終了は20秒以内で指定してください。再解析できる元ファイルは5分・25MBまでです',5000);
+        end > source.duration || !(source.duration > 0) || source.duration > 300 || blob.size > 25 * 1024 * 1024) {
+      return toast('開始・終了は20秒以内で指定してください。再解析できる元ファイルは5分・25MBまでです', 5000);
     }
     const dlg = $('#dialog');
     if (dlg.open) return;
     dlg.innerHTML = '<form method="dialog" class="dlg stack"><h3>指定区間の解析</h3><p id="vocabProgress">音声を準備しています…</p><button class="btn ghost" value="cancel">中止</button></form>';
     const progress = $('#vocabProgress', dlg);
-    let tr, reader, cancelled = false;
+    let tr, cancelled = false;
     const stopped = () => cancelled || !dlg.open || revision !== routeRevision;
     dlg.onclose = () => { cancelled = true; tr?.close(); };
     dlg.showModal();
     try {
-      const first = Math.round(start*16000);
-      let clip;
-      if (prose) {
-        reader=await openStudioAudio(source,blob);
-        if (stopped()) return;
-        clip=await reader.read(first/16000,Math.min(end,reader.duration));
-        await reader.close();
-        reader=null;
-      } else {
-        const decoded=await sourceAudio16k(source,blob);
-        clip=decoded.audio.subarray(first,Math.round(end*16000));
-      }
+      const decoded = await sourceAudio16k(source, blob);
       if (stopped()) return;
+      const first = Math.round(start * 16000);
+      const clip = decoded.audio.subarray(first, Math.round(end * 16000));
       highPass(clip);
       const regions = speechRegions(clip, 16000, prose ? undefined : {gapFrames:5,minGap:.08});
       if (!regions.length || regions.length > 24) throw new Error('独立した発話の境界を絞り込めませんでした');
@@ -2116,7 +1883,6 @@ async function editorScreen(el, params, revision) {
       if (!stopped()) toast('この区間を解析できませんでした：' + error.message, 5000);
     } finally {
       tr?.close();
-      await reader?.close();
       if (dlg.open && dlg.contains(progress)) { dlg.onclose = null; dlg.close(); }
     }
   }
@@ -2132,12 +1898,62 @@ async function editorScreen(el, params, revision) {
 
   // Preserve existing occupied intervals; trim rescue proposals to one continuous free span.
   // Multiple disconnected spans are never stitched together into one subtitle.
-  const rescueOccupied = (excluding = new Set()) => blocks.filter(b=>maScriptRow(b)&&!excluding.has(b.id))
-    .flatMap(b=>b.segments.map(g=>({...g,row:b})));
-  const rescueUnoccupied = (segment,excluding) => freeMaSegments(segment,rescueOccupied(excluding));
+  function rescueUnoccupied(segment, excluding = new Set()) {
+    const occupied = blocks.filter(b => !b.deleted && !excluding.has(b.id) && (b.aligned || b.sync === 'manual' || b.segments?.length))
+      .flatMap(b => (b.segments || []).filter(g => g.sourceId === segment.sourceId && Number.isFinite(g.start) && Number.isFinite(g.end))
+        .map(g => ({start:g.start,end:g.end}))).sort((a,b)=>a.start-b.start);
+    let fragments=[{start:segment.start,end:segment.end}];
+    for (const o of occupied) fragments=fragments.flatMap(f => {
+      if (o.end <= f.start || o.start >= f.end) return [f];
+      return [{start:f.start,end:Math.min(f.end,o.start)},{start:Math.max(f.start,o.end),end:f.end}]
+        .filter(x=>x.end-x.start>=.12);
+    });
+    return fragments.map(f=>({...segment,...f})).filter(f=>f.end-f.start>=.12);
+  }
+  function rescuePreferredFragment(segment, excluding = new Set()) {
+    const free=rescueUnoccupied(segment,excluding);
+    // Prefer the longest continuous interval; never silently create overlapping assignments.
+    return free.sort((a,b)=>(b.end-b.start)-(a.end-a.start))[0] || null;
+  }
 
   async function reestimateFromNeighbours(id) {
-    await openMaAudit(id);
+    await reload();
+    if (revision !== routeRevision) return;
+    const row = byId[id];
+    if (!row || row.sync !== 'estimated' || !row.segments?.length) return toast('再推定できる仮割当がありません');
+    const index = set.order.indexOf(id);
+    if (index < 0) return;
+    // Use script order, not current audio time. Estimated rows are not trusted anchors.
+    const reliable = b => b && b.id !== id && b.segments?.length === 1 && b.sync !== 'estimated' &&
+      (b.aligned || b.sync === 'manual') && !b.deleted;
+    let before=null, after=null;
+    for (let i=index-1;i>=0;i--) {const b=byId[set.order[i]];if(reliable(b)){before=b;break;}}
+    for (let i=index+1;i<set.order.length;i++) {const b=byId[set.order[i]];if(reliable(b)){after=b;break;}}
+    if (!before || !after) return toast('前後に照合済みのアンカーが必要です。境界を手動で確認してください');
+    const left=before.segments[0],right=after.segments[0];
+    if (left.sourceId !== right.sourceId || right.start <= left.end+.12)
+      return toast('前後のアンカーが同じ音声内で順序どおりに並んでいません');
+    const between = set.order.slice(set.order.indexOf(before.id)+1,set.order.indexOf(after.id));
+    const pending = between.map(x=>byId[x]).filter(b=>b && (b.sync==='estimated'||!b.segments?.length));
+    if (pending.length !== between.length) return toast('途中に確定済みの行があります。個別に確認してください');
+    // Multiple unresolved rows must not all receive the same gap. Split only
+    // after a separate speech alignment; this action handles a single row.
+    if (pending.length !== 1 || pending[0].id !== id)
+      return toast('間に複数の未確定行があります。先に他の行を照合してください');
+    const proposed=rescueUnoccupied({sourceId:left.sourceId,start:left.end,end:right.start},new Set([id]));
+    if (proposed.length !== 1) return toast('未使用区間が複数あります。既存区間の境界を確認してください');
+    const segment=proposed[0];
+    const ok=await confirmDialog({title:'前後から仮割当を再推定',
+      body:`<p>${esc(row.text)}</p><p>現在：${fmt(row.segments[0].start)}〜${fmt(row.segments.at(-1).end)}</p><p>再推定：${fmt(segment.start)}〜${fmt(segment.end)}</p><p class="small">前後の照合済み行の間にある未使用音声を使います。発話境界の正確さは未確認です。</p>`,
+      okLabel:'再推定して置き換える'});
+    if (!ok || revision !== routeRevision) return;
+    await reload();
+    const current=byId[id];
+    if (!current || current.rev !== row.rev || current.sync !== 'estimated') return toast('対象が更新されたため再推定を中止しました');
+    const currentFree=rescueUnoccupied(segment,new Set([id]));
+    if (currentFree.length !== 1 || Math.abs(currentFree[0].start-segment.start)>.05 || Math.abs(currentFree[0].end-segment.end)>.05)
+      return toast('他の割当が変わりました。再度お試しください');
+    return run('前後アンカーから再推定',{blocks:[{...current,segments:[segment],sync:'estimated',align:[],lineage:{op:'prose-reestimate',from:[`${current.id}@${current.rev}`],at:Date.now()}}]});
   }
 
   async function previewProseAssignment(rows, range, {local = null,manual = false,expected} = {}) {
@@ -2155,18 +1971,8 @@ async function editorScreen(el, params, revision) {
     }
     const rawProposed = manual ? [{row:currentRows[0],segment:{sourceId:range.sid,start:range.start,end:range.end},evidence:[]}] :
       search.assignments(currentRows,range,local);
-    let proposed=rawProposed;
-    if (manual) {
-      const requested=rawProposed[0].segment;
-      const free=rescueUnoccupied(requested);
-      if (free.length!==1 || free[0].start!==requested.start || free[0].end!==requested.end) {
-        const blockers=rescueOccupied().filter(g=>g.sourceId===requested.sourceId && g.start<requested.end && requested.start<g.end);
-        if (free.length===1) proposed=[{...rawProposed[0],segment:free[0]}];
-        else return confirmDialog({title:'割当範囲を確認してください',
-          body:`<p>${free.length ? '未使用区間が複数あります。1区間を選択して試聴してください。' : '未使用区間が残っていません。'}</p>${free.slice(0,15).map(g=>`<p>未使用 ${fmt(g.start)}〜${fmt(g.end)}</p>`).join('')}${blockers.slice(0,12).map(g=>`<p>${esc(g.row.text)} ${fmt(g.start)}〜${fmt(g.end)}</p>`).join('')}`,
-          okLabel:'閉じる',cancelLabel:null});
-      }
-    }
+    const proposed = rawProposed.map(x => ({...x,segment:rescuePreferredFragment(x.segment,new Set(currentRows.map(r=>r.id)))}));
+    if (proposed.some(x => !x.segment)) return toast('既存区間を除くと割当可能な音声がありません');
     if (!proposed.length) {
       return confirmDialog({title:'行ごとの区間を確認できませんでした',
         body:'<p>指定範囲では本文と順序が一意に一致する音声がそろっていません。範囲を広げるか、行数を減らして再解析・試聴してください。1行なら開始と終了を指定して割り当てられます。</p>',
@@ -2190,7 +1996,14 @@ async function editorScreen(el, params, revision) {
     const updates = proposed.map(({row,segment}) => ({...row,segments:[segment],
       aligned:manual ? row.aligned : true, sync:manual ? 'manual' : 'auto', align:[],
       lineage:{op:manual ? 'prose-rescue-manual' : 'prose-rescue-match',from:[`${row.id}@${row.rev}`],at:Date.now()}}));
-    await run('朗読の音声割当',{blocks:updates,guardedSet});
+    if (!local && !manual) {
+      // Replace only original, unedited ASR display duplicates. Revisions and audio remain available to Undo.
+      const raw = new Set(proposed.flatMap(x => x.evidence).map(g => byId[g.id])
+        .filter(b => b?.rev === 1 && b.lineage?.op === 'split' && !b.ja && !(b.holes || []).length));
+      for (const b of raw) updates.push({...b,deleted:true});
+    }
+    const removed = new Set(updates.filter(b => b.deleted).map(b => b.id));
+    await run('朗読の音声割当',{blocks:updates,order:set.order.filter(id => !removed.has(id)),guardedSet});
   }
 
   async function rescueUnassigned(id) {
@@ -2253,8 +2066,8 @@ async function editorScreen(el, params, revision) {
           const rect=$('#rsTrack',dlg).getBoundingClientRect();if(!rect.width)return;
           const t=bounds.lo+rescueClamp((ev.clientX-rect.left)/rect.width,0,1)*(bounds.hi-bounds.lo);
           const a=parseClock(st.value),z=parseClock(en.value);
-          if(edge==='start'&&Number.isFinite(z))st.value=fmtInputClock(rescueClamp(t,0,z-.1));
-          if(edge==='end'&&Number.isFinite(a))en.value=fmtInputClock(rescueClamp(t,a+.1,bounds.D));
+          if(edge==='start'&&Number.isFinite(z))st.value=fmt(rescueClamp(t,0,z-.1));
+          if(edge==='end'&&Number.isFinite(a))en.value=fmt(rescueClamp(t,a+.1,bounds.D));
           drawClock();
         };
         const done=()=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',done);handle.removeEventListener('pointercancel',done);};
@@ -2263,8 +2076,8 @@ async function editorScreen(el, params, revision) {
     };
     rescueHandle('start');rescueHandle('end');
     $('#rsView',dlg).onclick=()=>{rescueFullView=!rescueFullView;$('#rsView',dlg).textContent=rescueFullView?'周辺を拡大':'ファイル全体を表示';drawClock();};
-    $('#rsStartZero',dlg).onclick=()=>{if(st.disabled)return;st.value=fmtInputClock(0);drawClock();};
-    $('#rsEndLast',dlg).onclick=()=>{if(en.disabled)return;const b=rescueBounds();if(b)en.value=fmtInputClock(b.D);drawClock();};
+    $('#rsStartZero',dlg).onclick=()=>{if(st.disabled)return;st.value=fmt(0);drawClock();};
+    $('#rsEndLast',dlg).onclick=()=>{if(en.disabled)return;const b=rescueBounds();if(b)en.value=fmt(b.D);drawClock();};
     let rescueClock = null;
     const stopClock = () => { if (rescueClock) cancelAnimationFrame(rescueClock); rescueClock=null; };
     const drawClock = () => {
@@ -2297,8 +2110,8 @@ async function editorScreen(el, params, revision) {
     const update = () => {
       const c = pickRange();
       stopRescuePreview();
-      st.value = c ? fmtInputClock(c.start) : '';
-      en.value = c ? fmtInputClock(c.end) : '';
+      st.value = c ? fmt(c.start) : '';
+      en.value = c ? fmt(c.end) : '';
       st.disabled = en.disabled = !c || Boolean(c.review);
       st.title = en.title = c?.review ? 'これは既存字幕の確認用です。下の「手動で時刻指定」を選んでください。' : ''; 
       $('#rsPlay',dlg).disabled = $('#rsPlayHead',dlg).disabled = $('#rsPlayLast',dlg).disabled = !c;
@@ -2344,12 +2157,12 @@ async function editorScreen(el, params, revision) {
       stopRescuePreview();
       playBlock({segments:[{sourceId:c.sid,start:a,end:Math.min(z,a+30)}]});
     };
-    $('#rsPlayHead',dlg).onclick = () => { const c=pickRange(),a=parseClock(st.value),z=parseClock(en.value); if(c&&Number.isFinite(a)&&Number.isFinite(z)&&z>a)playBlock({segments:[{sourceId:c.sid,start:a,end:Math.min(z,a+2)}]}); };
+    $('#rsPlayHead',dlg).onclick = () => { const c=pickRange(),a=parseClock(st.value),z=parseClock(en.value); if(c&&Number.isFinite(a)&&Number.isFinite(z)&&z>a)playRange(c.sid,a,Math.min(z,a+2)); };
     $('#rsPlayLast',dlg).onclick = () => {
       const c=pickRange(),a=parseClock(st.value),z=parseClock(en.value);
       if (!c || !Number.isFinite(a) || !Number.isFinite(z) || z<=a) return toast('開始・終了を確認してください');
       stopRescuePreview();
-      playBlock({segments:[{sourceId:c.sid,start:Math.max(a,z-2),end:z}]});
+      playRange(c.sid,Math.max(a,z-2),z);
     };
     dlg.returnValue = '';
     dlg.showModal();
@@ -2381,11 +2194,10 @@ async function editorScreen(el, params, revision) {
       if (!ok) return;
       await reload();
       const row=byId[selected[0].id];
-      if (!row || row.rev!==selected[0].rev || row.segments.length || JSON.stringify(rescueVersion())!==JSON.stringify(expected)) return toast('字幕が更新されています。再探索してください');
-      const free=rescueUnoccupied({sourceId:c.sid,start:a,end:z},new Set([row.id]));
-      if (free.length!==1) return toast('未使用区間を1つに絞って再試聴してください');
-      const [trimmed]=free;
-      return run('前後アンカー間の仮割当',{blocks:[{...row,segments:[trimmed],sync:'estimated',align:[],lineage:{op:'prose-anchor-gap-trial',from:[`${row.id}@${row.rev}`],at:Date.now()}}],guardedSet:expected});
+      if (!row || row.rev!==selected[0].rev || row.segments.length || rescueVersion()!==expected) return toast('字幕が更新されています。再探索してください');
+      const trimmed=rescuePreferredFragment({sourceId:c.sid,start:a,end:z},new Set([row.id]));
+      if (!trimmed) return toast('既存区間を除くと割当可能な音声がありません');
+      return run('前後アンカー間の仮割当',{blocks:[{...row,segments:[trimmed],sync:'estimated',align:[],lineage:{op:'prose-anchor-gap-trial',from:[`${row.id}@${row.rev}`],at:Date.now()}}]});
     }
     if (action !== 'ok') return;
     if (prose) {
@@ -2717,7 +2529,7 @@ async function editorScreen(el, params, revision) {
     const ids0 = set.order.filter((id) => byId[id]), at0 = ids0.indexOf(b.id);
     const prevB = (() => { for (let k = at0 - 1; k >= 0; k--) { const x = byId[ids0[k]]; if (x.segments.length) return x; } return null; })();
     const nextB = (() => { for (let k = at0 + 1; k < ids0.length; k++) { const x = byId[ids0[k]]; if (x.segments.length) return x; } return null; })();
-    let follow = !protectNeighbours && (b.kind === 'word' || b.kind === 'example' || b.lineage?.op === 'vocab-align') && (()=>{try{return localStorage.getItem('st-follow')!=='0';}catch{return false;}})();
+    let follow = !protectNeighbours && (() => { try { return localStorage.getItem('st-follow') !== '0'; } catch { return true; } })();
     function neighbourChanges() {
       if (!follow || !work.segments.length || !b.segments.length) return [];
       const out = [], s0 = b.segments[0], s1 = b.segments.at(-1), n0 = work.segments[0], n1 = work.segments.at(-1);
@@ -2827,7 +2639,6 @@ async function editorScreen(el, params, revision) {
 
   // ---------- re-transcribe chosen lines (e.g. with a more accurate model), then compare old / new line by line ----------
   async function redoAsr(list0, { thenAlign = false } = {}) {
-    if (cancelAudioJob) return toast('解析中です');
     const targets = list0.filter((b) => b.segments.length);
     if (!targets.length) return toast('選択した行に音声区間の割当がありません。元MP3の未割当区間を調べてください', 4500);
     const skipped = list0.length - targets.length;
@@ -2850,43 +2661,34 @@ async function editorScreen(el, params, revision) {
     const lock = await navigator.wakeLock?.request?.('screen').catch(() => null);
     running(`起こし直し（${set.title}）`); crumb(`起こし直し ${targets.length}行・精度：${quality}`);
     const results = [];
-    let reader, lastSource;
-    const controller=new AbortController();
-    const cancel = () => { cancelled=true;controller.abort();tr?.close(); };
-    dlg.onclose=cancel;
-    cancelAudioJob=cancel;
     try {
-      tr=openTranscriber('en',msg,{quality});
-      for (let k=0;k<targets.length && !cancelled && revision===routeRevision;k++) {
-        const b=targets[k], parts=[];
+      tr = openTranscriber('en', msg, { quality });
+      const audioOf = new Map();
+      for (let k = 0; k < targets.length && !cancelled; k++) {
+        const b = targets[k]; const parts = [];
         for (const g of b.segments) {
-          if (cancelled || revision!==routeRevision) break;
-          if (lastSource!==g.sourceId) {
-            await reader?.close();
-            reader=null;
-            const src=srcs[g.sourceId], blob=src.stored?src.blob:sessionFiles.get(g.sourceId);
+          if (cancelled) break;
+          let a16 = audioOf.get(g.sourceId);
+          if (!a16) {
+            const src = srcs[g.sourceId], blob = src.stored ? src.blob : sessionFiles.get(g.sourceId);
             msg(`${src.name}：音声を取り出しています…`);
-            reader=await openStudioAudio(src,blob,{box:$('#rdCap',dlg),say:msg,signal:controller.signal});
-            lastSource=g.sourceId;
+            if (!src.audio && isContainer(src, blob) && src.derived !== 'audio16k') { src.audio = await decideTrack(src, blob, msg); await sdb.put('sources', src); }
+            a16 = highPass((await sourceAudio16k(src, blob, { box: $('#rdCap', dlg), say: msg })).audio); audioOf.set(g.sourceId, a16);
           }
-          const a=Math.max(0,g.start-.25), z=Math.min(reader.duration,g.end+.25);
-          for (const [start,end] of asrWindows(a,z,quality==='ultra'?8:22)) {
-            if (cancelled || revision!==routeRevision) break;
-            msg(`${k+1} / ${targets.length} 行目を文字にしています…`);
-            const audio=highPass(await reader.read(start,end));
-            if (cancelled || revision!==routeRevision) break;
-            const cues=await recognisePiece(tr,audio,0,audio.length/16000,{onRetry:crumb});
-            parts.push(cues.map(c=>c.text).join(' '));
+          const D = a16.length / 16000, a = Math.max(0, g.start - 0.25), z = Math.min(D, g.end + 0.25);
+          const pieces = z - a > 28 ? speechPieces(a16, a, z, { len: 25 }) : [[a, z]];
+          for (const [ps, pe] of pieces) {
+            if (cancelled) break;
+            msg(`${k + 1} / ${targets.length} 行目を文字にしています…`);
+            const cues = await recognisePiece(tr, a16, ps, pe, { onRetry: (m) => { msg(`${k + 1} / ${targets.length} 行目：${m}`); crumb(m); } });
+            crumb(`起こし直し結果（${cues.how}）：${(cues.raw || '').slice(0, 80) || '（空）'}`);
+            parts.push(cues.map((c) => c.text).join(' '));
           }
         }
-        if (!cancelled) results.push({b,neu:parts.join(' ').replace(/\s+/g,' ').trim()});
+        results.push({ b, neu: parts.join(' ').replace(/\s+/g, ' ').trim() });
       }
-    } catch(e) { if (!cancelled) logErr('起こし直し：'+(e?.message || e)); }
-    finally {
-      tr?.close();await reader?.close();lock?.release?.();running(null);
-      if (cancelAudioJob===cancel) cancelAudioJob=null;
-    }
-    if (revision!==routeRevision) return;
+    } catch (e) { logErr('起こし直し：' + (e?.message || e)); }
+    finally { tr?.close(); lock?.release?.(); running(null); }
     if (dlg.open) { dlg.onclose = null; dlg.close(); }
     if (!results.length) return;
     await new Promise((r) => setTimeout(r, 60));
@@ -3117,156 +2919,165 @@ async function editorScreen(el, params, revision) {
     await saveSpeechFirstCandidates(draft.filter(x=>ids.has(x.blockId)),ids.size);
   }
 
+  // Virtual split: both halves refer to the same stored source and original timestamps.
+  // This is intentionally limited to untranscribed audio rows: splitting an aligned
+  // sentence would otherwise silently corrupt its text/audio correspondence.
+  async function splitAudioRange() {
+    const candidates = blocks.filter(b => !b.deleted && !b.text?.trim() && b.segments?.length === 1 && b.segments[0].end - b.segments[0].start >= 2);
+    if (!candidates.length) return toast('分割できる未文字起こしの音声区間がありません', 4000);
+    const dlg = $('#dialog');
+    const initial = candidates.find(b => b.segments[0].sourceId === vid.dataset.src && vid.currentTime > b.segments[0].start && vid.currentTime < b.segments[0].end) || candidates[0];
+    const options = candidates.map(b => `<option value="${esc(b.id)}" ${b.id === initial.id ? 'selected' : ''}>${esc(srcs[b.segments[0].sourceId]?.name || '音声')}：${fmt(b.segments[0].start)}〜${fmt(b.segments[0].end)}</option>`).join('');
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>音声を分割（元ファイルはそのまま）</h3>
+      <p class="small muted">文字起こし前の音声区間を2つに分けます。音声のコピーや再エンコードはせず、元ファイルの時刻を維持します。繰り返し操作すれば何区間にも分割できます。</p>
+      <label class="field"><span>分割する区間</span><select id="splitTarget">${options}</select></label>
+      <label class="field"><span>分割位置（秒・元ファイル基準）</span><input id="splitAtTime" type="number" step="0.1" inputmode="decimal"></label>
+      <div id="splitInfo" class="small muted"></div>
+      <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">2区間に分割</button></div></form>`;
+    const target = $('#splitTarget', dlg), time = $('#splitAtTime', dlg), info = $('#splitInfo', dlg);
+    const update = (preferPlayhead = false) => {
+      const b = byId[target.value], g = b?.segments?.[0]; if (!g) return;
+      const at = preferPlayhead && vid.dataset.src === g.sourceId && vid.currentTime > g.start + .5 && vid.currentTime < g.end - .5 ? vid.currentTime : (g.start + g.end) / 2;
+      time.min = (g.start + .5).toFixed(2); time.max = (g.end - .5).toFixed(2);
+      time.value = at.toFixed(2);
+      info.textContent = `元ファイルの ${fmt(g.start)}〜${fmt(g.end)}（${fmt(g.end - g.start)}）`;
+    };
+    target.onchange = () => update(false); update(true);
+    dlg.returnValue = ''; dlg.onclose = null; dlg.showModal();
+    await new Promise(resolve => { dlg.onclose = resolve; });
+    if (dlg.returnValue !== 'ok') return;
+    const b = byId[target.value], g = b?.segments?.[0], at = Number(time.value);
+    if (!b || !g || !Number.isFinite(at) || at <= g.start + .45 || at >= g.end - .45) return toast('分割位置は区間の内側に指定してください', 4000);
+    // Recheck current block to avoid overwriting edits made in another action.
+    const current = await sdb.get('blocks', b.id);
+    if (!current || current.deleted || current.rev !== b.rev || current.text?.trim()) return toast('対象区間が更新されています。もう一度開いてください', 4000);
+    const a = newBlock(set.id, {segments:[{...g,end:+at.toFixed(2)}],text:'',label:b.label||'',sync:'auto'});
+    const z = newBlock(set.id, {segments:[{...g,start:+at.toFixed(2)}],text:'',sync:'auto'});
+    const order = set.order.slice(), idx = order.indexOf(b.id);
+    if (idx < 0) return toast('対象区間が見つかりません');
+    order.splice(idx, 1, a.id, z.id);
+    await run('音声区間を分割', {blocks:[a,z,{...b,deleted:true}],order});
+    toast(`${fmt(g.start)}〜${fmt(at)} / ${fmt(at)}〜${fmt(g.end)} に分割しました`);
+  }
+
   // ---------- transcription (Whisper in the browser; audio never leaves the device) ----------
   // Pieces of ~2 min are transcribed one by one and saved as they finish. The block that still has no text keeps the rest,
   // so if iOS reloads the page, running it again continues from where it stopped.
   async function runAsr() {
-    if (cancelAudioJob) return toast('解析中です');
     const pool = sel.size ? ordered() : blocks;
-    const targets = pool.filter(b => !b.text.trim() && b.segments.length===1 && !b.asrAttempted && b.sync!=='manual' &&
-      !b.label?.includes('文字にできなかった部分'));
+    const targets = pool.filter((b) => !b.text.trim() && b.segments.length === 1);
     if (!targets.length) {
-      const rest = pool.filter(b => !b.aligned && b.sync!=='manual' && b.segments.length &&
-        (b.asr || b.asrAttempted || b.label?.includes('文字にできなかった部分')));
-      if (rest.length && await confirmDialog({title:'処理済みの区間を起こし直す',
-        body:`<p>未処理の区間はありません。処理済みの${rest.length}行を選び直す画面を開きますか？</p>`,okLabel:'起こし直す'}))
-        return redoAsr(rest,{thenAlign:true});
-      if (!rest.length) toast('未処理の音声区間がありません');
-      return;
+      // 1.18.2: everything has text already — offer to transcribe the left-over lines again (another accuracy) and match again
+      const rest = pool.filter((b) => !b.aligned && b.segments.length && (b.asr || !b.text.trim()));
+      if (rest.length && await confirmDialog({ title: '照合できなかった行を起こし直す', body: `<p>英文のない音声はもうありません。スクリプトと照合できなかった文字起こし ${rest.length}行を、別の精度でもう一度文字にして、照合し直しますか？</p><p class="small muted">次の画面で精度を選べます。結果は今の文と並べて確認できます。</p>`, okLabel: '起こし直す' })) return redoAsr(rest, { thenAlign: true });
+      if (rest.length) return;
+      return toast(sel.size ? '選んだ項目に、英文のない音声がありません' : '英文のない音声項目がありません（文字起こしは英文が空の項目だけに行います）', 4000);
     }
-    const checkpointKey = 'asr-progress:'+set.id;
-    let checkpoint = await sdb.get('meta',checkpointKey);
-    const prior = checkpoint?.progress;
-    const defaultQuality = localStorage.getItem('st-asrq2') || 'acc';
-    if (!(await confirmDialog({title:'文字起こし（端末内）',body:`
-      <p>未処理${targets.length}項目を区間ごとに保存します。</p>
-      ${prior ? `<p class="small">前回：${esc(prior.file)} ${fmt(prior.start)} — ${esc(prior.stage)}（${esc(prior.quality)}・試行${prior.attempt}）${prior.error ? ' / '+esc(prior.error) : ''}</p><label class="chk"><input type="checkbox" id="asrRetry"> 停止した区間を同じモデルで明示的に再試行</label>` : ''}
-      <div class="stack">${Object.entries(QUALITY).map(([k,t])=>`<label class="chk"><input type="radio" name="asrq" value="${k}" ${k===(QUALITY[defaultQuality]?defaultQuality:'acc')?'checked':''}> ${t}</label>`).join('')}</div>
-      <label class="field"><span>文字起こし後</span><select id="asrNext"><option value="regular">通常のスクリプト照合</option><option value="ma">MA型の一括監査・補正</option><option value="vocab">金フレ型で照合</option><option value="none">文字起こしのみ</option></select></label>`,
-      okLabel:'開始'}))) return;
+    const bySrc = new Map(); for (const b of targets) { const id = b.segments[0].sourceId; if (!bySrc.has(id)) bySrc.set(id, []); bySrc.get(id).push(b.id); }
+    if ([...bySrc.keys()].some((id) => !(srcs[id]?.stored ? srcs[id].blob : sessionFiles.get(id)))) return toast('動画・音声ファイルを選び直してから実行してください', 4000);
+    const total = targets.reduce((a, b) => a + blockDur(b), 0);
+    const big = [...bySrc.keys()].map((id) => srcs[id]).filter((x) => x.kind === 'video' && x.size > 150 * 1024 * 1024);
+    if (!(await confirmDialog({ title: '文字起こし（試験的）', body: `<p>${targets.length}項目（合計 ${fmtMin(total)}）を、この端末の中で英語の文字に起こします。</p>${big.length ? `<p class="warn-text small">大きな動画（${fmtSize(big[0].size)}）はメモリ不足で途中で止まることがあります。先に「⋯」→「容量を減らす」をすると安定します。</p>` : ''}
+      <div class="stack">${Object.entries(QUALITY).map(([k, t]) => `<label class="chk"><input type="radio" name="asrq" value="${k}" ${(QUALITY[localStorage.getItem('st-asrq2')] ? localStorage.getItem('st-asrq2') : 'acc') === k ? 'checked' : ''}> ${t}</label>`).join('')}</div>
+      <label class="chk"><input type="checkbox" id="asrVocab"> 文字起こし後に金フレ型で照合する</label>
+      <p class="hint">・最初の1回だけモデルをダウンロードします（無料・Wi-Fi推奨）。音声は外部に送りません。<br>・無音の部分は飛ばし、話している部分を少しずつ処理して、終わった分から保存します。止まっても、もう一度実行すると続きから。<br>・画面は開いたままにしてください。結果は自動の下書きです。</p>`, okLabel: '始める' }))) return;
     const quality = $('#dialog input[name=asrq]:checked')?.value || 'acc';
-    const next = $('#asrNext')?.value;
-    const retry = $('#asrRetry')?.checked;
-    try { localStorage.setItem('st-asrq2',quality); } catch {}
-    await new Promise(r=>setTimeout(r,60));
-    const dlg=$('#dialog');
-    if (revision!==routeRevision || dlg.open || cancelAudioJob) return;
-    dlg.innerHTML='<form method="dialog" class="dlg stack"><h3>文字起こし中</h3><p id="asrMsg">準備中…</p><p id="asrDone" class="small"></p><div id="asrCap"></div><button class="btn ghost" value="cancel">中止（保存済みは保持）</button></form>';
-    const progress=$('#asrMsg',dlg), saved=$('#asrDone',dlg);
-    let tr, reader, cancelled=false, failure, written=0, lines=0;
-    const controller=new AbortController();
-    const stop = () => { cancelled=true;controller.abort();tr?.close(); };
-    const stopped = () => cancelled || !dlg.open || revision!==routeRevision;
-    const say=t=>{if (!stopped()) progress.textContent=t;};
-    dlg.onclose=stop;
-    dlg.showModal();
-    cancelAudioJob=stop;
-    running(`文字起こし（${set.title}）`);
-    const bySource = new Map();
-    for (const b of targets) {
-      const sid=b.segments[0].sourceId;
-      if (!bySource.has(sid)) bySource.set(sid,[]);
-      bySource.get(sid).push(b.id);
-    }
+    const vocabAfterAsr = $('#asrVocab')?.checked;
+    try { localStorage.setItem('st-asrq2', quality); } catch {}
+    let cancelled = false, done = 0, lines = 0, speed = 0; const speedSamples = [], noSpeech = [], rawAll = []; let emptyPieces = 0;
+    const dlg = $('#dialog');
+    await new Promise((r) => setTimeout(r, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
+    dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>文字起こし中</h3><p class="small" id="asrMsg">準備しています…</p><div class="st-meter"><i id="asrBar" style="width:0%"></i><span id="asrPct">0%</span></div><p class="small muted" id="asrDone"></p><div id="asrCap"></div><button class="btn ghost" value="cancel">中止（ここまでは保存済み）</button></form>`;
+    dlg.returnValue = ''; dlg.onclose = () => { cancelled = true; tr?.close(); }; dlg.showModal();
+    const msg = (t) => { const m = $('#asrMsg', dlg); if (m) m.textContent = t; };
+    const bar = () => { const pr = total ? done / total : 0; const b = $('#asrBar', dlg); if (b) { b.style.width = `${pr * 100}%`; $('#asrPct', dlg).textContent = `${Math.round(pr * 100)}%`; } };
+    const lock = await navigator.wakeLock?.request?.('screen').catch(() => null);
+    let tr = null; running(`文字起こし（${set.title}）`); crumb(`精度：${quality}`);
     try {
-      tr=openTranscriber('en',say,{quality});
-      for (const [sid,ids] of bySource) {
-        if (stopped()) break;
-        const src=srcs[sid], blob=src?.stored ? src.blob : sessionFiles.get(sid);
-        if (!blob) throw new Error('音声ファイルを選び直してください');
-        const first=byId[ids[0]].segments[0];
-        const decodeKey=`${sid}:decode:${quality}`;
-        if (!retry && asrRetryBlocked(checkpoint?.progress,decodeKey)) throw new Error('同じ音声の展開が続けて中断されました。再試行を選ぶか、ファイル形式・モデルを変更してください');
-        // Preserve an interrupted recognition stage while preparing its decoder.
-        if (checkpoint?.progress?.stage!=='認識' || checkpoint.progress.sourceId!==sid || checkpoint.progress.quality!==quality) {
-          checkpoint={key:checkpointKey,progress:beginAsrStage(checkpoint?.progress,
-            {key:decodeKey,stage:'音声展開',sourceId:sid,file:src.name,start:first.start,quality,model:tr.model})};
-          await sdb.put('meta',checkpoint);
-        }
-        crumb(`音声展開 ${src.name} / ${tr.model}`);
-        if (!src.audio && isContainer(src,blob) && src.derived!=='audio16k') {
-          src.audio=await decideTrack(src,blob,say);
-          if (stopped()) break;
-          await sdb.put('sources',src);
-        }
-        reader=await openStudioAudio(src,blob,{box:$('#asrCap',dlg),say,signal:controller.signal});
-        for (const id of ids) {
-          const initial=byId[id];
-          if (!initial?.segments.length || stopped()) break;
-          const sg=initial.segments[0];
-          for (const [start,end] of asrWindows(sg.start,sg.end,quality==='ultra'?8:22)) {
-            if (stopped()) break;
-            const block=byId[id];
-            const key=`${sid}:${id}:${block.rev}:${start.toFixed(3)}:${quality}`;
-            if (!retry && asrRetryBlocked(checkpoint?.progress,key))
-              throw new Error('同じ区間が続けて中断されました。軽いモデルか明示的な再試行を選んでください');
-            checkpoint={key:checkpointKey,progress:beginAsrStage(checkpoint?.progress,
-              {key,stage:'認識',sourceId:sid,file:src.name,start,end,quality,model:tr.model})};
-            await sdb.put('meta',checkpoint);
-            say(`${src.name} ${fmt(start)}〜${fmt(end)} / ${QUALITY[quality]}`);
-            crumb(`認識 ${src.name} ${start.toFixed(2)}–${end.toFixed(2)} ${tr.model}`);
-            const audio=start < reader.duration-.015 ? highPass(await reader.read(start,Math.min(end,reader.duration))) : new Float32Array();
-            if (!audio.length && end-start>.1) throw new Error('音声の長さと保存済み範囲が一致しません');
-            if (stopped()) break;
-            const duration=audio.length/16000;
-            // Low activity is not proof that speech is absent. Always retain the reference,
-            // and run the selected ASR on this short window.
-            const cues=audio.length ? await recognisePiece(tr,audio,0,duration,{onRetry:crumb}) : [];
-            if (stopped()) break;
-            const parts=cues.map((c,i)=>{
-              const segment={sourceId:sid,start:Math.max(start,start+c.start),end:Math.min(end,start+c.end)};
-              const words=tokensOf(c.text);
-              return newBlock(set.id,{text:c.text,asr:true,segments:[segment],
-                sync:c.est?'estimated':'auto',...(c.boundaryEstimated?{asrBoundaryEstimated:true}:{}),
-                ...(i===0 && start===sg.start && block.label ? {label:block.label} : {}),
-                align:words.length?[{s:0,e:words.length-1,v0:0,v1:+(segment.end-segment.start).toFixed(2)}]:[],
-                lineage:{op:'split',from:[`${block.id}@${block.rev}`],at:Date.now()}});
-            }).filter(b=>b.segments[0].end-b.segments[0].start>=.05);
-            if (!parts.length) parts.push(newBlock(set.id,{segments:[{sourceId:sid,start,end}],
-              label:'（文字にできなかった部分・選択して起こし直せます）',asrAttempted:true}));
-            const rest=end<sg.end-.015 ? {...block,segments:[{...sg,start:end}],align:[]} : {...block,deleted:true};
-            const order=set.order.slice();
-            order.splice(order.indexOf(id),rest.deleted?1:0,...parts.map(b=>b.id));
-            const guardedSet={...rescueVersion(),newIds:parts.map(b=>b.id)};
-            const result=await commit(set,`文字起こし ${fmt(start)}〜${fmt(end)}`,{blocks:[...parts,rest],order,guardedSet},srcs);
-            // Update RAM only after the transaction. Reload and redraw once when the job exits.
-            for (const changed of result.blocks) byId[changed.id]=changed;
-            await sdb.del('meta',checkpointKey);
-            checkpoint=null;
-            written++;
-            lines+=parts.filter(b=>b.text).length;
-            saved.textContent=`${written}区間・${lines}行を保存済み`;
-            await new Promise(r=>setTimeout(r,0));
+      tr = openTranscriber('en', msg, { quality });
+      for (const [sid, ids] of bySrc) {
+        if (cancelled) break;
+        const src = srcs[sid];
+        msg(`${src.name}：音声を取り出しています…`);
+        const fileBlob = src.stored ? src.blob : sessionFiles.get(sid);
+        if (!src.audio && isContainer(src, fileBlob) && src.derived !== 'audio16k') { src.audio = await decideTrack(src, fileBlob, (t) => msg(`${src.name}：${t}`)); await sdb.put('sources', src); }
+        // Long MP4: extract only a short AAC/PCM sample window at a time.
+        // Never decode the entire 40-minute screen recording into Float32 buffers.
+        const container = isContainer(src, fileBlob) && src.derived !== 'audio16k';
+        const info = container ? await probeSource(src, fileBlob) : null;
+        const tracks = info ? audioTracks(info) : [];
+        const track = tracks.find(t => t.id === src.audio?.trackId) || tracks[src.audio?.index ?? 0] || tracks[0];
+        const ranged = !!(track && canExtract(track));
+        if (container && src.duration > 300 && !ranged) throw new Error('長時間MP4の音声トラックを小分けに取り出せません（対応外の音声形式）。元ファイルをMP3/M4Aに変換してください。');
+        let whole = null;
+        if (!ranged) whole = (await sourceAudio16k(src, fileBlob, { box: $('#asrCap', dlg), say: (t) => msg(`${src.name}：${t}`) })).audio;
+        for (const bid of ids) {
+          // The remaining untranscribed block is updated after every successful piece.
+          while (!cancelled && byId[bid] && !byId[bid].deleted && !byId[bid].text.trim() && byId[bid].segments.length === 1) {
+          const b0 = byId[bid]; const sg = b0.segments[0];
+          const chunkEnd = ranged ? Math.min(sg.end, sg.start + 90) : sg.end;
+          let offset = 0, audio;
+          if (ranged) {
+            msg(`${src.name}：${fmt(sg.start)}〜${fmt(chunkEnd)} の音声を小分けに展開中…`);
+            const x = await extractTrack(fileBlob, track, sg.start, chunkEnd);
+            offset = x.start;
+            audio = (await decodeTo16k(x.blob)).audio;
+          } else audio = whole;
+          highPass(audio);
+          const pieces = speechPieces(audio, sg.start - offset, Math.min(chunkEnd - offset, audio.length / 16000), { len: 25 });   // ≤ one 30 s recognition window: longer pieces lost their tail
+          const skipped = (sg.end - sg.start) - pieces.reduce((a, [x, y]) => a + y - x, 0);
+          if (!pieces.length) {
+            // No reliable speech activity: preserve this span for manual/retry, do not loop forever.
+            done += chunkEnd - sg.start; bar(); noSpeech.push(`${src.name} ${fmt(sg.start)}〜${fmt(chunkEnd)}`);
+            break;
+          }
+          for (let pi = 0; pi < pieces.length; pi++) {
+            const [localStart, localEnd] = pieces[pi];
+            const ps0 = localStart + offset, pe0 = localEnd + offset;
+            const ps = ps0, pe = pi === pieces.length - 1 ? chunkEnd : pieces[pi + 1][0] + offset;   // the gap after a piece is silence: it is skipped
+            if (cancelled) break;
+            const t0 = Date.now(), lbl = `${src.name}：${fmt(ps0)}〜${fmt(pe0)}`;
+            msg(`${lbl} を文字起こし中…`); crumb(`文字起こし ${lbl}`);
+            const tick = setInterval(() => msg(`${lbl} を文字起こし中…（${Math.round((Date.now() - t0) / 1000)}秒）${speed ? `・残り目安 ${fmtMin(Math.max(0, (total - done) / speed))}` : ''}`), 1000);
+            let cues; try { cues = await recognisePiece(tr, audio, localStart, localEnd, { onRetry: (m) => { msg(`${lbl}：${m}`); crumb(m); } }); } finally { clearInterval(tick); }
+            cues = cues.map(c => ({ ...c, start: c.start + offset, end: c.end + offset }));
+            crumb(`認識結果（${cues.length}行・${Math.round((Date.now() - t0) / 1000)}秒・${cues.how}）：${(cues.raw || '').slice(0, 80) || '（空）'}`); rawAll.push(cues.raw || '');
+            speedSamples.push([pe - ps, (Date.now() - t0) / 1000]); speed = speedSamples.reduce((a, x) => a + x[0], 0) / speedSamples.reduce((a, x) => a + x[1], 0);
+            if (cancelled) break;
+            const b = byId[bid];   // latest revision (its start moves forward)
+            const parts = cues.map((c) => ({ s: c.start, e: c.end, text: c.text, est: c.est, boundaryEstimated: c.boundaryEstimated }))
+              .map((c, i) => newBlock(set.id, { segments: [{ sourceId: sid, start: +c.s.toFixed(2), end: +c.e.toFixed(2) }], text: c.text, ja: '', sync: c.est ? 'estimated' : 'auto', asr: true,
+                ...(c.boundaryEstimated ? {asrBoundaryEstimated:true} : {}),
+                ...(i === 0 && b.label && b.segments[0].start === sg.start ? { label: b.label } : {}), lineage: { op: 'split', from: [`${b.id}@${b.rev}`], at: Date.now() },
+                align: tokensOf(c.text).length ? [{ s: 0, e: tokensOf(c.text).length - 1, v0: 0, v1: +(c.e - c.s).toFixed(2) }] : [] }));
+            // nothing recognised in this piece: keep it as an empty item (visible, and re-run picks it up again)
+            if (!parts.length) { parts.push(newBlock(set.id, { segments: [{ sourceId: sid, start: +ps0.toFixed(2), end: +pe0.toFixed(2) }], text: '', ja: '', label: '（文字にできなかった部分・もう一度実行できます）', sync: 'auto', lineage: { op: 'split', from: [`${b.id}@${b.rev}`], at: Date.now() } })); emptyPieces++; }
+            const rest = pe < sg.end - 0.5 ? { ...b, segments: [{ ...b.segments[0], start: +pe.toFixed(2) }], align: [] } : { ...b, deleted: true };
+            const order = set.order.slice(); const at = order.indexOf(b.id);
+            order.splice(at, rest.deleted ? 1 : 0, ...parts.map((x) => x.id));
+            await commit(set, `文字起こし ${fmt(ps)}〜${fmt(pe)}`, { blocks: [...parts, rest], order }, srcs);
+            await reload(); drawList();
+            done += pe - ps; lines += parts.filter((x) => x.text).length; bar();
+            const dd = $('#asrDone', dlg); if (dd) dd.textContent = `保存済み：${lines}行`;
+          }
+          if (cancelled) break;
+          // When the chunk has been committed, the same block now starts at chunkEnd.
+          // If no progress was made, stop instead of retrying indefinitely.
+          if (byId[bid] && !byId[bid].deleted && byId[bid].segments[0]?.start <= sg.start + 0.01) break;
           }
         }
-        await reader.close();
-        reader=null;
       }
-    } catch(error) {
-      if (!stopped()) {
-        failure=error;
-        crumb(`文字起こし停止：${error.message || error}`);
-        if (checkpoint?.progress) {
-          checkpoint.progress.error=String(error.message||error).slice(0,240);
-          await sdb.put('meta',checkpoint).catch(()=>{});
-        }
-      }
-    } finally {
-      tr?.close();
-      await reader?.close();
-      cancelAudioJob=null;
-      running(null);
-      if (cancelled && checkpoint) await sdb.del('meta',checkpointKey).catch(()=>{});
-      if (dlg.open && dlg.contains(progress)) {dlg.onclose=null;dlg.close();}
+    } catch (e) {
+      running(null); crumb('失敗：' + (e?.message || e)); lock?.release?.(); tr?.close(); if (dlg.open) dlg.close();
+      return confirmDialog({ title: '文字起こしが止まりました', body: `<p class="small">${esc((e?.message || String(e)))}</p><p class="hint">${lines ? `${lines}行は保存済みです。もう一度実行すると続きから始まります。` : '初回はネット接続が必要です（モデルのダウンロード）。'}</p>`, okLabel: '閉じる', cancelLabel: null });
     }
-    if (revision!==routeRevision) return;
-    await reload(); drawList(); drawSub();
-    await new Promise(r=>setTimeout(r,60));
-    if (failure) return confirmDialog({title:'文字起こしを中断しました',
-      body:`<p>${esc(failure.message || failure)}</p><p>${written}区間を保存しました。再開時には保存済みの区間を飛ばします。</p>`,cancelLabel:null,okLabel:'閉じる'});
-    if (!cancelled && lines && next==='ma') return openMaAudit();
-    if (!cancelled && lines && scriptLines().length && next!=='none') return next==='vocab' ? previewVocabAlignment() : runAlign({afterAsr:lines});
-    toast(`${written}区間・${lines}行を保存しました`,3500);
+    running(null); lock?.release?.(); tr?.close(); const wasCancelled = cancelled; if (dlg.open) { dlg.onclose = null; dlg.close(); }
+    if (!lines) return wasCancelled ? toast('中止しました') : confirmDialog({ title: '文字にできませんでした', body: noSpeech.length ? `<p class="small">${noSpeech.map(esc).join('<br>')}</p><p>音声が見つかりませんでした（無音のまま取り出された可能性）。編集した動画は音声を取り出せないことがあります。写真アプリで「ビデオを複製」または「ファイルに保存」で書き出したものを取り込み直してください。</p>` : `<p>音声認識は動きましたが、文字にできる英語がありませんでした。</p><p class="small">認識された内容：${esc(rawAll.join(' ').trim().slice(0, 200) || '（何も認識されませんでした）')}</p><p class="hint">［Music］のような表示だけなら、音楽や効果音と判定されています。何も認識されない場合は、音声が英語として聞き取れていません。</p>`, okLabel: '閉じる', cancelLabel: null });
+    if (!wasCancelled && scriptLines().length) return vocabAfterAsr ? previewVocabAlignment() : runAlign({ afterAsr: lines });
+    const ok = await confirmDialog({ title: wasCancelled ? `${lines}行で中止しました` : `文字起こしが終わりました（${lines}行）`,
+      body: `<p>結果は、この画面の一覧（動画の下）に「自動起こし」の印つきで並んでいます。行をタップすると、その部分を再生します。✎で直せます。</p>${wasCancelled ? '<p class="hint">もう一度実行すると続きから始まります。</p>' : ''}${emptyPieces ? `<p class="warn-text small">${emptyPieces}か所は文字にできませんでした（一覧に「文字にできなかった部分」として残しています）。「標準」「最高」の精度で、もう一度「文字起こし」を実行すると、その部分だけやり直します。</p>` : ''}<p class="hint">テキストだけ使いたいときは「⋯」→「テキストを書き出す」。単語帳に入れるときは「⋯」→「単語リストを作る」。</p>`,
+      okLabel: '英文をコピー', cancelLabel: '閉じる' });
+    if (ok) { try { await navigator.clipboard.writeText(blocks.map((b) => b.text).filter(Boolean).join('\n')); toast('コピーしました'); } catch { toast('コピーできませんでした'); } }
   }
   // Read-only alignment diagnostic. Never edits blocks, source media or manual timings.
   function exportAlignmentDiagnostic() {
@@ -3609,12 +3420,13 @@ async function editorScreen(el, params, revision) {
       <button class="btn" value="exp">教材パックとして書き出す${HOST ? '（ファイル）' : ''}</button>
       <button class="btn" value="autotrim">前後の画面収録音を自動カット</button>
       <button class="btn" value="trim">前後をカット（手動で調整）</button>
+      <button class="btn" value="splitAudio">音声を時刻で分割（コピーなし）</button>
       <button class="btn" value="asr">文字起こし（端末内・試験的）</button>
       <button class="btn" value="add">スクリプトを直接追加</button>
       <button class="btn" value="addMedia">音声・動画を追加</button>
       <button class="btn" value="align">スクリプトと照合</button>
       <button class="btn" value="alignVocab">金フレ型：既存ASRと照合</button>
-      <button class="btn" value="alignProse">MA型：一括監査・補正</button>
+      <button class="btn" value="alignProse">朗読・会話向け：緩めのスクリプト照合（試験版）</button>
       <button class="btn" value="refine">音声位置を一括自動調整（試験版）</button>
       <button class="btn" value="realign">構造を使った再照合（プレビュー）</button>
       <button class="btn" value="structImport">発話を先に区切って照合（試験版）</button>
@@ -3645,6 +3457,7 @@ async function editorScreen(el, params, revision) {
       if (v === 'cutNoA') bulkDel(blocks.filter((b) => !b.segments.length && b.text.trim()), '音声のないスクリプト行');
       if (v === 'cutNoS') bulkDel(blocks.filter((b) => b.segments.length && !b.aligned && (b.asr || !b.text.trim())), 'スクリプトのない音声の行（照合できなかった文字起こし・文字にできなかった部分）');
       if (v === 'dupset') dupSet();
+      if (v === 'splitAudio') splitAudioRange();
       if (v === 'asr') runAsr();
       if (v === 'words') nav(`words?id=${set.id}`);
       if (v === 'names') fixNames();
@@ -3652,7 +3465,7 @@ async function editorScreen(el, params, revision) {
       if (v === 'addMedia') nav(`import?to=${set.id}`);
       if (v === 'align') runAlign();
       if (v === 'alignVocab') previewVocabAlignment();
-      if (v === 'alignProse') openMaAudit();
+      if (v === 'alignProse') runAlign({ mode: 'prose' });
       if (v === 'refine') refineBoundaries();
       if (v === 'realign') previewStructuralRealign();
       if (v === 'structImport') importBySpeechStructure();
@@ -3682,10 +3495,8 @@ async function deleteSet(set) {
   const others = (await sdb.all('sets')).filter((s) => s.id !== set.id);
   const usedElsewhere = new Set((await Promise.all(others.map(async (s) => (await sdb.byIndex('blocks', 'setId', s.id)).flatMap((b) => b.segments.map((x) => x.sourceId))))).flat());
   const srcIds = new Set(blocks.flatMap((b) => b.segments.map((x) => x.sourceId)));
-  await sdb.tx(['sets', 'blocks', 'blockRevs', 'versions', 'tracks', 'oplog', 'sources','meta'], 'readwrite', (t) => {
+  await sdb.tx(['sets', 'blocks', 'blockRevs', 'versions', 'tracks', 'oplog', 'sources'], 'readwrite', (t) => {
     t.objectStore('sets').delete(set.id);
-    t.objectStore('meta').delete('ma-audit-v1:'+set.id);
-    t.objectStore('meta').delete('asr-progress:'+set.id);
     blocks.forEach((b) => t.objectStore('blocks').delete(b.id)); revs.forEach((r) => t.objectStore('blockRevs').delete(r.id));
     vers.forEach((v) => t.objectStore('versions').delete(v.id)); tracks.forEach((x) => t.objectStore('tracks').delete(x.id)); oplog.forEach((o) => t.objectStore('oplog').delete(o.id));
     for (const id of srcIds) if (!usedElsewhere.has(id)) t.objectStore('sources').delete(id);

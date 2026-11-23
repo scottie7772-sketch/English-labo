@@ -121,43 +121,15 @@ export async function transcribe(blob, { lang = 'en', onProgress = () => {}, isC
 }
 
 // Keeps one worker (model loaded once) for several pieces of audio. run(audio16k) -> cues with times relative to the piece.
-let activeTranscriber = null;
 export function openTranscriber(lang = 'en', onProgress = () => {}, { fast, quality } = {}) {
   const q = quality || (fast === true ? 'fast' : 'acc'), model = modelFor(lang, q), dtype = dtypeFor(q);
   const devices = useGPU() ? ['webgpu', 'wasm'] : ['wasm'];
-  if (activeTranscriber) throw new Error('別の文字起こしが実行中です。終了してから再開してください');
-  const url = URL.createObjectURL(new Blob([WORKER_SRC], {type:'text/javascript'}));
-  let worker;
-  try { worker = new Worker(url,{type:'module'}); }
-  catch (error) { URL.revokeObjectURL(url); throw error; }
+  const worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })), { type: 'module' });
   const files = {};
-  let pending = null, timeout, closed = false;
-  const settle = (error,result) => {
-    const request = pending;
-    pending = null;
-    clearTimeout(timeout);
-    if (error) request?.reject(error);
-    else request?.resolve(result);
-  };
-  const close = () => {
-    if (closed) return;
-    closed = true;
-    worker.terminate();
-    URL.revokeObjectURL(url);
-    if (activeTranscriber === token) activeTranscriber = null;
-    settle(null,[]);
-  };
-  const token = {};
-  activeTranscriber = token;
-  const deadline = (ms,stage) => {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => { settle(new Error(`文字起こしがタイムアウトしました（${stage}・${model}）`)); close(); },ms);
-  };
-  worker.onerror = (e) => { settle(new Error('音声認識を続けられません（' + model + '）：' + (e?.message || 'Workerエラー'))); close(); };
+  let pending = null;
+  worker.onerror = (e) => { pending?.reject(new Error('音声認識の部品を読み込めませんでした（ネット接続を確認してください）' + (e?.message ? '：' + e.message : ''))); pending = null; };
   worker.onmessage = (e) => {
-    if (closed) return;
     const m = e.data;
-    if (m.type === 'run') { deadline(180000,'認識'); return; }
     if (m.type === 'load' && m.p?.status === 'progress' && m.p.total) {
       files[m.p.file] = [m.p.loaded, m.p.total];
       const [a, b] = Object.values(files).reduce((x, y) => [x[0] + y[0], x[1] + y[1]], [0, 0]);
@@ -168,23 +140,18 @@ export function openTranscriber(lang = 'en', onProgress = () => {}, { fast, qual
       const noTime = !m.chunks?.length;
       const chunks = !noTime ? m.chunks : (m.text || '').trim() ? [{ text: m.text, timestamp: [0, pending?.duration ?? null] }] : [];
       const cues = chunksToCues(chunks, pending?.duration); if (noTime) cues.forEach((c) => (c.est = true));
-      settle(null,Object.assign(cues, { raw: (m.text || chunks.map((c) => c.text).join(' ')).trim(), nChunks: (m.chunks || []).length, noTime, tsFailed: !!m.noTs }));
+      pending?.resolve(Object.assign(cues, { raw: (m.text || chunks.map((c) => c.text).join(' ')).trim(), nChunks: (m.chunks || []).length, noTime, tsFailed: !!m.noTs }));
+      pending = null;
     }
-    else if (m.type === 'error') settle(new Error(m.message));
+    else if (m.type === 'error') { pending?.reject(new Error(m.message)); pending = null; }
   };
   return {
     run(audio, { timestamps = true } = {}) {
-      if (closed || pending) return Promise.reject(new Error('音声認識Workerが使用中、または終了しています'));
       const duration = audio.length / 16000;
-      return new Promise((resolve,reject) => {
-        pending = {resolve,reject,duration};
-        deadline(600000,'モデル準備');
-        try { worker.postMessage({audio,model,dtype,language:LANG_NAME[lang] || null,devices,ts:timestamps},[audio.buffer]); }
-        catch (error) { settle(error); }
-      });
+      return new Promise((resolve, reject) => { pending = { resolve, reject, duration }; worker.postMessage({ audio, model, dtype, language: LANG_NAME[lang] || null, devices, ts: timestamps }, [audio.buffer]); });
     },
     noTime: /moonshine/i.test(model),   // Moonshine gives text only: recognisePiece cuts ~8 s parts so each line's time is close
-    model, close,
+    close() { worker.terminate(); pending?.resolve([]); pending = null; },
   };
 }
 // split [a, b] seconds of 16 kHz audio into pieces of about `len` seconds, cutting at the quietest point near each boundary
@@ -227,10 +194,9 @@ export function speechPieces(audio, a, b, { len = 25, gap = 1.6 } = {}) {
 
 // Fallback when decodeAudioData cannot read the file (e.g. screen recordings with several sound tracks):
 // play it silently at 2x through Web Audio and record what comes out. Must be started from a tap (startNow is called in the tap).
-export function captureTo16k(blob, { rate = 2, onProgress = () => {}, trackIndex = null, signal } = {}) {
+export function captureTo16k(blob, { rate = 2, onProgress = () => {}, trackIndex = null } = {}) {
   let resolve, reject; const done = new Promise((a, b) => { resolve = a; reject = b; });
   function startNow() {
-    if (signal?.aborted) { reject(new Error('中止しました'));return; }
     const AC = window.AudioContext || window.webkitAudioContext; const ac = new AC();
     const v = document.createElement('video'); v.playsInline = true; v.setAttribute('playsinline', '');
     v.preservesPitch = false; v.webkitPreservesPitch = false; v.defaultPlaybackRate = rate; v.playbackRate = rate;
@@ -245,44 +211,21 @@ export function captureTo16k(blob, { rate = 2, onProgress = () => {}, trackIndex
     v.addEventListener('loadedmetadata', () => { const at = v.audioTracks; if (trackIndex != null && at && at.length > 1) for (let i = 0; i < at.length; i++) at[i].enabled = i === trackIndex; });
     v.addEventListener('playing', () => { on = true; });
     const iv = setInterval(() => { if (v.duration) onProgress(Math.min(1, v.currentTime / v.duration), v.currentTime, v.duration); }, 500);
-    let ended = false;
-    const abort = () => fail('中止しました');
-    const cleanup = () => {
-      ended = true;
-      on = false;
-      clearInterval(iv);
-      signal?.removeEventListener('abort',abort);
-      proc.onaudioprocess=null;
-      try { v.pause();src.disconnect();proc.disconnect();mute.disconnect(); } catch {}
-      ac.close?.().catch(()=>{});
-      URL.revokeObjectURL(url);
-    };
-    const fail = msg => {
-      if (ended) return;
-      cleanup();
-      parts.length=0;
-      reject(new Error(msg));
-    };
-    signal?.addEventListener('abort',abort,{once:true});
-    v.addEventListener('error',()=>fail('この動画は再生もできませんでした'));
-    v.addEventListener('ended',async ()=>{
-      if (ended) return;
-      const inRate=ac.sampleRate/v.playbackRate;
-      cleanup();
+    const fail = (msg) => { clearInterval(iv); try { v.pause(); ac.close(); } catch {} URL.revokeObjectURL(url); reject(new Error(msg)); };
+    v.addEventListener('error', () => fail('この動画は再生もできませんでした'));
+    v.addEventListener('ended', async () => {
+      clearInterval(iv); on = false;
+      const inRate = ac.sampleRate / v.playbackRate; ac.close?.(); URL.revokeObjectURL(url);   // n samples per real second cover 'rate' seconds of the file
+      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
       if (!n) return reject(new Error('音声を取り出せませんでした（無音）'));
-      try {
-        const duration=n/inRate;
-        const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
-        const off=new OAC(1,Math.max(1,Math.ceil(duration*16000)),16000);
-        const buf=off.createBuffer(1,n,Math.min(384000,inRate)), output=buf.getChannelData(0);
-        let offset=0;
-        for (const part of parts) {output.set(part,offset);offset+=part.length;}
-        parts.length=0;
-        const bs=off.createBufferSource();bs.buffer=buf;bs.connect(off.destination);bs.start();
-        const r=await off.startRendering();
-        if (signal?.aborted) return reject(new Error('中止しました'));
-        resolve({audio:r.getChannelData(0),duration});
-      } catch(error) {reject(error);}
+      const all = new Float32Array(n); let o = 0; for (const p of parts) { all.set(p, o); o += p.length; }
+      const duration = n / inRate;
+      const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      const off = new OAC(1, Math.max(1, Math.ceil(duration * 16000)), 16000);
+      const buf = off.createBuffer(1, n, Math.min(384000, inRate)); buf.getChannelData(0).set(all);
+      const bs = off.createBufferSource(); bs.buffer = buf; bs.connect(off.destination); bs.start();
+      const r = await off.startRendering();
+      resolve({ audio: r.getChannelData(0), duration });
     });
     ac.resume?.(); v.play().catch((e) => fail('再生を始められませんでした：' + (e?.name || e)));
   }

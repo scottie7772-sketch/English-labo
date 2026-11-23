@@ -99,7 +99,9 @@ export async function commit(set, label, { blocks = [], order, guardedSet }, sou
   for (const b of blocks) { const e = checkBlock(b, sources); if (e.length) throw new Error(`保存できません：${e[0]}`); }
   const current = Object.fromEntries((await Promise.all(blocks.map((b) => sdb.get('blocks', b.id)))).filter(Boolean).map((b) => [b.id, b]));
   const stale = '教材が更新されました。照合候補を出し直してください';
-  if (guardedSet && blocks.some(b => current[b.id]?.rev !== b.rev)) throw new Error(stale);
+  const newIds = new Set(guardedSet?.newIds || []);
+  if (guardedSet && blocks.some(b => newIds.has(b.id) ? Boolean(current[b.id]) : current[b.id]?.rev !== b.rev))
+    throw new Error(stale);
   const entries = [];
   const writes = [];
   for (const b of blocks) {

@@ -35,7 +35,8 @@ function freeRanges(spans, start, end) {
 }
 
 // Build from the current saved rows. Nothing in this index is persisted.
-export function createRescueSearch(blocks, sourceIds, sources) {
+export function createRescueSearch(blocks, sourceIds, sources, {includeEstimated = false} = {}) {
+  const unresolved = b => missing(b) || (includeEstimated && b.sync === 'estimated');
   const rows = blocks.filter(script);
   const sourceOrder = new Map(sourceIds.map((id, index) => [id,index]));
   const files = new Map(sourceIds.map(id => [id,{duration:sources[id]?.duration || 0, assigned:[], evidence:[]}]));
@@ -96,9 +97,9 @@ export function createRescueSearch(blocks, sourceIds, sources) {
   const left = nearby(1,'before'), right = nearby(-1,'after');
   const byRow = new Map(), runs = [];
   for (let i = 0; i < rows.length; i++) {
-    if (!missing(rows[i])) continue;
+    if (!unresolved(rows[i])) continue;
     const start = i;
-    while (i+1 < rows.length && missing(rows[i+1])) i++;
+    while (i+1 < rows.length && unresolved(rows[i+1])) i++;
     const run = {rows:rows.slice(start,i+1),before:left[start],after:right[i]};
     runs.push(run);
     run.rows.forEach(b => byRow.set(b.id,run));

@@ -12,13 +12,14 @@ import { alignScript, scriptToLines, hasReplacementAudio } from './studio-align.
 import { speechRegions, regionStatistics, snapCueToRegion } from './studio-structure.js';
 import { speechFirstPlaybackRange, nextSourceSegment } from './studio-playback-boundary.js';
 import { planVocabAlignment, isVocabTarget, unassignedVocabRanges, vocabKey } from './studio-vocab-align.js';
+import { createRescueSearch } from './studio-prose-rescue.js';
 import { alignUtterances } from './studio-import-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
 export const STUDIO_VERSION = '0.21.5';
-const STUDIO_UPDATED_JST = '2026-11-23 15:00 JST';
+const STUDIO_UPDATED_JST = '2026-11-23 14:58 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -1054,25 +1055,8 @@ async function editorScreen(el, params, revision) {
   }
   // play a block: its segments in order (may switch files)
   // cont: keep going to the next items in order (subtitles follow line by line)
-  // 1.17.6: lines without sound get an estimated place in the recording: between the lines around them, by length of text
-  function estPos() {
-    const ids = set.order.filter((id) => byId[id]), m = new Map();
-    for (let i = 0; i < ids.length; i++) {
-      if (byId[ids[i]].segments.length) continue;
-      let j = i; while (j < ids.length && !byId[ids[j]].segments.length) j++;
-      const P = i > 0 ? byId[ids[i - 1]].segments.at(-1) : null, N = j < ids.length ? byId[ids[j]].segments[0] : null;
-      const run = ids.slice(i, j), len = run.map((id) => Math.max(1, byId[id].text.length)), tot = len.reduce((a, x) => a + x, 0);
-      const sid = (P || N)?.sourceId;
-      if (sid) {
-        const D = srcs[sid]?.duration || 0;
-        const t0 = P ? P.end : Math.max(0, N.start - tot / 15), t1 = N && N.sourceId === sid && N.start > t0 ? N.start : (P ? Math.min(D || Infinity, t0 + tot / 15) : N.start);
-        let acc = 0; run.forEach((id, k) => { m.set(id, { sid, t: +(t0 + ((t1 - t0) * acc) / tot).toFixed(1) }); acc += len[k]; });
-      }
-      i = j - 1;
-    }
-    return m;
-  }
-  let estMap = new Map();
+  const currentRescueSearch = () => createRescueSearch(blocks, materialSourceIds(), srcs);
+  let estMap = new Map(), estimateBlocks = null;
   // A no-audio script row is a navigation marker, not a reason to restart.
   // Keep the original rows and their saved timestamps untouched.
   function nextPlayableFrom(b) {
@@ -1344,7 +1328,10 @@ async function editorScreen(el, params, revision) {
   function drawList() {
     const rs = ops.ranges(set.order.filter((id) => byId[id]), sel);
     $('#info', el).textContent = `${blocks.length}項目${selectMode ? `・選択 ${rs.length}範囲 ${sel.size}項目` : ''}${(set.undo || []).length ? `・元に戻せる操作 ${set.undo.length}` : ''}`;
-    estMap = estPos();
+    if (estimateBlocks !== blocks) {
+      estMap = currentRescueSearch().estimates();
+      estimateBlocks = blocks;
+    }
     // 1.17.7: a line whose sound starts before the previous line's sound ended (same file): both play the overlap
     const overlap = new Map(); { let pv = null; for (const id of set.order) { const x = byId[id]; if (!x?.segments.length) continue; const g = x.segments[0]; if (pv && pv.sourceId === g.sourceId && pv.end > g.start + 0.15 && pv.start < g.start) overlap.set(x.id, +(pv.end - g.start).toFixed(1)); pv = x.segments.at(-1); } }
     const base = onlySel ? blocks.filter((b) => sel.has(b.id)) : blocks;
@@ -1714,10 +1701,6 @@ async function editorScreen(el, params, revision) {
     playing = null;
     vid.pause();
     if (!selected.length) return;
-    await applyVocabAlignment(selected);
-  }
-
-  async function applyVocabAlignment(selected) {
     await reload();
     if (revision !== routeRevision) return;
     const now = vocabInputs();
@@ -1746,19 +1729,7 @@ async function editorScreen(el, params, revision) {
     if (changes.length < selected.length) toast(`${selected.length - changes.length}行は変更・重なりがあるため保留しました`, 4500);
   }
 
-  async function batchVocabAlignment() {
-    if (revision !== routeRevision) return;
-    await reload();
-    if (revision !== routeRevision) return;
-    const {rows, occupied, evidence} = vocabInputs();
-    const planned = planVocabAlignment(rows, evidence, occupied);
-    if (!planned.length) return toast("一括照合できる候補はありません");
-    const ok = await confirmDialog({title:"金フレ型：一括照合",body:`<p>保存済みASRから ${planned.length} 行の一致候補が見つかりました。元音声を再解析せず、候補を一括で割り当てます。</p><p class="small">既存の照合済み・手動編集済み区間は保護し、競合した行は保留します。反映後は試聴で確認してください。1回のUndoで取り消せます。</p>`,okLabel:"候補を一括反映"});
-    if (!ok || revision !== routeRevision) return;
-    await applyVocabAlignment(planned);
-  }
-
-  async function reanalyseVocabRange(sourceId, start, end, targets) {
+  async function reanalyseRescueRange(sourceId, start, end, targets, prose = null) {
     const source = srcs[sourceId];
     const blob = source?.stored ? source.blob : sessionFiles.get(sourceId);
     if (!blob) return toast('音声ファイルを選び直してください');
@@ -1768,7 +1739,7 @@ async function editorScreen(el, params, revision) {
     }
     const dlg = $('#dialog');
     if (dlg.open) return;
-    dlg.innerHTML = '<form method="dialog" class="dlg stack"><h3>金フレ型の区間解析</h3><p id="vocabProgress">音声を準備しています…</p><button class="btn ghost" value="cancel">中止</button></form>';
+    dlg.innerHTML = '<form method="dialog" class="dlg stack"><h3>指定区間の解析</h3><p id="vocabProgress">音声を準備しています…</p><button class="btn ghost" value="cancel">中止</button></form>';
     const progress = $('#vocabProgress', dlg);
     let tr, cancelled = false;
     const stopped = () => cancelled || !dlg.open || revision !== routeRevision;
@@ -1780,7 +1751,7 @@ async function editorScreen(el, params, revision) {
       const first = Math.round(start * 16000);
       const clip = decoded.audio.subarray(first, Math.round(end * 16000));
       highPass(clip);
-      const regions = speechRegions(clip, 16000, {gapFrames:5,minGap:.08});
+      const regions = speechRegions(clip, 16000, prose ? undefined : {gapFrames:5,minGap:.08});
       if (!regions.length || regions.length > 24) throw new Error('独立した発話の境界を絞り込めませんでした');
       tr = openTranscriber('en', text => { if (!stopped()) progress.textContent = text; }, {quality:'acc'});
       const cues = [];
@@ -1788,8 +1759,13 @@ async function editorScreen(el, params, revision) {
         if (stopped()) return;
         const result = await recognisePiece(tr, clip, region.start, region.end);
         const text = (result.raw || result.map(cue => cue.text).join(' ')).trim();
-        if (text) cues.push({sourceId, start:+(first / 16000 + region.start).toFixed(2),
-          end:+(first / 16000 + region.end).toFixed(2), text});
+        const offset = first / 16000;
+        if (prose && result.length && result.every(cue => !cue.est && !cue.boundaryEstimated)) {
+          cues.push(...result.map(cue => ({sourceId,text:cue.text,start:offset+cue.start,end:offset+cue.end})));
+        } else if (text) {
+          // An independent VAD window can supply the boundary of a whole utterance.
+          cues.push({sourceId, start:+(offset+region.start).toFixed(2), end:+(offset+region.end).toFixed(2), text});
+        }
       }
       if (stopped()) return;
       tr.close();
@@ -1797,7 +1773,10 @@ async function editorScreen(el, params, revision) {
       dlg.onclose = null;
       dlg.close();
       await new Promise(resolve => setTimeout(resolve, 60));
-      if (!dlg.open && revision === routeRevision) await previewVocabAlignment(targets, cues);
+      if (!dlg.open && revision === routeRevision) {
+        if (prose) await previewProseAssignment(prose.rows,{sid:sourceId,start,end},{local:cues,expected:prose.expected});
+        else await previewVocabAlignment(targets,cues);
+      }
     } catch (error) {
       if (!stopped()) toast('この区間を解析できませんでした：' + error.message, 5000);
     } finally {
@@ -1806,109 +1785,170 @@ async function editorScreen(el, params, revision) {
     }
   }
 
-  // Trial: assign an existing source-time range to consecutive untimed script rows.
-  // This does NOT modify/copy audio, does not overwrite any timed/manual row,
-  // and deliberately does not pretend that proportional boundaries are ASR-verified.
+  function stopRescuePreview() {
+    ++playbackRequest;
+    pendingSegmentSeek = null;
+    playing = null;
+    vid.pause();
+  }
+
+  const rescueVersion = () => ({updatedAt:set.updatedAt,order:set.order.slice(),undo:(set.undo || []).slice(),redo:(set.redo || []).slice()});
+
+  async function previewProseAssignment(rows, range, {local = null,manual = false,expected} = {}) {
+    await reload();
+    if (revision !== routeRevision) return;
+    const guardedSet = rescueVersion();
+    if (expected && JSON.stringify(guardedSet) !== JSON.stringify(expected)) {
+      toast('前後の割当が更新されたため、候補を再計算しました');
+      return rescueUnassigned(rows[0].id);
+    }
+    const currentRows = rows.map(b => byId[b.id]);
+    const search = currentRescueSearch();
+    if (currentRows.some((b,i) => !b || b.rev !== rows[i].rev || b.text !== rows[i].text || !search.byRow.has(b.id))) {
+      return toast('対象の字幕が更新されました。候補を開き直してください');
+    }
+    const proposed = manual ? [{row:currentRows[0],segment:{sourceId:range.sid,start:range.start,end:range.end},evidence:[]}] :
+      search.assignments(currentRows,range,local);
+    if (!proposed.length) {
+      return confirmDialog({title:'行ごとの区間を確認できませんでした',
+        body:'<p>指定範囲では本文と順序が一意に一致する音声がそろっていません。範囲を広げるか、行数を減らして再解析・試聴してください。1行なら開始と終了を指定して割り当てられます。</p>',
+        okLabel:'閉じる',cancelLabel:null});
+    }
+    if (proposed.some(x => !search.isFree(x.segment))) return toast('既存区間に重なっています。境界を確認してください');
+    const accepted = confirmDialog({title:'朗読の音声区間を保存',
+      body:`<p class="small">${manual ? '入力した範囲を1行に割り当てます。' : local ? '指定区間の発話と本文が順番に一致しました。' : '保存済みASRと本文が順番に一致しました。'}各行を試聴して確認できます。</p>
+        <div class="stack" style="max-height:45vh;overflow:auto">${proposed.map(({row,segment},i) =>
+          `<div class="row wrap"><span class="grow">${esc(row.text)}</span><button type="button" class="btn sm" data-prose-preview="${i}">▶ ${fmt(segment.start)}〜${fmt(segment.end)}</button></div>`).join('')}</div>`,
+      okLabel:'区間を保存'});
+    $$('[data-prose-preview]', $('#dialog')).forEach(button => button.onclick = () => {
+      stopRescuePreview();
+      playBlock({segments:[proposed[Number(button.dataset.prosePreview)].segment]});
+    });
+    const ok = await accepted;
+    if (revision !== routeRevision) return;
+    stopRescuePreview();
+    if (!ok) return;
+    const updates = proposed.map(({row,segment}) => ({...row,segments:[segment],
+      aligned:manual ? row.aligned : true, sync:manual ? 'manual' : 'auto', align:[],
+      lineage:{op:manual ? 'prose-rescue-manual' : 'prose-rescue-match',from:[`${row.id}@${row.rev}`],at:Date.now()}}));
+    if (!local && !manual) {
+      // Replace only original, unedited ASR display duplicates. Revisions and audio remain available to Undo.
+      const raw = new Set(proposed.flatMap(x => x.evidence).map(g => byId[g.id])
+        .filter(b => b?.rev === 1 && b.lineage?.op === 'split' && !b.ja && !(b.holes || []).length));
+      for (const b of raw) updates.push({...b,deleted:true});
+    }
+    const removed = new Set(updates.filter(b => b.deleted).map(b => b.id));
+    await run('朗読の音声割当',{blocks:updates,order:set.order.filter(id => !removed.has(id)),guardedSet});
+  }
+
   async function rescueUnassigned(id) {
-    const ix = set.order.indexOf(id);
-    if (ix < 0 || byId[id]?.segments.length) return toast('音声なしの字幕を選んでください');
-    const missing = [];
-    for (let j = ix; j < set.order.length && missing.length < 12; j++) {
-      const b = byId[set.order[j]];
-      if (!b || b.segments.length || !b.text.trim()) break;
-      missing.push(b);
-    }
-    if (!missing.length) return;
-    const before = set.order.slice(0, ix).reverse().map(k => byId[k]).find(b => b?.segments.length && b.aligned);
-    const after = set.order.slice(ix + missing.length).map(k => byId[k]).find(b => b?.segments.length && b.aligned);
-    const preferred = before?.segments.at(-1)?.sourceId || after?.segments[0]?.sourceId || set.sourceId;
-    const ranges = sourceRanges();
-    const choices = [];
-    for (const r of ranges) {
-      // Untimed regions are suggestions, not proof that speech is present.
-      for (const g of unassignedVocabRanges(r.assigned, 0, r.duration))
-        choices.push({sid:r.id,start:g.start,end:g.end,kind:'字幕未割当',priority:r.id===preferred?0:2});
-      // ASR rows that were not aligned are another possible source of sound.
-      for (const b of blocks) if (!b.aligned && b.segments.length === 1 && b.segments[0].sourceId===r.id) {
-        const g=b.segments[0];
-        if(g.end-g.start>=.12) choices.push({sid:r.id,start:g.start,end:g.end,kind:'未照合ASR',priority:r.id===preferred?1:3});
-      }
-    }
-    const lo = before?.segments.at(-1), hi = after?.segments[0];
-    if(lo && hi && lo.sourceId===hi.sourceId && hi.start-lo.end>=.35)
-      choices.push({sid:lo.sourceId,start:lo.end,end:hi.start,kind:'前後の照合済み字幕の間',priority:-1});
-    for (const range of [lo,hi].filter(Boolean)) {
-      const start = range === lo ? Math.max(range.start, range.end - 12) : range.start;
-      const end = range === hi ? Math.min(range.end, range.start + 12) : range.end;
-      choices.push({sid:range.sourceId,start,end,kind:'前後の照合済み字幕・試聴用',priority:4});
-    }
-    const distance = c => c.sid !== preferred ? Infinity :
-      lo?.sourceId === preferred ? Math.min(Math.abs(c.start - lo.end), Math.abs(c.end - lo.end)) :
-      hi?.sourceId === preferred ? Math.min(Math.abs(c.start - hi.start), Math.abs(c.end - hi.start)) : c.start;
-    choices.sort((a,b)=>a.priority-b.priority || distance(a)-distance(b) || a.start-b.start);
-    const uniq=[];const keys=new Set();
-    for(const c of choices){const k=`${c.sid}:${c.start.toFixed(2)}:${c.end.toFixed(2)}`;if(!keys.has(k)){keys.add(k);uniq.push(c);}}
-    if(!uniq.length) return toast('割当候補がありません。音声を取り込んでから試してください');
+    if (revision !== routeRevision) return;
+    await reload();
+    if (revision !== routeRevision) return;
+    const search = currentRescueSearch();
+    const group = search.byRow.get(id);
+    const expected = rescueVersion();
+    if (!group) return toast('音声なしの字幕を選んでください');
+    const selectedIndex = group.rows.findIndex(b => b.id === id);
+    const first = Math.min(selectedIndex,Math.max(0,group.rows.length-12));
+    const missing = group.rows.slice(first,first+12);
+    let opt = [];
     const dlg=$('#dialog');
-    const opt=uniq.slice(0,50);
+    if (dlg.open) return;
     dlg.innerHTML=`<form method="dialog" class="dlg stack st-edit"><h3>音声なし字幕の救済（試験版）</h3>
-      <p class="small">${missing.length}行を対象に、音声の未割当範囲を提案します。<b>自動的な音声認識・発話境界の確定は行いません。</b>試聴してから反映してください。</p>
-      <label class="field"><span>教材の種類</span><select id="rsMode"><option value="prose">朗読・会話（従来どおり）</option><option value="vocab">金フレ型（見出し語・例文・繰り返し）</option></select></label>
+      <p class="small">連続する未割当 ${group.rows.length}行（今回表示 ${missing.length}行）。試聴してから反映してください。</p>
+      <label class="field"><span>教材の種類</span><select id="rsMode"><option value="prose">朗読・会話（MA型）</option><option value="vocab">金フレ型（見出し語・例文・繰り返し）</option></select></label>
       <label class="field"><span>今回割り当てる行数</span><select id="rsCount">${missing.map((b,i)=>`<option value="${i+1}" ${i===missing.length-1?'selected':''}>${i+1}行</option>`).join('')}</select></label>
       <div class="small" id="rsRows" style="max-height:7rem;overflow:auto">${missing.map((b,i)=>`<div>${i+1}. ${esc(b.text)}</div>`).join('')}</div>
-      <p id="rsModeHint" class="small muted">朗読・会話は従来どおり文章の長さを使って仮分割します。</p>
-      <label class="field"><span>音声候補</span><select id="rsCandidate">${opt.map((c,i)=>`<option value="${i}">${esc(srcs[c.sid]?.name||'音声')} / ${esc(c.kind)} / ${fmt(c.start)}–${fmt(c.end)}</option>`).join('')}</select></label>
-      <div class="row wrap"><label class="field grow"><span>開始（秒）</span><input id="rsStart" type="number" min="0" step="0.01"></label><label class="field grow"><span>終了（秒）</span><input id="rsEnd" type="number" min="0" step="0.01"></label></div>
-      <div class="stack" style="gap:6px"><span class="small muted">位置をボタンで微調整（秒）</span>
-      ${[['開始','rsStart'],['終了','rsEnd']].map(([label,id])=>`<div class="row wrap" style="align-items:center"><span class="small" style="min-width:3em">${label}</span>${[-5,-1,-0.5,0.5,1,5].map(n=>`<button type="button" class="btn sm ghost" data-rs-adjust="${id}" data-rs-step="${n}">${n>0?'+':''}${n}</button>`).join('')}</div>`).join('')}</div>
+      <p id="rsModeHint" class="small muted"></p>
+      <p id="rsAnchors" class="small muted"></p>
+      <label class="chk"><input id="rsExpand" type="checkbox"> 探索範囲を広げる</label>
+      <label class="field"><span>音声候補</span><select id="rsCandidate"></select></label>
+      <div class="row wrap"><label class="field grow"><span>開始（秒）</span><input id="rsStart" type="number" min="0" step="any"></label><label class="field grow"><span>終了（秒）</span><input id="rsEnd" type="number" min="0" step="any"></label></div>
       <div class="row wrap"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div>
-      <p class="small muted">複数行は英文の長さに応じて仮分割します。無音・話速を解析した境界ではありません。反映後に各行の✎から調整できます。既存の音声区間は変更しません。↶で取り消せます。</p>
-      <div class="row end"><button class="btn ghost" value="cancel">やめる</button><button class="btn" value="vocabSaved">金フレ型・既存ASRを照合</button><button class="btn" value="vocabLocal">金フレ型・指定区間を再解析</button><button class="btn primary" value="ok">確認して割り当て</button></div></form>`;
+      <p id="rsReason" class="small muted"></p>
+      <div class="row end">
+        <button class="btn ghost" value="cancel">やめる</button>
+        <button id="rsEditAnchor" class="btn" value="anchor" hidden>既存字幕の境界を確認</button>
+        <button id="rsSaved" class="btn" value="saved">既存ASRと照合</button>
+        <button id="rsLocal" class="btn" value="local">指定区間を再解析</button>
+        <button id="rsApply" class="btn primary" value="ok">1行に手動で割り当て</button>
+      </div></form>`;
     const pick=$('#rsCandidate',dlg),st=$('#rsStart',dlg),en=$('#rsEnd',dlg);
     const mode=$('#rsMode',dlg),count=$('#rsCount',dlg),rows=$('#rsRows',dlg),hint=$('#rsModeHint',dlg);
     const currentRows=()=>missing.slice(0,+count.value);
-    const refreshRows=()=>{
-      const selected=currentRows();
-      rows.innerHTML=selected.map((b,i)=>`<div>${i+1}. ${esc(b.text)}</div>`).join('');
-      const repeated=selected.filter((b,i)=>i>0&&b.text.trim().toLowerCase()===selected[i-1].text.trim().toLowerCase()).length;
-      hint.textContent=mode.value==='vocab'
-        ?`金フレ型：短い見出し語を例文と混同せず、${selected.length}発話を順番に別区間として仮分割します。同一例文の連続 ${repeated}組は統合しません。境界は未検証なので必ず試聴してください。`
-        :'朗読・会話は従来どおり文章の長さを使って仮分割します。';
+    const pickRange = () => opt[Number(pick.value)];
+    const apply = $('#rsApply',dlg), saved = $('#rsSaved',dlg), localButton = $('#rsLocal',dlg);
+    const editAnchor = $('#rsEditAnchor',dlg), expand = $('#rsExpand',dlg);
+    const refreshRows = () => {
+      const selected = currentRows();
+      rows.innerHTML = selected.map((b,i) => `<div>${i+1}. ${esc(b.text)}</div>`).join('');
+      hint.textContent = mode.value === 'prose' ?
+        '複数行は、本文と順序が確認できた区間を保存します。1行は手動指定もできます。' :
+        '金フレ型では例文の繰り返しを別区間として扱います。仮割当は試聴して境界を確認してください。';
+      apply.textContent = mode.value === 'prose' ? '1行に手動で割り当て' : '確認して仮割当';
+      apply.disabled = !pickRange() || Boolean(pickRange().review) || (mode.value === 'prose' && selected.length !== 1);
+      saved.disabled = mode.value === 'prose' && (!pickRange() || Boolean(pickRange().review));
+      localButton.disabled = !pickRange() || Boolean(pickRange().review);
     };
-    mode.onchange=refreshRows;count.onchange=refreshRows;refreshRows();
-    const update=()=>{const c=opt[+pick.value];st.value=c.start.toFixed(2);en.value=c.end.toFixed(2);};
-    pick.onchange=update;update();
-    $$('[data-rs-adjust]',dlg).forEach(button => button.onclick = () => {
-      const field = button.dataset.rsAdjust === 'rsStart' ? st : en;
-      const step = Number(button.dataset.rsStep);
-      const current = Number(field.value);
-      if (!Number.isFinite(current) || !Number.isFinite(step)) return;
-      const duration = Number(srcs[opt[Number(pick.value)]?.sid]?.duration);
-      const max = Number.isFinite(duration) && duration > 0 ? duration : Infinity;
-      field.value = Math.min(max, Math.max(0, Math.round((current + step) * 100) / 100)).toFixed(2);
-    });
-    const stop = () => { ++playbackRequest; pendingSegmentSeek = null; playing = null; vid.pause(); };
-    $('#rsStop', dlg).onclick = stop;
-    $('#rsPlay', dlg).onclick = () => {
-      const c = opt[Number(pick.value)], a = Number(st.value), z = Number(en.value);
-      if (!Number.isFinite(a) || !Number.isFinite(z) || a < 0 || z <= a)
-        return toast('開始・終了を確認してください');
-      stop();
-      playBlock({segments:[{sourceId:c.sid,start:a,end:z}]});
+    const update = () => {
+      const c = pickRange();
+      stopRescuePreview();
+      st.value = c ? String(c.start) : '';
+      en.value = c ? String(c.end) : '';
+      st.disabled = en.disabled = !c || Boolean(c.review);
+      $('#rsPlay',dlg).disabled = !c;
+      editAnchor.hidden = !c?.review;
+      $('#rsReason',dlg).textContent = c ? c.kind : '候補がありません。探索範囲を広げてください。';
+      refreshRows();
+    };
+    const describe = a => a ? `${a.manual ? '手動' : '自動'} ${srcs[a.sourceId]?.name || '音声'} ${fmt(a.start)}〜${fmt(a.end)}「${a.row.text.slice(0,45)}」` : 'なし';
+    const refreshCandidates = () => {
+      const plan = search.search(group,expand.checked);
+      const usable = c => srcs[c.sid]?.stored ? Boolean(srcs[c.sid].blob) : sessionFiles.has(c.sid);
+      opt = [...plan.candidates.filter(usable).slice(0,50),...plan.review.filter(usable)];
+      $('#rsAnchors',dlg).textContent = `前のアンカー ${describe(plan.before)} / 次のアンカー ${describe(plan.after)}${plan.reversed ? '（前後の区間が逆順または重複）' : ''}`;
+      pick.innerHTML = opt.map((c,i) => `<option value="${i}">${esc(srcs[c.sid]?.name || '音声')} / ${esc(c.kind)} / ${fmt(c.start)}–${fmt(c.end)}</option>`).join('');
+      update();
+    };
+    mode.onchange = count.onchange = refreshRows;
+    pick.onchange = update;
+    expand.onchange = refreshCandidates;
+    refreshCandidates();
+    $('#rsStop',dlg).onclick = stopRescuePreview;
+    $('#rsPlay',dlg).onclick = () => {
+      const c = pickRange(), a = Number(st.value), z = Number(en.value);
+      if (!c || !st.value || !en.value || a < 0 || z <= a) return toast('開始・終了を確認してください');
+      stopRescuePreview();
+      playBlock({segments:[{sourceId:c.sid,start:a,end:Math.min(z,a+30)}]});
     };
     dlg.returnValue = '';
     dlg.showModal();
     await new Promise(resolve => dlg.onclose = resolve);
-    stop();
-    const action = dlg.returnValue, c = opt[Number(pick.value)], a = Number(st.value), z = Number(en.value);
-    const targets = new Set(currentRows().map(row => row.id));
-    if (action === 'vocabSaved' || action === 'vocabLocal') {
-      await new Promise(resolve => setTimeout(resolve, 60));
-      if (dlg.open || revision !== routeRevision) return;
-      if (action === 'vocabSaved') return previewVocabAlignment(targets);
-      return reanalyseVocabRange(c.sid, a, z, targets);
+    stopRescuePreview();
+    const action = dlg.returnValue, c = pickRange(), a = Number(st.value), z = Number(en.value);
+    const selected = currentRows(), targets = new Set(selected.map(row => row.id));
+    const prose = mode.value === 'prose';
+    if (action === 'cancel' || !action) return;
+    await new Promise(resolve => setTimeout(resolve,60));
+    if (dlg.open || revision !== routeRevision) return;
+    if (action === 'anchor' && c?.review) {
+      await reload();
+      if (revision !== routeRevision || dlg.open) return;
+      const anchor = byId[c.anchor.row.id];
+      if (!anchor?.segments.length) return rescueUnassigned(id);
+      return editBlock(anchor,{protectNeighbours:true, onFinish:() => rescueUnassigned(id)});
     }
+    if (action === 'saved' && !prose) return previewVocabAlignment(targets);
+    if (!c || c.review || !st.value || !en.value || a < 0 || z-a < .12) return toast('音声範囲を確認してください');
+    const range = {sid:c.sid,start:a,end:z};
+    if (action === 'local') return reanalyseRescueRange(c.sid,a,z,targets,prose ? {rows:selected,expected} : null);
+    if (action === 'saved') return previewProseAssignment(selected,range,{expected});
     if (action !== 'ok') return;
+    if (prose) {
+      if (selected.length === 1) return previewProseAssignment(selected,range,{manual:true,expected});
+      return;
+    }
     await reload();
     if (revision !== routeRevision) return;
     const duration=srcs[c.sid]?.duration;
@@ -1922,13 +1962,11 @@ async function editorScreen(el, params, revision) {
     // identical example sentences. Never merge repetitions or match a headword
     // merely because its token occurs inside a neighboring example.
     // The duration model is only a preview proposal, not an acoustic boundary.
-    const weights=selectedRows.map(b=>mode.value==='vocab'
-      ?Math.max(7, b.text.trim().split(/\s+/).filter(Boolean).length*0.45+3)
-      :Math.max(4,b.text.trim().length));
+    const weights=selectedRows.map(b=>Math.max(7,b.text.trim().split(/\s+/).length*.45+3));
     const sum=weights.reduce((v,w)=>v+w,0);
     let at=a;
     const updates=selectedRows.map((b,i)=>{const end=i===selectedRows.length-1?z:a+(z-a)*weights.slice(0,i+1).reduce((v,w)=>v+w,0)/sum;
-      const result={...b,segments:[{sourceId:c.sid,start:+at.toFixed(2),end:+end.toFixed(2)}],sync:'estimated',align:[],lineage:{op:mode.value==='vocab'?'vocab-rescue-trial':'manual-rescue-trial',from:[`${b.id}@${b.rev}`],at:Date.now()}};at=end;return result;});
+      const result={...b,segments:[{sourceId:c.sid,start:+at.toFixed(2),end:+end.toFixed(2)}],sync:'estimated',align:[],lineage:{op:'vocab-rescue-trial',from:[`${b.id}@${b.rev}`],at:Date.now()}};at=end;return result;});
     if(updates.some(b=>b.segments[0].end-b.segments[0].start<.12))return toast('区間が短すぎます。対象行を減らすか範囲を広げてください');
     const guardedSet = {updatedAt:set.updatedAt, order:set.order.slice(), undo:(set.undo || []).slice(), redo:(set.redo || []).slice()};
     const ok=await confirmDialog({title:'推定位置を割り当てますか？',body:`<p>${updates.length}行に ${esc(srcs[c.sid]?.name||'音声')} の ${fmt(a)}–${fmt(z)} を割り当てます。</p><p class="small">英文の長さによる仮分割です。正しい発話位置は試聴・手動カットで確認してください。元音声は変更しません。</p>`,okLabel:'割り当てる'});
@@ -1949,7 +1987,7 @@ async function editorScreen(el, params, revision) {
       vid.pause();
       playing = null;
       curBlock = null;
-      lastSubId = null;
+      lastSubId = undefined;
       lastHighlightedRow = null;
       await reload();
       drawList();
@@ -2031,7 +2069,7 @@ async function editorScreen(el, params, revision) {
   }
   // 1.17.6: the whole text in order, one line each, to check the script for missing / doubled / misplaced parts
   function fullText() {
-    const ids = set.order.filter((id) => byId[id]); const est = estPos();
+    const ids = set.order.filter((id) => byId[id]); const est = estMap;
     const mark = (b) => b.aligned ? ['✓', 'ok'] : !b.segments.length ? ['○', 'na'] : b.asr ? ['起', 'asr'] : !b.text.trim() ? ['空', 'na'] : ['♪', ''];
     const tm = (b) => b.segments.length ? fmt(b.segments[0].start) : est.has(b.id) ? `≈${fmt(est.get(b.id).t)}` : '';
     // a line whose time goes back (another part of the recording put here) is marked
@@ -2087,7 +2125,7 @@ async function editorScreen(el, params, revision) {
       if (picking) { if (a0 == null || a1 != null) { a0 = id; a1 = null; } else a1 = id; mark2(); drawFB(); return; }
       dlg.close(); if (view !== 'all') setView('all'); setTimeout(() => goNear(id), 50); }));
   }
-  async function editBlock(b) {
+  async function editBlock(b, {protectNeighbours = false,onFinish = null} = {}) {
     vid.pause(); playing = null; editorPlayback?.cleanup?.(); editorPlayback = null;
     let mode = 'hole'; let work = structuredClone(b);
     // Keep the original positions visible while fine-tuning. No media is copied.
@@ -2206,7 +2244,7 @@ async function editorScreen(el, params, revision) {
     const ids0 = set.order.filter((id) => byId[id]), at0 = ids0.indexOf(b.id);
     const prevB = (() => { for (let k = at0 - 1; k >= 0; k--) { const x = byId[ids0[k]]; if (x.segments.length) return x; } return null; })();
     const nextB = (() => { for (let k = at0 + 1; k < ids0.length; k++) { const x = byId[ids0[k]]; if (x.segments.length) return x; } return null; })();
-    let follow = (() => { try { return localStorage.getItem('st-follow') !== '0'; } catch { return true; } })();
+    let follow = !protectNeighbours && (() => { try { return localStorage.getItem('st-follow') !== '0'; } catch { return true; } })();
     function neighbourChanges() {
       if (!follow || !work.segments.length || !b.segments.length) return [];
       const out = [], s0 = b.segments[0], s1 = b.segments.at(-1), n0 = work.segments[0], n1 = work.segments.at(-1);
@@ -2247,13 +2285,17 @@ async function editorScreen(el, params, revision) {
     dlg.returnValue = '';
     dlg.onclose = async () => {
       if (editorPlayback?.dlg === dlg) { editorPlayback.cleanup?.(); editorPlayback = null; vid.pause(); playing = null; }
-      if (dlg.returnValue !== 'ok') return;
-      readText();
-      if (JSON.stringify(work) === JSON.stringify(b)) return;
-      if (work.text !== b.text) delete work.asr;
-      const nb = neighbourChanges();
-      await run('編集', { blocks: [work, ...nb] });
-      if (nb.length) toast(`前後の行（${nb.length}行）の区間もつなげました（↶で戻せます）`, 2500);
+      try {
+        if (dlg.returnValue !== 'ok') return;
+        readText();
+        if (JSON.stringify(work) === JSON.stringify(b)) return;
+        if (work.text !== b.text) delete work.asr;
+        const nb = neighbourChanges();
+        await run('編集', { blocks: [work, ...nb] });
+        if (nb.length) toast(`前後の行（${nb.length}行）の区間もつなげました（↶で戻せます）`, 2500);
+      } finally {
+        if (onFinish && revision === routeRevision) setTimeout(onFinish,60);
+      }
     };
     dlg.showModal();
   }
@@ -2951,8 +2993,35 @@ async function editorScreen(el, params, revision) {
   }
 
   // ---------- header buttons ----------
-  $('#undoB', el).onclick = async () => { const op = await undo(set); if (op) { await reload(); drawList(); toast(`元に戻しました：${op.label}`, 1500); } };
-  $('#redoB', el).onclick = async () => { const op = await redo(set); if (op) { await reload(); drawList(); toast(`やり直しました：${op.label}`, 1500); } };
+  const restoreEdit = async (operation,label) => {
+    const op = await operation(set);
+    if (!op || revision !== routeRevision) return;
+    await reload();
+    if (revision !== routeRevision) return;
+    if (playing?.b.id) {
+      const previous = playing;
+      const current = byId[previous.b.id];
+      const old = previous.b.segments[previous.i];
+      const i = old && current ? current.segments.findIndex(g => g.sourceId === old.sourceId && g.start === old.start && g.end === old.end) : -1;
+      if (i >= 0) playing = {...previous,b:current,i};
+      else if (previous.cont) {
+        ++playbackRequest;
+        pendingSegmentSeek = null;
+        const sid = vid.dataset.src, t = vid.currentTime;
+        const contains = g => g.sourceId === sid && t >= g.start && t < g.end;
+        const b = blocks.find(row => row.segments.some(contains));
+        playing = b ? {...previous,b,i:b.segments.findIndex(contains),range:null} : null;
+      } else stopRescuePreview();
+    }
+    curBlock = byId[curBlock?.id] || null;
+    lastSubId = undefined;
+    lastHighlightedRow = null;
+    drawList();
+    drawSub();
+    toast(`${label}${op.label}`,1500);
+  };
+  $('#undoB', el).onclick = () => restoreEdit(undo,'元に戻しました：');
+  $('#redoB', el).onclick = () => restoreEdit(redo,'やり直しました：');
   $('#selB', el).onclick = () => { selectMode = !selectMode; arrange = false; if (!selectMode) { sel.clear(); onlySel = false; } drawList(); };
   $('#arrB', el).onclick = () => { arrange = !arrange; if (arrange) { arrangeBase = (set.undo || []).length; selectMode = false; sel.clear(); onlySel = false; vid.pause(); playing = null; } drawList(); };
   $('#pp', el).onclick = () => {
@@ -3001,7 +3070,6 @@ async function editorScreen(el, params, revision) {
       <button class="btn" value="addMedia">音声・動画を追加</button>
       <button class="btn" value="align">スクリプトと照合</button>
       <button class="btn" value="alignVocab">金フレ型：既存ASRと照合</button>
-      <button class="btn" value="alignVocabBatch">金フレ型：一括照合（既存ASR）</button>
       <button class="btn" value="alignProse">朗読・会話向け：緩めのスクリプト照合（試験版）</button>
       <button class="btn" value="refine">音声位置を一括自動調整（試験版）</button>
       <button class="btn" value="realign">構造を使った再照合（プレビュー）</button>
@@ -3040,7 +3108,6 @@ async function editorScreen(el, params, revision) {
       if (v === 'addMedia') nav(`import?to=${set.id}`);
       if (v === 'align') runAlign();
       if (v === 'alignVocab') previewVocabAlignment();
-      if (v === 'alignVocabBatch') batchVocabAlignment();
       if (v === 'alignProse') runAlign({ mode: 'prose' });
       if (v === 'refine') refineBoundaries();
       if (v === 'realign') previewStructuralRealign();

@@ -2923,41 +2923,41 @@ async function editorScreen(el, params, revision) {
   // This is intentionally limited to untranscribed audio rows: splitting an aligned
   // sentence would otherwise silently corrupt its text/audio correspondence.
   async function splitAudioRange() {
-    const candidates = blocks.filter(b => !b.deleted && !b.text?.trim() && b.segments?.length === 1 && b.segments[0].end - b.segments[0].start >= 2);
-    if (!candidates.length) return toast('分割できる未文字起こしの音声区間がありません', 4000);
+    const candidates = blocks.filter(b => !b.deleted && b.segments?.length === 1 && b.segments[0].end - b.segments[0].start >= 2);
+    if (!candidates.length) return toast('分割できる音声区間がありません', 4000);
     const dlg = $('#dialog');
     const initial = candidates.find(b => b.segments[0].sourceId === vid.dataset.src && vid.currentTime > b.segments[0].start && vid.currentTime < b.segments[0].end) || candidates[0];
     const options = candidates.map(b => `<option value="${esc(b.id)}" ${b.id === initial.id ? 'selected' : ''}>${esc(srcs[b.segments[0].sourceId]?.name || '音声')}：${fmt(b.segments[0].start)}〜${fmt(b.segments[0].end)}</option>`).join('');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>音声を分割（元ファイルはそのまま）</h3>
-      <p class="small muted">文字起こし前の音声区間を2つに分けます。音声のコピーや再エンコードはせず、元ファイルの時刻を維持します。繰り返し操作すれば何区間にも分割できます。</p>
+      <p class="small muted">音声区間を2つに分けます。元ファイルは変更しません。照合済みの行を分割すると、英文は前半に保持し、後半は未割当になります。分割後に字幕の境界と英文を確認してください。</p>
       <label class="field"><span>分割する区間</span><select id="splitTarget">${options}</select></label>
-      <label class="field"><span>分割位置（秒・元ファイル基準）</span><input id="splitAtTime" type="number" step="0.1" inputmode="decimal"></label>
+      <label class="field"><span>分割位置（分:秒.小数・元ファイル基準）</span><input id="splitAtTime" type="text" inputmode="decimal" placeholder="例：12:34.5"></label>
       <div id="splitInfo" class="small muted"></div>
       <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">2区間に分割</button></div></form>`;
     const target = $('#splitTarget', dlg), time = $('#splitAtTime', dlg), info = $('#splitInfo', dlg);
     const update = (preferPlayhead = false) => {
       const b = byId[target.value], g = b?.segments?.[0]; if (!g) return;
       const at = preferPlayhead && vid.dataset.src === g.sourceId && vid.currentTime > g.start + .5 && vid.currentTime < g.end - .5 ? vid.currentTime : (g.start + g.end) / 2;
-      time.min = (g.start + .5).toFixed(2); time.max = (g.end - .5).toFixed(2);
-      time.value = at.toFixed(2);
+      time.value = fmt(at);
       info.textContent = `元ファイルの ${fmt(g.start)}〜${fmt(g.end)}（${fmt(g.end - g.start)}）`;
     };
     target.onchange = () => update(false); update(true);
     dlg.returnValue = ''; dlg.onclose = null; dlg.showModal();
     await new Promise(resolve => { dlg.onclose = resolve; });
     if (dlg.returnValue !== 'ok') return;
-    const b = byId[target.value], g = b?.segments?.[0], at = Number(time.value);
+    const b = byId[target.value], g = b?.segments?.[0], at = parseClock(time.value);
     if (!b || !g || !Number.isFinite(at) || at <= g.start + .45 || at >= g.end - .45) return toast('分割位置は区間の内側に指定してください', 4000);
     // Recheck current block to avoid overwriting edits made in another action.
     const current = await sdb.get('blocks', b.id);
-    if (!current || current.deleted || current.rev !== b.rev || current.text?.trim()) return toast('対象区間が更新されています。もう一度開いてください', 4000);
-    const a = newBlock(set.id, {segments:[{...g,end:+at.toFixed(2)}],text:'',label:b.label||'',sync:'auto'});
+    if (!current || current.deleted || current.rev !== b.rev) return toast('対象区間が更新されています。もう一度開いてください', 4000);
+    const hasScript = !!b.text?.trim();
+    const a = newBlock(set.id, {segments:[{...g,end:+at.toFixed(2)}],text:b.text||'',ja:b.ja||'',label:b.label||'',sync:hasScript?'estimated':'auto'});
     const z = newBlock(set.id, {segments:[{...g,start:+at.toFixed(2)}],text:'',sync:'auto'});
     const order = set.order.slice(), idx = order.indexOf(b.id);
     if (idx < 0) return toast('対象区間が見つかりません');
     order.splice(idx, 1, a.id, z.id);
     await run('音声区間を分割', {blocks:[a,z,{...b,deleted:true}],order});
-    toast(`${fmt(g.start)}〜${fmt(at)} / ${fmt(at)}〜${fmt(g.end)} に分割しました`);
+    toast(`${fmt(g.start)}〜${fmt(at)} / ${fmt(at)}〜${fmt(g.end)} に分割しました${hasScript?'（英文は前半に保持・要確認）':''}`);
   }
 
   // ---------- transcription (Whisper in the browser; audio never leaves the device) ----------

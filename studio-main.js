@@ -1991,7 +1991,7 @@ async function editorScreen(el, params, revision) {
       <label class="chk"><input id="rsExpand" type="checkbox"> 探索範囲を広げる</label>
       <label class="field"><span>音声候補</span><select id="rsCandidate"></select></label>
       <div class="row wrap"><label class="field grow"><span>開始（分:秒.小数）</span><input id="rsStart" type="text" inputmode="decimal" placeholder="14:03.0"></label><label class="field grow"><span>終了（分:秒.小数）</span><input id="rsEnd" type="text" inputmode="decimal" placeholder="14:10.6"></label></div>
-      <div class="st-rescue-timeline"><div class="row st-rescue-hscroll"><button type="button" class="btn sm" id="rsView">ファイル全体を表示</button><button type="button" class="btn sm" id="rsStartZero">開始を先頭へ</button><button type="button" class="btn sm" id="rsEndLast">終了を末尾へ</button></div><p class="small muted">バーの上の開始ポインターと下の終了ポインターをドラッグして調整できます。中央をタップすると再生位置を移動します。</p><div class="st-rescue-track" id="rsTrack" style="position:relative;touch-action:none;min-height:44px"><i id="rsSelection" style="pointer-events:none"></i><b id="rsHead" style="pointer-events:none"></b><button type="button" class="st-range-pointer st-range-start" id="rsHandleStart" aria-label="割当開始をドラッグ"></button><button type="button" class="st-range-pointer st-range-end" id="rsHandleEnd" aria-label="割当終了をドラッグ"></button></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div><div class="row wrap st-preview-controls"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsPlayHead">▶ 頭2秒</button><button type="button" class="btn sm" id="rsPlayLast">▶ 後ろ2秒</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div></div>
+      <div class="st-rescue-timeline"><div class="row st-rescue-hscroll"><button type="button" class="btn sm" id="rsView">ファイル全体を表示</button><button type="button" class="btn sm" id="rsStartZero">開始を先頭へ</button><button type="button" class="btn sm" id="rsEndLast">終了を末尾へ</button></div><p class="small muted">バーの下の開始ポインターと上の終了ポインターをドラッグして調整できます。中央をタップすると再生位置を移動します。</p><div class="st-rescue-track" id="rsTrack" style="position:relative;touch-action:none;min-height:44px"><i id="rsSelection" style="pointer-events:none"></i><b id="rsHead" style="pointer-events:none"></b><button type="button" class="st-range-pointer st-range-start" id="rsHandleStart" aria-label="割当開始をドラッグ"></button><button type="button" class="st-range-pointer st-range-end" id="rsHandleEnd" aria-label="割当終了をドラッグ"></button></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div><div class="row wrap st-preview-controls"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsPlayHead">▶ 頭2秒</button><button type="button" class="btn sm" id="rsPlayLast">▶ 後ろ2秒</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div></div>
       <div class="small st-rescue-script" id="rsRows" style="max-height:7rem;overflow:auto">${missing.map((b,i)=>`<div>${i+1}. ${esc(b.text)}</div>`).join('')}</div>
       <p id="rsReason" class="small muted"></p><p class="small muted">朗読の手動割当は「今回割り当てる行数」を1行にしてください。時刻は例 14:03.0 と入力できます。</p>
       <div class="row end st-rescue-hscroll">
@@ -2347,6 +2347,10 @@ async function editorScreen(el, params, revision) {
     const originalSegments = structuredClone(b.segments);
     const dlg = $('#dialog');
     let draw = () => {
+      // Preserve the reading/trim position when a step button redraws the editor.
+      // Replacing dialog.innerHTML otherwise resets its scroll to the top.
+      const previousScroll = dlg.scrollTop;
+      const previousFormScroll = dlg.querySelector('.st-edit')?.scrollTop ?? 0;
       const toks = tokensOf(work.text);
       dlg.innerHTML = `<form method="dialog" class="dlg stack st-edit"><div class="st-editor-sticky"><h3>項目の編集</h3><button class="btn sm ghost" value="cancel">閉じる</button><button class="btn sm primary" value="ok">保存</button></div>
         <div class="row"><button type="button" class="btn sm" id="ePlay">${icon('play')} 再生</button><button type="button" class="btn sm" id="eLoop">ループ</button><span id="ePlaybackState" class="small muted" role="status" aria-live="off">未再生</span><span class="small muted">${fmt(blockDur(work))}・${work.segments.length}区間</span></div>
@@ -2366,6 +2370,9 @@ async function editorScreen(el, params, revision) {
           <div class="row wrap"><span class="small">開始 ${fmt(s.start)}（終了固定）</span><button type="button" class="btn xs" data-adj="${i}:start:-1">−1秒</button><button type="button" class="btn xs" data-adj="${i}:start:-0.1">−0.1秒</button><button type="button" class="btn xs" data-adj="${i}:start:0.1">＋0.1秒</button><button type="button" class="btn xs" data-adj="${i}:start:1">＋1秒</button><button type="button" class="btn xs" data-now="${i}:start">今の位置</button></div>
           <div class="row wrap"><span class="small">終了 ${fmt(s.end)}（開始固定）</span><button type="button" class="btn xs" data-adj="${i}:end:-1">−1秒</button><button type="button" class="btn xs" data-adj="${i}:end:-0.1">−0.1秒</button><button type="button" class="btn xs" data-adj="${i}:end:0.1">＋0.1秒</button><button type="button" class="btn xs" data-adj="${i}:end:1">＋1秒</button><button type="button" class="btn xs" data-now="${i}:end">今の位置</button></div></div>`).join('')}</div>
         </form>`;
+      dlg.scrollTop = previousScroll;
+      const nextForm = dlg.querySelector('.st-edit');
+      if (nextForm) nextForm.scrollTop = previousFormScroll;
       $('#ePlay', dlg).onclick = () => {
         readText();
         if (editorPlayback && !vid.paused && !editorPlayback.done) { vid.pause(); playing = null; editorPlayback.started = true; editorPlayback.stopped = true; return; }

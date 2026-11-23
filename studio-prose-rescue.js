@@ -201,7 +201,7 @@ export function createRescueSearch(blocks, sourceIds, sources) {
     return result;
   }
 
-  function assignments(targets,{sid,start,end},local) {
+  function assignments(targets,{sid,start,end},local,{partial = false} = {}) {
     const file = files.get(sid);
     if (!file || !targets.length || !(end > start)) return [];
     const sourceEvidence = local || file.evidence.slice(
@@ -230,6 +230,13 @@ export function createRescueSearch(blocks, sourceIds, sources) {
       }
       return options;
     });
+    if (partial) {
+      // Rows may be missing from the recognised speech. Walk forward and backward, skipping rows
+      // without a match; keep only rows whose match is the same both ways (the order fixes it).
+      let c = start; const fw = matches.map(options => { const f = options.find(x => x.segment.start >= c); if (f) c = f.segment.end; return f || null; });
+      c = end; const bw = []; for (let i = matches.length-1; i >= 0; i--) { const f = matches[i].findLast(x => x.segment.end <= c); bw[i] = f || null; if (f) c = f.segment.start; }
+      return fw.map((x,i) => x && x === bw[i] ? {...x,row:targets[i]} : null).filter(Boolean);
+    }
     // Earliest and latest valid ordered solutions must agree for every row.
     let cursor = start;
     const earliest = matches.map(options => {

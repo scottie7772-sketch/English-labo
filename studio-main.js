@@ -19,7 +19,7 @@ import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange,
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.10';
+export const STUDIO_VERSION = '0.21.11';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -965,7 +965,26 @@ async function editorScreen(el, params, revision) {
   const sel = new Set();
   let arrange = false, drag = null, arrangeBase = 0;
   let selectMode = false, rangeMode = null, anchor = null, onlySel = false, moveMode = false, playing = null, curBlock = null;
-  const reload = async () => { set = await sdb.get('sets', set.id); blocks = await liveBlocks(set); byId = Object.fromEntries(blocks.map((b) => [b.id, b])); for (const id of [...sel]) if (!byId[id]) sel.delete(id); };
+  const reload = async () => { set = await sdb.get('sets', set.id); blocks = await liveBlocks(set); byId = Object.fromEntries(blocks.map((b) => [b.id, b])); for (const id of [...sel]) if (!byId[id]) sel.delete(id); cutRanges = await computeCuts(); };
+  // Sound of lines the user deleted (and that no remaining line uses) is skipped in continuous playback,
+  // so it is not heard inside the neighbouring subtitles. Sound no line ever had (pauses, a second reading) still plays.
+  let cutRanges = new Map();
+  async function computeCuts() {
+    const m = new Map();
+    try {
+      const live = new Set(set.order);
+      for (const d of await sdb.byIndex('blocks', 'setId', set.id)) {
+        if (!d.deleted || !d.userDel || live.has(d.id)) continue;
+        for (const g of d.segments || []) {
+          let pieces = [[g.start, g.end]];
+          for (const b of blocks) for (const h of b.segments) if (h.sourceId === g.sourceId)
+            pieces = pieces.flatMap(([a, z]) => (h.end <= a || h.start >= z) ? [[a, z]] : [[a, h.start], [h.end, z]].filter(([x, y]) => y - x > 0.001));
+          for (const [a, z] of pieces) if (z - a >= 0.15) { if (!m.has(g.sourceId)) m.set(g.sourceId, []); m.get(g.sourceId).push([a, z]); }
+        }
+      }
+    } catch {}
+    return m;
+  }
   await reload();
   if (revision !== routeRevision) return;
   const src = srcs[set.sourceId];
@@ -1216,6 +1235,10 @@ async function editorScreen(el, params, revision) {
     // Subtitle highlighting is driven independently by the media clock.
     if (pendingSegmentSeek && !vid.seeking && vid.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
         vid.dataset.src === pendingSegmentSeek.sourceId) pendingSegmentSeek = null;
+    if (playing?.cont && !vid.paused && !vid.seeking && !pendingSegmentSeek) {
+      const t = vid.currentTime, cut = cutRanges.get(vid.dataset.src)?.find(([a, z]) => t >= a && t < z - 0.05);
+      if (cut) vid.currentTime = cut[1];   // jump over sound of a deleted line
+    }
     if (playing && !playing.cont && !vid.paused && !vid.seeking && !pendingSegmentSeek && vid.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       const s = playing.b.segments[playing.i];
       if (vid.currentTime >= (playing.range?.end ?? s.end)) {
@@ -1475,7 +1498,7 @@ async function editorScreen(el, params, revision) {
       $('#restDel', list).onclick = async () => {
         if (!(await confirmDialog({ title: `${shown.length}行を削除`, body: '<p class="small">音声ファイル自体は消えません（ほかの行で使っていなければ「容量の整理」で消せます）。↶で戻せます。</p>', okLabel: '削除する', danger: true }))) return;
         const ids = new Set(shown.map((b) => b.id));
-        await run('残りの文字起こしを削除', { blocks: shown.map((b) => ({ ...b, deleted: true })), order: set.order.filter((id) => !ids.has(id)) });
+        await run('残りの文字起こしを削除', { blocks: shown.map((b) => ({ ...b, deleted: true, userDel: true })), order: set.order.filter((id) => !ids.has(id)) });
         toast(`${ids.size}行を削除しました（↶で戻せます）`, 2500);
       };
     }
@@ -1490,7 +1513,7 @@ async function editorScreen(el, params, revision) {
     // a deep swipe to the left shows 削除 (undo ↶ brings it back)
     if (!selectMode && !arrange && !onlySel) swipeToDelete($$('.st-row', list), async (row) => {
       const b = byId[row.dataset.id]; if (!b) return false;
-      await run('削除', { blocks: [{ ...b, deleted: true }], order: set.order.filter((id) => id !== b.id) });
+      await run('削除', { blocks: [{ ...b, deleted: true, userDel: true }], order: set.order.filter((id) => id !== b.id) });
       toast('削除しました（↶ で戻せます）', 2500); return true;
     }, { width: 96, openAt: 130 });
     drawBar();
@@ -2152,6 +2175,28 @@ async function editorScreen(el, params, revision) {
     return run('前後アンカーから再推定',{blocks:[{...current,segments:[segment],sync:'estimated',align:[],lineage:{op:'prose-reestimate',from:[`${current.id}@${current.rev}`],at:Date.now()}}]});
   }
 
+  // 1.19.18: the chosen sound is (partly) inside other lines' saved ranges (often a neighbour aligned too long).
+  // Offer to shorten those lines so the chosen range goes to this line. Manually edited lines are never shortened.
+  async function takeOverRange(row, seg, {label, sync, op, guardedSet}) {
+    const hits = blocks.filter(b => b.id !== row.id && b.segments.some(g => g.sourceId === seg.sourceId && g.start < seg.end - .05 && g.end > seg.start + .05));
+    if (!hits.length) return false;
+    const locked = hits.filter(b => b.sync === 'manual');
+    if (locked.length) { toast(`手動で調整した行と重なります：「${locked[0].text.slice(0,30)}」。範囲を狭めるか、その行を先に直してください`, 6000); return true; }
+    const cut = hits.map(b => {
+      const segs = b.segments.flatMap(g => g.sourceId !== seg.sourceId || g.end <= seg.start || g.start >= seg.end ? [g]
+        : [{...g,end:seg.start},{...g,start:seg.end}].filter(x => x.end - x.start >= .15));
+      return {b, segs};
+    });
+    const ok = await confirmDialog({title:'ほかの行の区間と重なっています',
+      body:`<p class="small">${fmt(seg.start)}〜${fmt(seg.end)} は次の行に割り当て済みです。これらの行の区間を縮めて、「${esc(row.text.slice(0,40))}」に割り当てますか？（↶で戻せます）</p>
+        <div class="stack small" style="max-height:40vh;overflow:auto">${cut.map(({b,segs}) => `<div>「${esc(b.text.slice(0,40))}」<br><span class="muted">${b.segments.map(g=>`${fmt(g.start)}〜${fmt(g.end)}`).join('・')} → ${segs.length ? segs.map(g=>`${fmt(g.start)}〜${fmt(g.end)}`).join('・') : '音声なし'}</span></div>`).join('')}</div>`,
+      okLabel:'縮めて割り当てる'});
+    if (!ok || revision !== routeRevision) return true;
+    const updates = [{...row,segments:[seg],sync,align:[],lineage:{op,from:[`${row.id}@${row.rev}`],at:Date.now()}},
+      ...cut.map(({b,segs}) => ({...b,segments:segs,align:[],sync:segs.length ? b.sync : b.sync,aligned:segs.length ? b.aligned : false,lineage:{op:'trim-for-rescue',from:[`${b.id}@${b.rev}`],at:Date.now()}}))];
+    await run(label,{blocks:updates,guardedSet});
+    return true;
+  }
   async function previewProseAssignment(rows, range, {local = null,manual = false,expected} = {}) {
     await reload();
     if (revision !== routeRevision) return;
@@ -2166,9 +2211,33 @@ async function editorScreen(el, params, revision) {
       return toast('対象の字幕が更新されました。候補を開き直してください');
     }
     const rawProposed = manual ? [{row:currentRows[0],segment:{sourceId:range.sid,start:range.start,end:range.end},evidence:[]}] :
-      search.assignments(currentRows,range,local);
-    const proposed = rawProposed.map(x => ({...x,segment:rescuePreferredFragment(x.segment,new Set(currentRows.map(r=>r.id)))}));
-    if (proposed.some(x => !x.segment)) return toast('指定範囲に未使用の音声がありません。照合済み・手動調整済みの区間を確認してください', 5500);
+      search.assignments(currentRows,range,local,{partial:true});
+    const mine = new Set(currentRows.map(r=>r.id));
+    let proposed = rawProposed.map(x => ({...x,segment:rescuePreferredFragment(x.segment,mine)}));
+    if (manual) {   // the user chose the exact range: if other lines hold (part of) it, offer to shorten them
+      const want = {sourceId:range.sid,start:range.start,end:range.end}, got = proposed[0]?.segment;
+      if (!got || got.start - want.start > .1 || want.end - got.end > .1) {
+        if (await takeOverRange(currentRows[0], want, {label:'朗読の音声割当（重なりを調整）',sync:'manual',op:'prose-rescue-manual',guardedSet})) return;
+      }
+      if (!got) return toast('指定範囲に未使用の音声がありません。照合済み・手動調整済みの区間を確認してください', 5500);
+    }
+    proposed = proposed.filter(x => x.segment);
+    // Rows whose text was not recognised: when exactly one such row sits between two confirmed rows (or the ends of
+    // the chosen range), the unused sound between them is offered as an estimate (unticked if it looks too short / long).
+    if (!manual && proposed.length) {
+      const got = new Map(proposed.map(x => [x.row.id,x]));
+      for (let i = 0; i < currentRows.length; i++) {
+        const r = currentRows[i]; if (got.has(r.id)) continue;
+        const prev = i > 0 ? got.get(currentRows[i-1].id) : null, next = i < currentRows.length-1 ? got.get(currentRows[i+1].id) : null;
+        const a = prev ? prev.segment.end : i === 0 ? range.start : null, z = next ? next.segment.start : i === currentRows.length-1 ? range.end : null;
+        if (a == null || z == null || !(prev || next) || z - a < 0.3) continue;
+        const segment = rescuePreferredFragment({sourceId:range.sid,start:a,end:z},mine);
+        if (!segment || !search.isFree(segment)) continue;
+        const n = Math.max(1, r.text.trim().split(/\s+/).length), d = segment.end - segment.start;
+        proposed.push({row:r,segment,evidence:[],est:true,doubt:d < n/6 || d > Math.max(4,n*1.2)});
+      }
+      proposed.sort((x,y) => currentRows.indexOf(x.row) - currentRows.indexOf(y.row));
+    }
     if (!proposed.length) {
       return confirmDialog({title:'行ごとの区間を確認できませんでした',
         body:'<p>指定範囲では本文と順序が一意に一致する音声がそろっていません。範囲を広げるか、行数を減らして再解析・試聴してください。1行なら開始と終了を指定して割り当てられます。</p>',
@@ -2176,11 +2245,14 @@ async function editorScreen(el, params, revision) {
     }
     // Recheck against current occupied intervals; user sees the trimmed boundaries in preview.
     if (proposed.some(x => !search.isFree(x.segment))) return toast('他の割当と重複するため保存できません。候補を確認してください');
+    const nOk = proposed.filter(x => !x.est).length, nEst = proposed.length - nOk, nNone = currentRows.length - proposed.length;
+    const keep = new Set(proposed.map((x,i) => (x.doubt ? -1 : i)).filter(i => i >= 0));
     const accepted = confirmDialog({title:'朗読の音声区間を保存',
-      body:`<p class="small">${manual ? '入力した範囲を1行に割り当てます。' : local ? '指定区間の発話と本文が順番に一致しました。' : '保存済みASRと本文が順番に一致しました。'}各行を試聴して確認できます。</p>
-        <div class="stack" style="max-height:45vh;overflow:auto">${proposed.map(({row,segment},i) =>
-          `<div class="row wrap"><span class="grow">${esc(row.text)}</span><button type="button" class="btn sm" data-prose-preview="${i}">▶ ${fmt(segment.start)}〜${fmt(segment.end)}</button></div>`).join('')}</div>`,
+      body:`${manual ? '' : `<p class="small"><b>一致 ${nOk}行</b>${nEst ? `・前後の間から推定 ${nEst}行` : ''}${nNone ? `・<span class="muted">見つからず ${nNone}行（そのまま）</span>` : ''}。チェックした行だけ保存します。</p>`}<p class="small">${manual ? '入力した範囲を1行に割り当てます。' : local ? '指定区間の発話と本文が順番に一致した行です。' : '保存済みASRと本文が順番に一致した行です。'}各行を試聴して確認できます。</p>
+        <div class="stack" style="max-height:45vh;overflow:auto">${proposed.map(({row,segment,est,doubt},i) =>
+          `<div class="row wrap">${manual ? '' : `<input type="checkbox" data-prose-keep="${i}" ${keep.has(i) ? 'checked' : ''} aria-label="保存する">`}<span class="grow">${est ? `<span class="tagp warn">${doubt ? '推定・長さ要確認' : '推定'}</span> ` : ''}${esc(row.text)}</span><button type="button" class="btn sm" data-prose-preview="${i}">▶ ${fmt(segment.start)}〜${fmt(segment.end)}</button></div>`).join('')}</div>`,
       okLabel:'区間を保存'});
+    $$('[data-prose-keep]', $('#dialog')).forEach(box => box.onchange = () => { const i = Number(box.dataset.proseKeep); if (box.checked) keep.add(i); else keep.delete(i); });
     $$('[data-prose-preview]', $('#dialog')).forEach(button => button.onclick = () => {
       stopRescuePreview();
       playBlock({segments:[proposed[Number(button.dataset.prosePreview)].segment]});
@@ -2189,9 +2261,11 @@ async function editorScreen(el, params, revision) {
     if (revision !== routeRevision) return;
     stopRescuePreview();
     if (!ok) return;
-    const updates = proposed.map(({row,segment}) => ({...row,segments:[segment],
-      aligned:manual ? row.aligned : true, sync:manual ? 'manual' : 'auto', align:[],
-      lineage:{op:manual ? 'prose-rescue-manual' : 'prose-rescue-match',from:[`${row.id}@${row.rev}`],at:Date.now()}}));
+    if (!manual) proposed = proposed.filter((x,i) => keep.has(i));
+    if (!proposed.length) return toast('保存する行がありません');
+    const updates = proposed.map(({row,segment,est}) => ({...row,segments:[segment],
+      aligned:manual || est ? row.aligned : true, sync:manual ? 'manual' : est ? 'estimated' : 'auto', align:[],
+      lineage:{op:manual ? 'prose-rescue-manual' : est ? 'prose-rescue-gap' : 'prose-rescue-match',from:[`${row.id}@${row.rev}`],at:Date.now()}}));
     if (!local && !manual) {
       // Replace only original, unedited ASR display duplicates. Revisions and audio remain available to Undo.
       const raw = new Set(proposed.flatMap(x => x.evidence).map(g => byId[g.id])
@@ -2212,7 +2286,7 @@ async function editorScreen(el, params, revision) {
     if (!group) return toast('音声なしの字幕を選んでください');
     const selectedIndex = group.rows.findIndex(b => b.id === id);
     const first = selectedIndex;
-    const missing = group.rows.slice(first,first+12);
+    const missing = group.rows.slice(first,first+40);   // many rows at once: only rows confirmed by the order are saved
     let opt = [];
     const dlg=$('#dialog');
     if (dlg.open) return;
@@ -2221,7 +2295,7 @@ async function editorScreen(el, params, revision) {
     dlg.innerHTML=`<form method="dialog" class="dlg stack st-edit"><div class="st-editor-sticky"><h3>音声なし字幕の救済（試験版）</h3><button class="btn sm ghost" value="cancel">閉じる</button><button id="rsApply" class="btn sm primary" value="ok">1行に手動で割り当て</button></div>
       <p class="small">連続する未割当 ${group.rows.length}行（今回表示 ${missing.length}行）。試聴してから反映してください。</p>
       <label class="field"><span>教材の種類</span><select id="rsMode"><option value="prose">朗読・会話（MA型）</option><option value="vocab">金フレ型（見出し語・例文・繰り返し）</option></select></label>
-      <label class="field"><span>今回割り当てる行数</span><select id="rsCount">${missing.map((b,i)=>`<option value="${i+1}" ${i===0?'selected':''}>${i+1}行</option>`).join('')}</select></label>
+      <label class="field"><span>今回割り当てる行数</span><select id="rsCount">${missing.map((b,i)=>`<option value="${i+1}" ${i===missing.length-1?'selected':''}>${i+1}行${i===missing.length-1&&i?'（まとめて・確かな行だけ保存）':''}</option>`).join('')}</select></label>
       <p id="rsModeHint" class="small muted"></p>
       <p id="rsAnchors" class="small muted"></p>
       <label class="chk"><input id="rsExpand" type="checkbox"> 探索範囲を広げる</label>
@@ -2322,6 +2396,11 @@ async function editorScreen(el, params, revision) {
       const plan = search.search(group,expand.checked);
       const usable = c => srcs[c.sid]?.stored ? Boolean(srcs[c.sid].blob) : sessionFiles.has(c.sid);
       opt = [...plan.candidates.filter(usable).slice(0,50),...plan.review.filter(usable)];
+      // 1.19.18: the space between the two anchors is offered even when other lines hold it (it can be taken over)
+      if (plan.before && plan.after && plan.before.sourceId === plan.after.sourceId && plan.after.start - plan.before.end >= .3 &&
+          usable({sid:plan.before.sourceId}) && !opt.some(c => c.inside && !c.review))
+        opt.unshift({sid:plan.before.sourceId,start:plan.before.end,end:plan.after.start,inside:true,distance:0,matchingAsr:0,
+          kind:'前後のアンカー間（ほかの行の区間と重なりあり：保存時に縮めるか確認します）'});
       // A review-only result used to disable both clock inputs and Apply.
       // Always offer a non-destructive manual range on the same source, even
       // when no unused gap was found. Commit still checks occupied intervals.
@@ -2391,6 +2470,9 @@ async function editorScreen(el, params, revision) {
       const row=byId[selected[0].id];
       if (!row || row.rev!==selected[0].rev || row.segments.length || !sameRescueVersion(guardedSet, expected)) return toast('字幕が更新されています。再探索してください');
       const trimmed=rescuePreferredFragment({sourceId:c.sid,start:a,end:z},new Set([row.id]));
+      if (!trimmed || trimmed.start - a > .1 || z - trimmed.end > .1) {
+        if (await takeOverRange(row,{sourceId:c.sid,start:a,end:z},{label:'前後アンカー間の仮割当（重なりを調整）',sync:'estimated',op:'prose-anchor-gap-trial',guardedSet})) return;
+      }
       if (!trimmed) return toast('指定範囲に未使用の音声がありません。照合済み・手動調整済みの区間を確認してください', 5500);
       return run('前後アンカー間の仮割当',{blocks:[{...row,segments:[trimmed],sync:'estimated',align:[],lineage:{op:'prose-anchor-gap-trial',from:[`${row.id}@${row.rev}`],at:Date.now()}}],guardedSet});
     }
@@ -2474,7 +2556,7 @@ async function editorScreen(el, params, revision) {
     if (a === 'del') {
       if (!(await confirmDialog({ title: `${list0.length}項目を削除`, body: '<p>元に戻す（↶）で戻せます。</p>', okLabel: '削除', danger: true }))) return;
       const ids = new Set(list0.map((b) => b.id)); sel.clear();
-      return run('削除', { blocks: list0.map((b) => ({ ...b, deleted: true })), order: set.order.filter((id) => !ids.has(id)) });
+      return run('削除', { blocks: list0.map((b) => ({ ...b, deleted: true, userDel: true })), order: set.order.filter((id) => !ids.has(id)) });
     }
     if (a === 'shift') {
       const v = await askText('ずらす秒数（例：0.5 / -1.2）', '0.5'); const d = parseFloat(v); if (!d) return;
@@ -2502,7 +2584,7 @@ async function editorScreen(el, params, revision) {
     if (!list.length) return toast(`${what}はありません`);
     if (!(await confirmDialog({ title: `${list.length}行を削除`, body: `<p>${esc(what)}を ${list.length}行削除します。</p><p class="small">音声ファイル自体は消えません。↶で戻せます。</p>`, okLabel: '削除する', danger: true }))) return;
     const ids = new Set(list.map((b) => b.id));
-    await run(`${what}を削除`, { blocks: list.map((b) => ({ ...b, deleted: true })), order: set.order.filter((id) => !ids.has(id)) });
+    await run(`${what}を削除`, { blocks: list.map((b) => ({ ...b, deleted: true, userDel: true })), order: set.order.filter((id) => !ids.has(id)) });
     toast(`${ids.size}行を削除しました（↶で戻せます）`, 2500);
   }
   // 1.18.1: a copy of the whole material (lines copied; the sound files are shared, not copied)

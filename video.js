@@ -6,6 +6,7 @@ import { L, curLang, langAttr } from './langs.js';
 import { pickWordsDialog } from './pick.js';
 import { headKey, wordsByHead, findDuplicate, newWord, newSense, saveWord, splitList } from './words.js';
 import { clozeHTML, toggleToken, candidates } from './cloze.js';
+import { translationRows, planTranslations } from './video-translations.js';
 import { recordAnswer } from './judge.js';
 
 // ---------- subtitles ----------
@@ -57,6 +58,24 @@ async function replaceCues(videoId, cues) {
   const old = await db.byIndex('cues', 'videoId', videoId);
   await db.tx(['cues'], 'readwrite', (t) => { const os = t.objectStore('cues'); old.forEach((c) => os.delete(c.id)); cues.forEach((c) => os.put(c)); });
 }
+function studioCue(it, start, offset = 0) {
+  const segments = it.segments.filter(segment => segment.media === it.segments[0].media)
+    .map(segment => ({ start: offset + segment.start, end: offset + segment.end }));
+  return {
+    itemId: it.id, start, end: it.role === 'example' ? segments[0].end : segments.at(-1).end, en: it.text || '', ja: it.ja || '',
+    segments, sourceSegments: it.segments, studySet: it.studySet, role: it.role, sync: it.sync,
+    ...(it.holes?.length ? { holes: it.holes } : {}),
+  };
+}
+function preserveCueEdits(c, old) {
+  c.id = old.id;
+  if (old.dict) c.dict = old.dict;
+  if (old.enEdited) Object.assign(c, { en: old.en, enEdited: true, holes: old.holes || [] });
+  if (old.jaEdited || (!c.ja && old.ja)) Object.assign(c, { ja: old.ja, jaEdited: old.jaEdited });
+  if (old.timeEdited) Object.assign(c, { start: old.start, end: old.end, segments: old.segments, timeEdited: true });
+  if (old.en === c.en && old.holes?.length) c.holes = old.holes;
+}
+
 // a studio material (from a pack file, or sent directly by the studio inside this app) → video lab.
 // The same material again: subtitles are replaced in place, learning records kept. getFile(m) → Blob of a media file or null.
 export async function importMaterial(manifest, mat, getFile, { askUpdate = true } = {}) {
@@ -66,7 +85,7 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true 
   const mine = all.filter((x) => x.from?.material && x.from.material === manifest.materialId && x.kind !== 'multi');
   const oldParent = all.find((x) => x.kind === 'multi' && x.from?.material === manifest.materialId);
   const findOld = (m) => mine.find((x) => x.from.media === m.id) || mine.find((x) => !x.from.media && (x.name === manifest.title || x.name === `${manifest.title}（${m.name}）`));
-  const withText = (m) => mat.items.some((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja));
+  const withText = (m) => mat.items.some(it => (it.text || it.ja) && it.segments?.some(g => g.media === m.id));
   const plan = mat.media.filter(withText).map((m) => ({ m, old: findOld(m) }));
   let update = false;
   if (plan.some((p) => p.old)) {
@@ -109,18 +128,18 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true 
       const a0 = Math.min(...segs.map((g) => g.start)), a1 = Math.max(...segs.map((g) => g.end));
       if (a0 > 0.05 || (m.duration && a1 < m.duration - 0.05)) v.trim = { start: a0, end: a1, why: 'スタジオのカット' };
     }
+    v.materialType = mat.set?.materialType || v.materialType;
     if (freshBlob) await putVideoBlob(v.id, freshBlob);
     await saveVideoMeta(v);
     const fresh = mat.items.filter((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja))
-      .map((it) => ({ id: uid('c_'), videoId: v.id, itemId: it.id, start: it.segments[0].start, end: it.segments.at(-1).media === m.id ? it.segments.at(-1).end : it.segments[0].end, en: it.text || '', ja: it.ja || '', ...(it.holes?.length ? { holes: it.holes } : {}) }))
+      .map(it => ({ id: uid('c_'), videoId: v.id, ...studioCue(it, it.segments[0].start) }))
       .sort((a, b) => a.start - b.start);
     if (old) {   // keep cue ids (word links) and records of lines that still exist
       const prev = await db.byIndex('cues', 'videoId', v.id); const used = new Set();
       for (const c of fresh) {
         const o = prev.find((x) => !used.has(x.id) && x.itemId && x.itemId === c.itemId) || prev.find((x) => !used.has(x.id) && !x.itemId && x.en && x.en === c.en);
         if (!o) continue; used.add(o.id);
-        c.id = o.id; if (o.dict) c.dict = o.dict;
-        if (o.en === c.en && o.holes?.length) c.holes = o.holes;   // same sentence: keep the cloze holes and their results
+        preserveCueEdits(c, o);
       }
     }
     await replaceCues(v.id, fresh);
@@ -129,20 +148,24 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true 
   // several sound files in one material (a script with its audio pieces): also one entry that plays them as one timeline, in script order
   const medias = mat.media.filter(withText);
   if (medias.length > 1 && made.length === medias.length) {
-    const order = []; for (const it of mat.items) { const mid = it.segments?.[0]?.media; if (mid && !order.includes(mid) && medias.some((m) => m.id === mid)) order.push(mid); }
+    const allowed = new Set(medias.map(m => m.id));
+    const order = [...new Set(mat.items.flatMap(it => (it.segments || []).map(g => g.media)).filter(id => allowed.has(id)))];
     let off = 0; const parts = order.map((mid) => { const x = made.find((y) => y.m.id === mid); const dur = x.m.duration || x.v.duration || 0; const p = { videoId: x.v.id, media: mid, offset: +off.toFixed(3), dur }; off += dur; return p; });
     const P = (update && oldParent) ? { ...(await db.get('videos', oldParent.id)) } : { id: uid('v_'), lang: manifest.lang || curLang(), lastTime: 0, createdAt: Date.now() };
     Object.assign(P, { kind: 'multi', name: manifest.title, parts, duration: off, size: 0, mime: 'audio/mp4', audioChecked: true, audioFixed: true, from: { material: manifest.materialId, multi: true, pack: manifest.packId, updatedAt: Date.now() } });
-    delete P.blob; delete P.trim;
+    delete P.blob; delete P.trim; P.materialType = mat.set?.materialType || P.materialType;
     await db.put('videos', P);
     const partOf = Object.fromEntries(parts.map((p) => [p.media, p]));
     const fresh = mat.items.filter((it) => partOf[it.segments?.[0]?.media] && (it.text || it.ja)).map((it) => {
-      const p = partOf[it.segments[0].media], g0 = it.segments[0], g1 = it.segments.at(-1).media === g0.media ? it.segments.at(-1) : g0;
-      return { id: uid('c_'), videoId: P.id, itemId: it.id, part: p.videoId, start: +(p.offset + g0.start).toFixed(3), end: +(p.offset + g1.end).toFixed(3), en: it.text || '', ja: it.ja || '', ...(it.holes?.length ? { holes: it.holes } : {}) };
+      const p = partOf[it.segments[0].media];
+      const cue = studioCue(it, p.offset + it.segments[0].start, p.offset);
+      if (it.role === 'example') cue.segments = it.segments.filter(g => partOf[g.media])
+        .map(g => ({ start: partOf[g.media].offset + g.start, end: partOf[g.media].offset + g.end }));
+      return { id: uid('c_'), videoId: P.id, part: p.videoId, ...cue };
     });   // script order = timeline order
     if (update && oldParent) {
       const prev = await db.byIndex('cues', 'videoId', P.id); const used = new Set();
-      for (const c of fresh) { const o = prev.find((x) => !used.has(x.id) && x.itemId === c.itemId); if (!o) continue; used.add(o.id); c.id = o.id; if (o.dict) c.dict = o.dict; if (o.en === c.en && o.holes?.length) c.holes = o.holes; }
+      for (const c of fresh) { const o = prev.find((x) => !used.has(x.id) && x.itemId === c.itemId); if (!o) continue; used.add(o.id); preserveCueEdits(c, o); }
     }
     await replaceCues(P.id, fresh);
     first = P;
@@ -347,7 +370,7 @@ function probeDuration(file) {
 
 // ================= Player =================
 const SPEEDS = [0.75, 0.9, 1, 1.25, 1.5];
-const VIEW_DEFAULTS = { mode: 'both', order: 'en', opEn: 1, opJa: 1, fsEn: 19, fsJa: 15, step: false, test: false, cloze: false, clozeUnit: 'phrase', clozeAuto: false, jaHint: true, loopMax: 0 };
+const VIEW_DEFAULTS = { mode: 'both', order: 'en', primary: 'en', opEn: 1, opJa: 1, fsEn: 19, fsJa: 15, step: false, test: false, cloze: false, clozeUnit: 'phrase', clozeAuto: false, jaHint: true, loopMax: 0 };
 const OPS = [1, 0.7, 0.4, 0.2], FS_EN = [[15, '小'], [19, '中'], [23, '大'], [28, '特大']], FS_JA = [[12, '小'], [15, '中'], [18, '大'], [22, '特大']];
 const MODES = [['both', '英＋日'], ['en', '英語のみ'], ['ja', '日本語のみ'], ['none', '字幕なし']];
 async function loadView() {
@@ -406,7 +429,7 @@ export async function videoPlay(el, params) {
   let cues = await cuesOf(v.id);
   const view = await loadView();
   const saveView = () => setSetting('video.view', view);
-  let loop = null, ab = null, curId = null, rafId = 0, saveT = 0, seekT = 0, loopN = 0, stepCue = null, revealedCue = null, editing = false;
+  let singleSegment = null, loop = null, ab = null, curId = null, rafId = 0, saveT = 0, seekT = 0, loopN = 0, stepCue = null, revealedCue = null, editing = false;
   const revealed = new Map();   // cueId -> Set(hole index)
   const url = parts ? parts[0]?.url || '' : fileBlob ? URL.createObjectURL(fileBlob) : '';
   const aurl = '';   // (1.3.1–1.3.2 used a separate sound file; now the chosen track of the video itself is played)
@@ -446,6 +469,7 @@ export async function videoPlay(el, params) {
     <div id="dict" class="card stack dict" hidden></div>
     <div id="shadow" class="card stack" hidden></div>
     <div class="vsheet" id="shSet" hidden><div class="vsheet-in card stack"><div class="row between"><b>表示・学習の設定</b><button class="btn sm" data-shclose>閉じる</button></div><div class="vset stack" id="set">
+      <div class="fgrp"><span>主字幕</span><div class="seg" id="primary"><button data-v="en">${esc(TL)}</button><button data-v="ja">日本語</button></div></div>
       <div class="fgrp"><span>2言語のとき</span><div class="seg" id="order"><button data-v="en">${esc(L(vlang).ch)}が上</button><button data-v="ja">日本語が上</button></div></div>
       <div class="fgrp"><span>${esc(TL)}の透明度</span><div class="seg" id="opEn">${OPS.map((o) => `<button data-v="${o}">${o * 100}%</button>`).join('')}</div></div>
       <div class="fgrp"><span>${esc(TL)}の文字</span><div class="seg" id="fsEn">${FS_EN.map(([n, l]) => `<button data-v="${n}">${l}</button>`).join('')}</div></div>
@@ -467,7 +491,7 @@ export async function videoPlay(el, params) {
         <button class="btn" id="askClaude" ${cues.some((c) => c.en) ? '' : 'disabled'}>日本語訳をClaudeに頼む（依頼文ごとコピー）</button>
         <button class="btn" data-paste="ja">返ってきた日本語訳を貼り付け</button>
         <label class="btn" for="fEn">${esc(TL)}字幕ファイル（SRT/VTT）を読み込む</label>
-        <label class="btn" for="fJa">日本語訳ファイルを読み込む</label>
+        <label class="btn" for="fJa">日本語訳を読み込む（TXT・CSV・JSON・SRT/VTT）</label>
         <button class="btn" data-paste="en">${esc(TL)}字幕を貼り付け</button>
       </div></div></div></div>
     <p class="small muted center" id="modeTxt"></p>
@@ -581,10 +605,11 @@ export async function videoPlay(el, params) {
     root.style.setProperty('--fsEn', view.fsEn + 'px'); root.style.setProperty('--fsJa', view.fsJa + 'px');
     root.style.setProperty('--opEn', view.opEn); root.style.setProperty('--opJa', view.opJa);
     root.classList.toggle('jatop', view.order === 'ja');
+    root.dataset.primary = view.primary;
     root.dataset.mode = view.mode;   // the subtitle box keeps one height per mode (the screen below does not jump)
     if (sub) requestAnimationFrame(fitSub);
     const segOn = (id, val) => $$(`#${id} button`, el).forEach((b) => b.classList.toggle('on', String(b.dataset.v) === String(val)));
-    segOn('order', view.order); segOn('opEn', view.opEn); segOn('opJa', view.opJa); segOn('fsEn', view.fsEn); segOn('fsJa', view.fsJa);
+    segOn('order', view.order); segOn('primary', view.primary); segOn('opEn', view.opEn); segOn('opJa', view.opJa); segOn('fsEn', view.fsEn); segOn('fsJa', view.fsJa);
     segOn('loopMax', view.loopMax); segOn('clozeUnit', view.clozeUnit); segOn('clozeAuto', view.clozeAuto ? 1 : 0);
     $('#step', el).checked = view.step; $('#jaHint', el).checked = view.jaHint;
     $('#qMode', el).textContent = `字幕：${MLABEL(view.mode)}`;
@@ -625,6 +650,7 @@ export async function videoPlay(el, params) {
         <span class="ct">${fmtT(c.start)}</span>
         <span class="grow ctext ${view.test && !rangeMode ? 'veil' : ''}">${rangeMode && c.en ? `<div class="sen" ${langAttr(vlang)}>${toks(c).map((k, i) => `<span class="rk" data-rk="${c.id}:${i}">${esc(k.w)}</span>`).join(' ')}</div>` : textHTML(c, 'list') || '<span class="muted small">（非表示）</span>'}</span>
         ${c.en ? `<button class="cbtn" data-word="${c.id}" aria-label="単語登録">＋語</button>` : ''}
+        ${(c.role === 'example' ? c.segments || [] : []).slice(1).map((g, i) => `<button class="cbtn" data-repeat="${i+1}">復唱 ${i+1}</button>`).join('')}
         <button class="cbtn" data-edit="${c.id}" aria-label="編集">✎</button>
       </div>`).join('');
   }
@@ -635,7 +661,7 @@ export async function videoPlay(el, params) {
       ${ng.length ? `<div class="stack" style="margin-top:6px">${ng.map((x) => `<div class="row between"><span>「${esc(x.h.text)}」</span><button class="btn sm" data-addng="${x.c.id}:${x.i}">単語帳に追加</button></div>`).join('')}</div>` : ''}` : '<span class="muted">まだ穴がありません</span>';
   }
 
-  function cueAt(t) { let r = null; for (const c of cues) { if (c.start <= t && t < c.end) r = c; if (c.start > t) break; } return r; }
+  function cueAt(t) { let r = null; for (const c of cues) { if (c.start > t) break; if ((c.role === 'example' && c.segments?.length ? c.segments : [c]).some(g => g.start <= t && t < g.end)) r = c; } return r; }
   function tick() {
     if (!vid) return;
     const t = vid.currentTime;
@@ -648,6 +674,9 @@ export async function videoPlay(el, params) {
     }
     if (ab?.b != null && t >= ab.b) vid.currentTime = ab.a;
     if (shadowOn) shadowTick(t);
+    if (singleSegment && !vid.seeking && t >= singleSegment.end - .025 && !vid.paused) {
+      vid.pause(); singleSegment = null;
+    }
     if ((view.step || view.test) && !loop && stepCue && t >= stepCue.end - 0.03 && !vid.paused) { vid.pause(); vid.currentTime = Math.max(stepCue.start, stepCue.end - 0.05); stepCue = null; }
     const c = cueAt(t), id = c?.id || null;
     if (id !== curId) {
@@ -671,7 +700,7 @@ export async function videoPlay(el, params) {
     if (!vid) return; const t = vid.currentTime; if (Math.abs(t - savedT) < 0.5) return; savedT = t;
     const cur = await db.get('videos', v.id); if (cur) { cur.lastTime = t; cur.playedAt = Date.now(); await saveVideoMeta(cur); }
   }
-  const playFrom = (c) => { if (!vid || !c) return; vid.currentTime = v.trim ? Math.max(v.trim.start, Math.min(v.trim.end - 0.05, c.start + 0.01)) : c.start + 0.01; stepCue = c; revealedCue = null; if (loop) { loop = { start: c.start, end: c.end }; loopN = 0; } vid.play(); };
+  const playFrom = (c) => { if (!vid || !c) return; singleSegment = null; vid.currentTime = v.trim ? Math.max(v.trim.start, Math.min(v.trim.end - 0.05, c.start + 0.01)) : c.start + 0.01; stepCue = c; revealedCue = null; if (loop) { loop = { start: c.start, end: c.end }; loopN = 0; } vid.play(); };
 
   // ---- cloze grading ----
   async function gradeHole(c, hi, ok) {
@@ -740,9 +769,19 @@ export async function videoPlay(el, params) {
     const ed = e.target.closest('[data-edit]'); if (ed) return editCue(ed.dataset.edit);
     const row = e.target.closest('.cue'); if (!row) return;
     const c = cues.find((x) => x.id === row.dataset.id);
+    const repeat = e.target.closest('[data-repeat]');
+    if (repeat) {
+      const segment = c.segments[Number(repeat.dataset.repeat)];
+      if (!vid || !segment) return;
+      if (dictOn) return setRange(segment.start, segment.end, c.en);
+      playFrom({ ...c, ...segment });
+      if (!loop) singleSegment = segment;
+      return;
+    }
     if (dictOn) { dictTyped = ''; return setRange(c.start, c.end, c.en); }   // dictation: the tapped sentence becomes the repeat range
     if (shadowOn) { shadow.cur = c; shadow.n = 0; shadow.waiting = false; clearTimeout(shadowT); }
     playFrom(c);
+    if (!loop && c.studySet && !shadowOn) singleSegment = c;
   });
 
   // ================= dictation / shadowing tools =================
@@ -987,7 +1026,7 @@ export async function videoPlay(el, params) {
   $('#loopBtn', el).onclick = () => $('#qLoop', el).click();
   $('#qTest', el).onclick = () => { view.test = !view.test; revealedCue = null; saveView(); applyView(); };
   const seg = (id, key, num = true) => ($('#' + id, el).onclick = (e) => { const b = e.target.closest('button'); if (!b) return; view[key] = num ? +b.dataset.v : b.dataset.v; saveView(); applyView(); });
-  seg('order', 'order', false); seg('opEn', 'opEn'); seg('opJa', 'opJa'); seg('fsEn', 'fsEn'); seg('fsJa', 'fsJa'); seg('loopMax', 'loopMax'); seg('clozeUnit', 'clozeUnit', false);
+  seg('order', 'order', false); seg('primary', 'primary', false); seg('opEn', 'opEn'); seg('opJa', 'opJa'); seg('fsEn', 'fsEn'); seg('fsJa', 'fsJa'); seg('loopMax', 'loopMax'); seg('clozeUnit', 'clozeUnit', false);
   $('#clozeAuto', el).onclick = (e) => { const b = e.target.closest('button'); if (!b) return; view.clozeAuto = b.dataset.v === '1'; saveView(); applyView(); };
   $('#step', el).onchange = (e) => { view.step = e.target.checked; saveView(); applyView(); };
   $('#jaHint', el).onchange = (e) => { view.jaHint = e.target.checked; saveView(); applyView(); };
@@ -1045,6 +1084,7 @@ export async function videoPlay(el, params) {
   }
   async function importText(text, lang) {
     const list = parseSubs(text);
+    if (lang === 'ja' && (cues.some(c => c.en) || !list.length)) return importTranslations(text, list);
     if (!list.length) return toast('字幕を読み取れませんでした（SRT / VTT形式か確認してください）');
     if (lang === 'en') {
       if (cues.some((c) => c.en) && !(await confirmDialog({ title: `${TL}字幕を置き換えますか？`, body: '<p>今の字幕は置き換わります。日本語訳は時間が重なる行に付け直します。</p>', okLabel: '置き換える' }))) return;
@@ -1057,6 +1097,42 @@ export async function videoPlay(el, params) {
     await replaceCues(v.id, cues);
     toast(`${list.length}行を読み込みました`);
     videoPlay(el, params);
+  }
+  async function importTranslations(text, timed) {
+    const base = cues.filter(c => c.en);
+    if (!base.length) return toast('先に英語字幕を追加してください');
+    try {
+      const rows = timed.length ? timed.map(row => ({ ...row, ja: row.text })) : translationRows(text);
+      const { changes, unmatched, positional } = planTranslations(base, rows);
+      const numbered = new Map(base.map((cue, i) => [cue.id, i + 1]));
+      const sample = [...changes.values()].slice(0, 10).map(cue =>
+        `<li>${numbered.get(cue.id)}. ${esc(cue.en)}<br>${esc(cue.ja)}</li>`).join('');
+      const mappingHelp = '<p>対応を指定するには CSV の cue,ja 列を使います。字幕行を 3 や 3-5 の形式で指定できます。</p>';
+      if (!(await confirmDialog({
+        title: changes.size ? '日本語訳の対応を確認' : '対応する英語字幕が見つかりません',
+        body: `<p>英語字幕 ${base.length}行・更新候補 ${changes.size}行。${positional ? '字幕順に対応付けます。' : ''}</p>
+          ${unmatched.length ? `<p>対応を確認できない入力行 ${unmatched.slice(0, 20).join('、')}${unmatched.length > 20 ? ' …' : ''}（${unmatched.length}件）</p>` : ''}
+          ${sample ? `<ol class="small">${sample}</ol>` : ''}${mappingHelp}`,
+        okLabel: changes.size ? '日本語訳だけ保存' : '閉じる',
+        cancelLabel: changes.size ? 'キャンセル' : null,
+      })) || !changes.size) return;
+      // Read each current row inside the transaction so a translation import only updates Japanese.
+      await db.tx(['cues'], 'readwrite', tx => {
+        const store = tx.objectStore('cues');
+        for (const cue of changes.values()) {
+          const req = store.get(cue.id);
+          req.onsuccess = () => {
+            const current = req.result;
+            if (current?.en === cue.en) store.put({ ...current, ja: cue.ja, jaEdited: true });
+          };
+        }
+      });
+      cues = await cuesOf(v.id);
+      drawList(); drawSub();
+      toast('日本語訳を保存しました');
+    } catch (error) {
+      toast('日本語訳を読み込めませんでした。' + (error?.message || error), 5000);
+    }
   }
   async function importFile(e, lang) { const f = e.target.files[0]; e.target.value = ''; if (f) importText(await f.text(), lang); }
   async function pasteDialog(lang) {
@@ -1076,8 +1152,8 @@ export async function videoPlay(el, params) {
     vid?.pause();
     const dlg = $('#dialog');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${isNew ? '字幕を追加' : '字幕を編集'}</h3>
-      <div class="row"><label class="field grow"><span>開始（分:秒）</span><input id="es" value="${fmtT(c.start)}" inputmode="decimal"></label><button type="button" class="btn sm" id="nowS">現在位置</button></div>
-      <div class="row"><label class="field grow"><span>終了（分:秒）</span><input id="ee" value="${fmtT(c.end)}" inputmode="decimal"></label><button type="button" class="btn sm" id="nowE">現在位置</button></div>
+      <div class="row"><label class="field grow"><span>開始（秒または分:秒）</span><input id="es" value="${c.start.toFixed(3)}" inputmode="decimal"></label><button type="button" class="btn sm" id="nowS">現在位置</button></div>
+      <div class="row"><label class="field grow"><span>終了（秒または分:秒）</span><input id="ee" value="${c.end.toFixed(3)}" inputmode="decimal"></label><button type="button" class="btn sm" id="nowE">現在位置</button></div>
       <label class="field"><span>英語</span><textarea id="een" rows="2" autocapitalize="off" spellcheck="false">${esc(c.en)}</textarea></label>
       <label class="field"><span>日本語訳</span><textarea id="eja" rows="2">${esc(c.ja)}</textarea></label>
       <div class="row between">${isNew ? '<span></span>' : '<button class="btn sm danger" value="del">削除</button>'}<span class="row"><button class="btn ghost" value="cancel">キャンセル</button><button class="btn primary" value="ok">保存</button></span></div></form>`;
@@ -1093,8 +1169,15 @@ export async function videoPlay(el, params) {
       const s = parseT($('#es', dlg).value), e = parseT($('#ee', dlg).value);
       if (!(s >= 0) || !(e > s)) return toast('時間が正しくありません（終了は開始より後）');
       const newEn = $('#een', dlg).value.trim();
-      if (newEn !== c.en) c.holes = [];   // token positions changed
-      Object.assign(c, { start: s, end: e, en: newEn, ja: $('#eja', dlg).value.trim() });
+      const ja = $('#eja', dlg).value.trim();
+      if (newEn !== c.en) { c.holes = []; c.enEdited = true; }
+      if (ja !== c.ja) c.jaEdited = true;
+      if (Math.abs(s - c.start) > .00051 || Math.abs(e - c.end) > .00051) {
+        c.timeEdited = true;
+        if (c.segments?.length) c.segments = [{ start: s, end: e }, ...c.segments.slice(1)];
+        Object.assign(c, { start: s, end: e });
+      }
+      Object.assign(c, { en: newEn, ja });
       await db.put('cues', c);
       if (isNew) cues.push(c);
       cues.sort((a, b) => a.start - b.start);
@@ -1156,7 +1239,7 @@ export async function videoPlay(el, params) {
     const dlg = $('#dialog');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(v.name)}</h3>
       <label class="btn" for="fEn" data-close>${esc(TL)}字幕ファイルを読み込む</label>
-      <label class="btn" for="fJa" data-close>日本語訳ファイルを読み込む</label>
+      <label class="btn" for="fJa" data-close>日本語訳を読み込む（TXT・CSV・JSON・SRT/VTT）</label>
       <button class="btn" value="pen">${esc(TL)}字幕を貼り付け</button>
       <button class="btn" value="pja">日本語訳を貼り付け</button>
       <button class="btn" value="copy" ${cues.some((c) => c.en) ? '' : 'disabled'}>${esc(TL)}字幕をコピー（翻訳用SRT）</button>

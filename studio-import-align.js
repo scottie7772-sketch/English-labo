@@ -9,7 +9,9 @@ export function similarity(a,b) {
   for(let i=1;i<=n;i++)for(let j=1;j<=m;j++)d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(x[i-1]===y[j-1]?0:1));
   return Math.max(0,1-d[n][m]/Math.max(n,m));
 }
-export function alignUtterances(script, utterances) {
+export function alignUtterances(script, utterances, { profile = 'prose' } = {}) {
+  if (profile.startsWith('toeic-')) return toeicAlignment(script, utterances, profile);
+  if (script.length * utterances.length > 250000) return toeicAlignment(script, utterances, 'toeic-talk');
   // Monotone alignment; unrecognised audio and missing script lines are permitted.
   // Only strong, locally unique matches are proposed, never extrapolated timestamps.
   const N=script.length,M=utterances.length;
@@ -38,4 +40,64 @@ export function alignUtterances(script, utterances) {
     // Duplicate sentences are inherently ambiguous without independent anchors.
     return competitors===0;
   });
+}
+
+// TOEIC scripts may include speaker labels and a paragraph may span several VAD regions.
+function toeicAlignment(script, utterances, profile) {
+  const clean = text => String(text || '').replace(/^(?:(?:speaker\s+)?[mfwabMFWAB]\d*|(?:speaker|woman|man)\s*\d*|[A-Z][a-z]+):\s*/, '').replace(/^\([A-D]\)\s*/i, '');
+  const keys = script.map(row => words(clean(row.text)).join(' '));
+  const byFirst = new Map();
+  keys.forEach((key, i) => {
+    const first = key.split(' ')[0];
+    if (!byFirst.has(first)) byFirst.set(first, []);
+    byFirst.get(first).push(i);
+  });
+  const maxPieces = profile === 'toeic-talk' ? 24 : profile === 'toeic-mixed' ? 16 : 6;
+  const maxGap = profile === 'toeic-talk' ? 2.5 : 1.2;
+  const candidates = [];
+  for (let i = 0; i < utterances.length; i++) {
+    const first = utterances[i];
+    let combined = '';
+    for (let j = i; j < Math.min(utterances.length, i + maxPieces); j++) {
+      const last = utterances[j];
+      if (j > i && (last.start - utterances[j - 1].end > maxGap || last.start < utterances[j - 1].end)) break;
+      const piece = words(clean(last.text)).join(' ');
+      if (!piece) break;
+      combined = combined ? combined + ' ' + piece : piece;
+      const possible = byFirst.get(combined.split(' ')[0]) || [];
+      if (!possible.some(k => keys[k] === combined || keys[k].startsWith(combined + ' '))) break;
+      for (const k of possible) if (keys[k] === combined) {
+        candidates.push({ scriptIndex:k, utteranceIndex:i, last:j, score:1,
+          range:{ sourceId:first.sourceId, start:first.start, end:last.end } });
+      }
+    }
+  }
+  // Unique matches provide anchors for repeated answers such as “Yes.”
+  const counts = new Map(), audioCounts = new Map();
+  for (const proposal of candidates) {
+    const { scriptIndex, utteranceIndex, last } = proposal;
+    const span = `${utteranceIndex}:${last}`;
+    counts.set(scriptIndex, (counts.get(scriptIndex) || 0) + 1);
+    audioCounts.set(span, (audioCounts.get(span) || 0) + 1);
+  }
+  const anchors = candidates.filter(p => counts.get(p.scriptIndex) === 1 &&
+    audioCounts.get(`${p.utteranceIndex}:${p.last}`) === 1);
+  const selected = [];
+  let index = -1, last = -1;
+  for (const p of anchors) {
+    if (p.scriptIndex <= index || p.utteranceIndex <= last) continue;
+    selected.push(p); index = p.scriptIndex; last = p.last;
+  }
+  const resolved = [...selected];
+  for (let i = 0; i <= selected.length; i++) {
+    const left = selected[i - 1], right = selected[i];
+    const possible = candidates.filter(p => p.scriptIndex > (left?.scriptIndex ?? -1) &&
+      p.scriptIndex < (right?.scriptIndex ?? keys.length) && p.utteranceIndex > (left?.last ?? -1) &&
+      p.last < (right?.utteranceIndex ?? utterances.length));
+    const unique = possible.filter(p => !possible.some(q => q !== p &&
+      (q.scriptIndex === p.scriptIndex || (q.utteranceIndex <= p.last && q.last >= p.utteranceIndex))));
+    let boundary = left?.scriptIndex ?? -1;
+    for (const p of unique) if (p.scriptIndex > boundary) { resolved.push(p); boundary = p.scriptIndex; }
+  }
+  return resolved.sort((a, b) => a.scriptIndex - b.scriptIndex);
 }

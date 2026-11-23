@@ -11,15 +11,15 @@ import { findCandidates, applySpans } from './studio-names.js';
 import { alignScript, scriptToLines, hasReplacementAudio } from './studio-align.js';
 import { speechRegions, regionStatistics, snapCueToRegion } from './studio-structure.js';
 import { speechFirstPlaybackRange, nextSourceSegment } from './studio-playback-boundary.js';
-import { planVocabAlignment, isVocabTarget, unassignedVocabRanges, vocabKey } from './studio-vocab-align.js';
+import { planVocabAlignment, isVocabTarget, unassignedVocabRanges, vocabKey, isVocabHead } from './studio-vocab-align.js';
 import { createRescueSearch } from './studio-prose-rescue.js';
 import { alignUtterances } from './studio-import-align.js';
 import { probe, audioTracks, canExtract, extractTrack, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.5';
-const STUDIO_UPDATED_JST = '2026-11-23 14:58 JST';
+export const STUDIO_VERSION = '0.21.7';
+const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
 const sessionFiles = new Map();   // sourceId -> File (for "保存しない" media; lives only while the page is open)
@@ -1454,7 +1454,7 @@ async function editorScreen(el, params, revision) {
     for (const b of blocks) for (const g of b.segments) if (!firstBySource.has(g.sourceId)) firstBySource.set(g.sourceId,b.id);
     list.innerHTML = shown.map((b) => (folds.has(b.id) ? foldHTML(folds.get(b.id)) : '') + (() => {
       const badges = [b.segments.length > 1 ? `<span class="tagp">${b.segments.length}区間</span>` : '', new Set(b.segments.map((s) => s.sourceId)).size > 1 ? '<span class="tagp">複数ファイル</span>' : '',
-        b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', overlap.has(b.id) ? `<span class="tagp warn" title="前の行と音声が重なっています。✎で開始を動かすと前の行の終わりも合わせて動きます">前と${overlap.get(b.id)}秒重なり</span>` : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声なし</span>' : ''].join('');
+        b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', overlap.has(b.id) ? `<span class="tagp warn" title="前の行と音声が重なっています。✎で開始を動かすと前の行の終わりも合わせて動きます">前と${overlap.get(b.id)}秒重なり</span>` : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声未割当</span>' : ''].join('');
       const sourceStart = [...firstBySource].filter(([sid,id])=>id===b.id).map(([sid])=>`<div class="st-source-boundary">音声開始：${esc(srcs[sid]?.name||'音声ファイル')} <button type="button" class="btn sm ghost" data-source-row="${esc(sid)}" data-row="${esc(b.id)}">位置へ</button></div>`).join('');
       return `${sourceStart}<div class="st-row ${sel.has(b.id) ? 'sel' : ''} ${arrange ? 'jig' : ''}" data-id="${b.id}">
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
@@ -1641,52 +1641,100 @@ async function editorScreen(el, params, revision) {
     const bySource = new Map();
     for (const b of eligible) { const sid = b.segments[0].sourceId; if (!bySource.has(sid)) bySource.set(sid, []); bySource.get(sid).push(b); }
     const updates = [], skipped = [];
+    const guard = rescueVersion();
     try {
       for (const [sid, items] of bySource) {
         const src = srcs[sid], blob = src?.stored ? src.blob : sessionFiles.get(sid);
-        // decodeTo16k decodes the whole file; cap the input to avoid iPhone memory exhaustion.
-        if (!blob || blob.size > 25 * 1024 * 1024 || (src.duration || 0) > 12 * 60) { skipped.push(`${src?.name || sid}：ファイル未接続・容量または長さの制限`); continue; }
+        if (!blob) { skipped.push(src?.name || sid); continue; }
+        const info = isContainer(src, blob) ? await probeSource(src, blob).catch(() => null) : null;
+        const tracks = info ? audioTracks(info) : [];
+        const track = tracks.find(t => t.id === src.audio?.trackId) || tracks[src.audio?.index ?? 0];
+        const ranged = Boolean(track && canExtract(track));
+        if (!ranged && (!(src.duration > 0 && src.duration <= 180) || blob.size > 18 * 1024 * 1024)) {
+          skipped.push(src.name); continue;
+        }
         toast(`音声を解析中：${src.name}`, 2500);
-        const { audio } = await decodeTo16k(blob);
-        const sr = 16000, hop = 160, frame = 320;
-        const n = Math.floor(Math.max(0, audio.length - frame) / hop) + 1;
-        const rms = new Float32Array(n);
-        for (let i = 0; i < n; i++) { let e = 0; const off = i * hop; for (let j = 0; j < frame; j += 2) e += audio[off+j] ** 2; rms[i] = Math.sqrt(e / (frame / 2)); }
-        // Dynamic floor estimate, avoids a hard-coded volume threshold.
-        const sampled = []; for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 4000))) sampled.push(rms[i]);
-        sampled.sort((a,b)=>a-b);
-        const noise = sampled[Math.floor(sampled.length * .2)] || 0;
-        const peak = sampled[Math.floor(sampled.length * .9)] || 0;
-        const threshold = Math.max(.0015, noise * 3, peak * .13);
-        const voiced = (i) => i >= 0 && i < n && rms[i] >= threshold;
-        const at = (t) => Math.max(0, Math.min(n-1, Math.round(t * 100)));
+        const allSegments = blocks.flatMap(b => b.segments.filter(g => g.sourceId === sid).map(g => ({ ...g, id: b.id })));
+        const windows = new Map();
         for (const b of items) {
-          const g = b.segments[0], a = at(g.start), z = at(g.end);
-          if (z <= a + 10) continue;
-          // Find silence immediately near the edges. Never extend into another retained block.
-          const neighbours = blocks.filter((x) => x.id !== b.id && x.segments.some((q) => q.sourceId === sid));
-          const leftLimit = Math.max(0, ...neighbours.flatMap((x) => x.segments.filter((q) => q.sourceId === sid && q.end <= g.start + .02).map((q) => q.end)));
-          const rightLimit = Math.min(src.duration || audio.length / sr, ...neighbours.flatMap((x) => x.segments.filter((q) => q.sourceId === sid && q.start >= g.end - .02).map((q) => q.start)));
-          const l = at(Math.max(leftLimit, g.start - .35)), r = at(Math.min(rightLimit, g.end + .35));
-          let start = g.start, end = g.end;
-          // Only move a boundary if a stable quiet-to-voiced transition exists nearby.
-          const transitions = (lo, hi, opening) => { const out = []; for (let i = Math.max(4,lo); i < Math.min(n-5,hi); i++) {
-            const before = [i-4,i-3,i-2,i-1].filter(voiced).length;
-            const after = [i+1,i+2,i+3,i+4].filter(voiced).length;
-            if (opening ? before === 0 && after >= 3 : before >= 3 && after === 0) out.push(i);
-          } return out; };
-          const starts = transitions(l, Math.min(z-8,a+35), true);
-          const ends = transitions(Math.max(a+8,z-35), r, false);
-          const choose = (arr, old) => arr.length === 1 && Math.abs(arr[0]/100 - old) <= .35 ? arr[0]/100 : old;
-          start = choose(starts, g.start); end = choose(ends, g.end);
-          if (end - start < .12) continue;
-          if (Math.abs(start-g.start) < .025 && Math.abs(end-g.end) < .025) continue;
-          updates.push({ ...b, segments: [{ ...g, start: +start.toFixed(2), end: +end.toFixed(2) }], sync: 'estimated' });
+          const segment = b.segments[0], start = ranged ? Math.floor(segment.start / 20) * 20 : 0;
+          if (ranged && segment.end > start + 45) continue;
+          if (!windows.has(start)) windows.set(start, []);
+          windows.get(start).push(b);
+        }
+        for (const [from, lines] of windows) {
+          if (revision !== routeRevision) return;
+          const to = Math.max(...lines.map(b => b.segments[0].end)) + .45;
+          const input = ranged ? await extractTrack(blob, track, Math.max(0, from - .45), to) : { blob, start: 0 };
+          const { audio } = await decodeTo16k(input.blob);
+          const offset = input.start;
+          const sr = 16000, hop = 160, frame = 320;
+          const n = Math.floor(Math.max(0, audio.length - frame) / hop) + 1;
+          const rms = new Float32Array(n);
+          for (let i = 0; i < n; i++) { let e = 0; const off = i * hop; for (let j = 0; j < frame; j += 2) e += audio[off+j] ** 2; rms[i] = Math.sqrt(e / (frame / 2)); }
+          // Dynamic floor estimate, avoids a hard-coded volume threshold.
+          const sampled = []; for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 4000))) sampled.push(rms[i]);
+          sampled.sort((a,b)=>a-b);
+          const noise = sampled[Math.floor(sampled.length * .2)] || 0;
+          const peak = sampled[Math.floor(sampled.length * .9)] || 0;
+          const threshold = Math.max(.0015, noise * 3, peak * .13);
+          const voiced = (i) => i >= 0 && i < n && rms[i] >= threshold;
+          const at = (t) => Math.max(0, Math.min(n-1, Math.round((t - offset) * 100)));
+          for (const b of lines) {
+            const g = b.segments[0], a = at(g.start), z = at(g.end);
+            if (z <= a + 10) continue;
+            // Find silence immediately near the edges. Never extend into another retained block.
+            let leftLimit = 0, rightLimit = src.duration || (offset + audio.length / sr);
+            for (const q of allSegments) {
+              if (q.id === b.id) continue;
+              if (q.end <= g.start + .02) leftLimit = Math.max(leftLimit, q.end);
+              if (q.start >= g.end - .02) rightLimit = Math.min(rightLimit, q.start);
+            }
+            const l = at(Math.max(leftLimit, g.start - .35)), r = at(Math.min(rightLimit, g.end + .35));
+            let start = g.start, end = g.end;
+            // Only move a boundary if a stable quiet-to-voiced transition exists nearby.
+            const transitions = (lo, hi, opening) => { const out = []; for (let i = Math.max(4,lo); i < Math.min(n-5,hi); i++) {
+              const before = [i-4,i-3,i-2,i-1].filter(voiced).length;
+              const after = [i+1,i+2,i+3,i+4].filter(voiced).length;
+              if (opening ? before === 0 && after >= 3 : before >= 3 && after === 0) out.push(i);
+            } return out; };
+            const starts = transitions(l, Math.min(z-8,a+35), true);
+            const ends = transitions(Math.max(a+8,z-35), r, false);
+            const choose = (arr, old, margin, lo, hi) => {
+              if (!arr.length || arr.at(-1) - arr[0] > 3) return old;
+              const candidate = Math.max(lo, Math.min(hi, offset + (arr[0] + arr.at(-1)) / 200 + margin));
+              return Math.abs(candidate - old) <= .35 ? candidate : old;
+            };
+            start = choose(starts, g.start, -.04, leftLimit, g.start + .35);
+            end = choose(ends, g.end, .05, g.end - .35, rightLimit);
+            if (end - start < .12) continue;
+            if (Math.abs(start-g.start) < .025 && Math.abs(end-g.end) < .025) continue;
+            updates.push({ ...b, segments: [{ ...g, start: +start.toFixed(2), end: +end.toFixed(2) }], sync: 'estimated' });
+          }
         }
       }
+      // Reject a pair of proposed moves if they compete for the same quiet gap.
+      const rejected = new Set();
+      const ordered = updates.slice().sort((a, b) => a.segments[0].sourceId.localeCompare(b.segments[0].sourceId) || a.segments[0].start - b.segments[0].start);
+      let prior;
+      for (const row of ordered) {
+        const g = row.segments[0], p = prior?.segments[0];
+        if (p?.sourceId === g.sourceId && p.end > g.start) { rejected.add(prior.id); rejected.add(row.id); }
+        if (p?.sourceId !== g.sourceId || g.end > p.end) prior = row;
+      }
+      for (let i = updates.length - 1; i >= 0; i--) if (rejected.has(updates[i].id)) updates.splice(i, 1);
       if (!updates.length) return toast(`安全に補正できる境界はありませんでした${skipped.length ? '（一部のファイルは対象外）' : ''}`, 5500);
-      const ok = await confirmDialog({ title: '一括補正の確認', body: `<p>${eligible.length}行のうち<strong>${updates.length}行</strong>に補正候補があります。${skipped.length ? `${skipped.length}ファイルは解析対象外です。` : ''}</p><p>補正は音量に基づく推定です。確定後は各行を再生して確認してください。↶でこの操作全体を取り消せます。</p>`, okLabel: `${updates.length}行を適用` });
-      if (ok) await run('音声位置の一括自動調整', { blocks: updates });
+      const okPromise = confirmDialog({ title: '一括補正の確認', body: `<p>${eligible.length}行のうち<strong>${updates.length}行</strong>に補正候補があります。${skipped.length ? `${skipped.length}ファイルは解析対象外です。` : ''}</p><p>補正は音量に基づく推定です。↶で取り消せます。</p>
+        ${updates.slice(0, 12).map((b, i) => `<div class="row wrap"><span class="grow">${esc(b.text.slice(0, 90))}</span><button type="button" class="btn sm" data-before="${i}">補正前</button><button type="button" class="btn sm" data-after="${i}">補正後</button></div>`).join('')}`, okLabel: `${updates.length}行を適用` });
+      for (const button of $$('[data-before], [data-after]', $('#dialog'))) button.onclick = () => {
+        const index = Number(button.dataset.before ?? button.dataset.after);
+        playBlock(button.dataset.before == null ? updates[index] : byId[updates[index].id]);
+      };
+      const ok = await okPromise;
+      if (playing && updates.some(b => b.id === playing.b.id)) {
+        ++playbackRequest; pendingSegmentSeek = null; playing = null; vid.pause();
+      }
+      if (ok && revision === routeRevision) await run('音声位置の一括自動調整', { blocks: updates, guardedSet: guard });
     } catch (e) { toast(`自動調整できませんでした：${e?.message || e}`, 6000); }
   }
 
@@ -1772,6 +1820,12 @@ async function editorScreen(el, params, revision) {
     await reload();
     if (revision !== routeRevision) return;
     const {rows, occupied, evidence} = vocabInputs();
+    if (set.materialType !== 'vocab') {
+      await sdb.tx(['sets'], 'readwrite', tx => {
+        const store = tx.objectStore('sets'), req = store.get(set.id);
+        req.onsuccess = () => { if (req.result) store.put({ ...req.result, materialType: 'vocab' }); };
+      });
+    }
     const planned = planVocabAlignment(rows, local || evidence, occupied, {targets});
     const proposals = planned.slice(0, 120);
     if (!proposals.length) {
@@ -1784,9 +1838,9 @@ async function editorScreen(el, params, revision) {
     dlg.innerHTML = `<form method="dialog" class="dlg stack">
       <h3>金フレ型の照合候補</h3>
       <p class="small">${proposals.length}行${planned.length > proposals.length ? `（全${planned.length}候補の先頭。保存後に続きの候補を表示できます）` : ''}。発話を試聴し、保存する行を選んでください。同じ音声を使う照合済み・手動編集済み行は保護します。</p>
-      <div class="stack" style="max-height:50vh;overflow:auto">${proposals.map(({row,cues},i) => `
+      <div class="stack" style="max-height:50vh;overflow:auto">${proposals.map(({row,cues,estimated},i) => `
         <div class="row wrap">
-          <label class="grow"><input type="checkbox" data-vocab-save="${i}"> ${esc(row.text)}</label>
+          <label class="grow"><input type="checkbox" data-vocab-save="${i}"> ${esc(row.text)}${estimated ? '（音声位置の推定・要試聴）' : ''}</label>
           ${cues.map((cue,j) => `<button type="button" class="btn sm ghost" data-vocab-play="${i}:${j}">▶ ${esc(srcs[cue.sourceId]?.name || '音声')} ${fmt(cue.start)}〜${fmt(cue.end)}</button>`).join('')}
         </div>`).join('')}</div>
       <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="apply">選択分を保存</button></div>
@@ -1813,21 +1867,29 @@ async function editorScreen(el, params, revision) {
     const now = vocabInputs();
     const changes = [], consumed = new Set();
     const guardedSet = {updatedAt:set.updatedAt, order:set.order.slice(), undo:(set.undo || []).slice(), redo:(set.redo || []).slice()};
-    for (const {row,cues} of selected) {
+    for (const {row,cues,estimated,redundant = []} of selected) {
       const current = byId[row.id];
       if (!current || current.rev !== row.rev || current.text !== row.text || !isVocabTarget(current) ||
           cues.some(cue => !srcs[cue.sourceId] || now.occupied.some(span => span.sourceId === cue.sourceId &&
             span.start < cue.end && span.end > cue.start))) continue;
       if (cues.some(cue => cue.rawId && (byId[cue.rawId]?.rev !== cue.rawRev ||
           byId[cue.rawId]?.sync === 'manual' || !byId[cue.rawId]?.asr || byId[cue.rawId]?.aligned))) continue;
+      if (redundant.some(row => byId[row.id]?.rev !== row.rev || !isVocabTarget(byId[row.id]))) continue;
+      redundant.forEach(row => consumed.add(row.id));
       const segments = cues.map(({sourceId,start,end}) => ({sourceId,start,end}));
-      changes.push({...current, segments, aligned:true, sync:'auto', align:[],
+      changes.push({...current, segments, aligned:!estimated, sync:estimated ? 'estimated' : 'auto', align:[],
         ...(segments.length > 1 ? {rep:segments.length, endEst:false} : {}),
         lineage:{op:'vocab-align',from:[`${current.id}@${current.rev}`],at:Date.now()}});
-      for (const cue of cues) {
-        const raw = byId[cue.rawId];
-        if (raw?.lineage?.op === 'split' && raw.rev === 1 && !raw.ja && !(raw.holes || []).length &&
-            vocabKey(raw.text) === vocabKey(current.text)) consumed.add(raw.id);
+      if (!estimated) for (const raw of now.evidence) {
+        const block = byId[raw.rawId];
+        if (!block || block.ja || block.holes?.length || block.rev !== 1 ||
+            block.lineage?.op !== 'split') continue;
+        if (cues.some(cue => {
+          if (cue.rawId === raw.rawId) return true;
+          const intersection = Math.min(raw.end, cue.end) - Math.max(raw.start, cue.start);
+          return raw.sourceId === cue.sourceId && intersection >= .8 * (raw.end - raw.start) &&
+            vocabKey(raw.text) === vocabKey(cue.text);
+        })) consumed.add(raw.rawId);
       }
     }
     if (!changes.length) return toast('字幕が更新されました。候補を出し直してください');
@@ -2799,6 +2861,8 @@ async function editorScreen(el, params, revision) {
     await reload();
     const skips=[];
     const changes=[];
+    const occupied = vocabInputs().occupied;
+    const guard = rescueVersion();
     for(const x of chosenCandidates){
       const latest=byId[x.blockId];
       if(!latest){skips.push('対象行なし: '+x.text);continue;}
@@ -2808,11 +2872,15 @@ async function editorScreen(el, params, revision) {
       }
       if(!set.order.includes(latest.id)){skips.push('教材の行一覧に存在しない: '+x.text);continue;}
       if(!srcs[x.sourceId]){skips.push('音声ファイルID不明: '+x.text);continue;}
+      if (!(x.end > x.start && x.start >= 0) || [...occupied, ...changes.flatMap(b => b.segments)].some(
+          g => g.sourceId === x.sourceId && g.start < x.end && g.end > x.start)) {
+        skips.push('既存の音声区間と重複: ' + x.text); continue;
+      }
       changes.push({...latest,segments:[{sourceId:x.sourceId,start:x.start,end:x.end}],aligned:true,sync:'auto',structureAlign:{method:'speech-first',score:x.score,at:Date.now()},lineage:{op:'structure-align',from:[`${latest.id}@${latest.rev}`],at:Date.now(),score:x.score}});
     }
     let written=0,verified=[];let error='';
     try{
-      if(changes.length){const r=await commit(set,'発話区切りから照合',{blocks:changes},srcs);written=r.blocks.length;}
+      if(changes.length){const r=await commit(set,'発話区切りから照合',{blocks:changes,guardedSet:guard},srcs);written=r.blocks.length;}
       await reload();drawList();
       verified=changes.filter(x=>{const b=byId[x.id],a=b?.segments?.[0],g=x.segments[0];return a?.sourceId===g.sourceId&&Math.abs(a.start-g.start)<.01&&Math.abs(a.end-g.end)<.01;});
       const fresh=await sdb.get('sets',set.id);
@@ -2831,20 +2899,14 @@ async function editorScreen(el, params, revision) {
     if(!sources.length)return toast('音声ファイルを選び直してください',4500);
     // Analyze all speech regions in sequential batches; preserve source-absolute timestamps.
     // Only the selected window is ASR'd; all timestamps remain source-absolute.
-    const parseClock = value => {
-      const v=String(value||'').trim();
-      if (!/^(?:\d+:)?\d{1,2}:\d{2}(?:\.\d+)?$/.test(v)) return NaN;
-      const parts=v.split(':').map(Number);
-      if (parts.some(x=>!Number.isFinite(x))) return NaN;
-      return parts.reduce((acc,x)=>acc*60+x,0);
-    };
     const defaultSource=sources.length===1?sources[0]:sources.find(x=>blocks.some(b=>b.segments[0]?.sourceId===x.id))||sources[0];
-    const cfg=range ? {source:sources.find(x => x.id === range.sourceId), start:range.start, end:range.end} : await new Promise(resolve=>{
+    const cfg=range ? {source:sources.find(x => x.id === range.sourceId), start:range.start, end:range.end, profile:set.materialType || 'prose'} : await new Promise(resolve=>{
       const dlg=$('#dialog');
       if(dlg.open){dlg.onclose=null;dlg.close();}
       dlg.innerHTML=`<form method="dialog" class="dlg stack"><h3>発話を先に区切って照合（試験版）</h3>
         <label>音声ファイル<select id="structSource">${sources.map(x=>`<option value="${esc(x.id)}" ${x.id===defaultSource.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>
-        <p class="small">発話を30件ずつ、指定範囲の末尾まで自動で順番に解析します。終了を空欄にするとファイル末尾まで解析します。</p>
+        <label class="field">教材の種類<select id="structProfile">${[['prose','連続朗読・MA'],['vocab','単語・例文・復唱'],['toeic-sentences','TOEIC Part 1 写真描写'],['toeic-response','TOEIC Part 2 質問・応答'],['toeic-dialogue','TOEIC Part 3 会話'],['toeic-talk','TOEIC Part 4 説明文'],['toeic-mixed','TOEIC 混在']].map(([id, label]) => `<option value="${id}" ${set.materialType === id ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+        <p class="small">指定範囲の最後まで解析します。同じ音声・範囲・教材の種類を選ぶと、中断前の解析結果を再利用します。</p>
         <div class="row" style="flex-wrap:wrap"><label class="field grow">開始（分）<input id="structStartMin" type="number" min="0" step="1" inputmode="numeric" value="0"></label><label class="field grow">開始（秒）<input id="structStartSec" type="number" min="0" max="59" step="1" inputmode="numeric" value="0"></label></div>
         <div class="row" style="flex-wrap:wrap"><label class="field grow">終了（分・空欄で末尾）<input id="structEndMin" type="number" min="0" step="1" inputmode="numeric" placeholder="末尾まで"></label><label class="field grow">終了（秒）<input id="structEndSec" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="0"></label></div>
         <p class="hint">無料・端末内処理。音声の途中からでもスクリプト全体から一致候補を探します。既存の保存結果と手動編集は上書きしません。処理中は画面を開いたままにしてください。</p>
@@ -2868,13 +2930,24 @@ async function editorScreen(el, params, revision) {
         if(!source||!Number.isFinite(start)||start<0||!Number.isFinite(end)&&end!==Infinity||end<=start||(Number.isFinite(duration)&&duration>0&&start>=duration)){
           e.preventDefault();dlg.querySelector('#structRangeError').textContent='開始・終了時刻を確認してください（例：05:00〜07:00）。';return;
         }
-        selected={source,start,end};
+        selected={source,start,end,profile:dlg.querySelector('#structProfile').value};
       });
       dlg.onclose=()=>resolve(dlg.returnValue==='go'?selected:null);
       dlg.showModal();
     });
     if(!cfg?.source || revision !== routeRevision)return;
-    const chosen=cfg.source;
+    const chosen = cfg.source;
+    const blob = chosen.stored ? chosen.blob : sessionFiles.get(chosen.id);
+    const container = isContainer(chosen, blob) && chosen.derived !== 'audio16k';
+    if (container && !chosen.audio) {
+      try {
+        chosen.audio = await decideTrack(chosen, blob);
+        await sdb.put('sources', chosen);
+      } catch (error) {
+        return toast('音声トラックを選べませんでした。' + (error?.message || error));
+      }
+    }
+    if (revision !== routeRevision) return;
     let tr=null;const dlg=$('#dialog');let cancelled=false;
     await new Promise(r=>setTimeout(r,60));
     if (revision !== routeRevision || dlg.open) return;
@@ -2883,46 +2956,107 @@ async function editorScreen(el, params, revision) {
     const progress = $('#structMsg', dlg);
     const say = text => { if (progress.isConnected) progress.textContent = text; };
     const lock=await navigator.wakeLock?.request?.('screen').catch(()=>null);
-    let result=[];
+    let result = [], utterances = [], failed = false;
     try {
-      const blob=chosen.stored?chosen.blob:sessionFiles.get(chosen.id);
-      const decoded=await sourceAudio16k(chosen,blob,{box:$('#structCap',dlg),say});
-      if (cancelled || revision !== routeRevision) return;
-      const audio=decoded.audio;
-      const fromSample = Math.floor(cfg.start * 16000);
-      const toSample = Math.min(audio.length, Math.ceil(cfg.end * 16000));
-      if (toSample <= fromSample) throw new Error('指定範囲に音声がありません');
-      const windowAudio = audio.subarray(fromSample, toSample);
-      highPass(windowAudio);
-      const offset = fromSample / 16000;
-      const regions = speechRegions(windowAudio, 16000).filter(r => r.end-r.start >= .2)
-        .map(r => ({start: r.start + offset, end: r.end + offset}));
-      if(!regions.length)throw new Error('発話区間を検出できませんでした');
-      const picked=regions.filter(r=>r.end>cfg.start && r.start<cfg.end);
-      if(!picked.length)throw new Error('指定範囲に発話が見つかりませんでした');
-      say(`${regions.length}発話を検出。指定範囲の ${picked.length}発話を30件ずつ自動解析します…`);
-      tr=openTranscriber('en',say,{quality:'acc'});
-      const utterances=[];
-      for(let k=0;k<picked.length&&!cancelled&&revision===routeRevision;k++){
-        const r=picked[k];say(`第${Math.floor(k/30)+1}/${Math.ceil(picked.length/30)}組・発話 ${k+1}/${picked.length}：${fmt(r.start)}〜${fmt(r.end)}`);
-        const cues=await recognisePiece(tr,audio,Math.max(cfg.start,r.start-.12),Math.min(decoded.duration,cfg.end,r.end+.12));
-        utterances.push({...r,text:(cues.raw||cues.map(x=>x.text).join(' ')).trim()});
+      const info = container ? await probeSource(chosen, blob).catch(() => null) : null;
+      const tracks = info ? audioTracks(info) : [];
+      const track = tracks.find(t => t.id === chosen.audio?.trackId) || tracks[chosen.audio?.index ?? 0];
+      const ranged = Boolean(track && canExtract(track));
+      let whole = null;
+      if (!ranged) {
+        if (!(chosen.duration > 0 && chosen.duration <= 180 && blob.size <= 18 * 1024 * 1024)) {
+          throw new Error('長い音声は、区間抽出に対応したAACのM4AまたはMP4を選んでください');
+        }
+        whole = (await sourceAudio16k(chosen, blob, { say })).audio;
+        highPass(whole);
       }
-      if(!cancelled){
-        const proposals=alignUtterances(sl.map(b=>({text:b.text})),utterances);
-        result=proposals.map(p=>({b:sl[p.scriptIndex],u:utterances[p.utteranceIndex],score:p.score})).filter(x=>!x.b.segments.length);
+      const end = Math.min(cfg.end, track?.duration || chosen.duration || (whole?.length || 0) / 16000);
+      if (!(end > cfg.start)) throw new Error('指定範囲に音声がありません');
+      const vocabProfile = cfg.profile === 'vocab';
+      const rapid = vocabProfile || ['toeic-response', 'toeic-dialogue', 'toeic-mixed'].includes(cfg.profile);
+      const occupied = vocabInputs().occupied.filter(g => g.sourceId === chosen.id);
+      const checkpointKey = `speech-first:${set.id}`;
+      const signature = JSON.stringify([chosen.id, blob.size, chosen.audio?.trackId, chosen.audio?.index, cfg.profile, cfg.start, end]);
+      const saved = await sdb.get('meta', checkpointKey);
+      let cursor = saved?.signature === signature ? saved.cursor : cfg.start;
+      utterances = saved?.signature === signature ? saved.utterances : [];
+      const visited = new Set(utterances.map(u => `${u.start}:${u.end}`));
+      const checkpoint = () => sdb.put('meta', { key: checkpointKey, signature, cursor, utterances });
+      const formatTime = t => Math.round(t * 1000) / 1000;
+      while (cursor < end && !cancelled && revision === routeRevision) {
+        let stop = Math.min(end, cursor + 24);
+        say(`${Math.floor(100 * (cursor - cfg.start) / (end - cfg.start))}%　${fmt(cursor)}〜${fmt(stop)}`);
+        let offset = 0, audio = whole;
+        if (ranged) {
+          const extracted = await extractTrack(blob, track, Math.max(cfg.start, cursor - .5), Math.min(end, stop + 1.5));
+          offset = extracted.start;
+          audio = (await decodeTo16k(extracted.blob)).audio;
+          highPass(audio);
+        }
+        const from = Math.max(0, Math.floor((Math.max(cfg.start, cursor - .25) - offset) * 16000));
+        const to = Math.min(audio.length, Math.ceil((Math.min(end, stop + 1.25) - offset) * 16000));
+        const origin = from / 16000 + offset;
+        const regions = speechRegions(audio.subarray(from, to), 16000, rapid ? { gapFrames: 5, minGap: .1 } : undefined);
+        if (stop < end) {
+          const crossing = regions.find(region => origin + region.start < stop && origin + region.end > stop);
+          if (crossing) {
+            const at = origin + crossing.start;
+            const finish = origin + crossing.end;
+            if (finish < stop + 1.1) stop = Math.min(end, Math.ceil((finish + .05) * 1000) / 1000);
+            else if (at >= cursor + 16) stop = Math.floor(at * 1000) / 1000;
+          }
+        }
+        let previousEnd = cursor, index = 0;
+        for (const region of regions) {
+          if (cancelled || revision !== routeRevision) break;
+          const start = formatTime(Math.max(previousEnd, origin + region.start));
+          const finish = formatTime(Math.min(stop, origin + region.end));
+          if (finish > start) previousEnd = finish;
+          if (finish - start < .15 || occupied.some(g => g.start < finish && g.end > start) ||
+              visited.has(`${start}:${finish}`)) continue;
+          say(`${Math.min(99, Math.floor(100 * (start - cfg.start) / (end - cfg.start)))}%　発話 ${++index}/${regions.length}　${fmt(start)}`);
+          tr ||= openTranscriber('en', say, { quality: 'acc' });
+          const cues = await recognisePiece(tr, audio, Math.max(0, start - offset), Math.min(audio.length / 16000, finish - offset));
+          if (cancelled || revision !== routeRevision) break;
+          visited.add(`${start}:${finish}`);
+          utterances.push({ sourceId: chosen.id, start, end: finish, text: (cues.raw || cues.map(x => x.text).join(' ')).trim(), vad: true });
+          if (utterances.length % 8 === 0) await checkpoint();
+        }
+        if (!cancelled && revision === routeRevision) cursor = stop;
+        await checkpoint();
       }
-    }catch(e){if(!cancelled)toast('解析失敗：'+(e?.message||e),6000);}
-    finally{tr?.close();lock?.release?.();if(dlg.open && dlg.contains(progress)){dlg.onclose=null;dlg.close();}}
+      if (!cancelled && revision === routeRevision) {
+        utterances.sort((a, b) => a.start - b.start);
+        await sdb.tx(['sets'], 'readwrite', tx => {
+          const store = tx.objectStore('sets'), req = store.get(set.id);
+          req.onsuccess = () => { if (req.result) store.put({ ...req.result, materialType: cfg.profile }); };
+        });
+        const available = utterances.filter(u => !occupied.some(g => u.start < g.end && u.end > g.start));
+        if (!vocabProfile) {
+          const proposals = alignUtterances(sl.map(b => ({ text: b.text })), available, { profile: cfg.profile });
+          result = proposals.map(p => ({ b: sl[p.scriptIndex], u: p.range || available[p.utteranceIndex], score: p.score }))
+            .filter(x => !x.b.segments.length && x.b.sync !== 'manual');
+        }
+      }
+    } catch (e) {
+      failed = true;
+      if (!cancelled) toast('解析失敗：' + (e?.message || e), 6000);
+    } finally {
+      tr?.close(); lock?.release?.();
+      if (dlg.open && dlg.contains(progress)) { dlg.onclose = null; dlg.close(); }
+    }
     if (revision !== routeRevision) return;
-    if(cancelled)return toast('中止しました（データ変更なし）');
+    if (cancelled) return toast('解析を中断しました。同じ条件で再開できます');
+    if (failed) return;
+    if (cfg.profile === 'vocab') return previewVocabAlignment(null, [...utterances, ...vocabInputs().evidence.filter(cue =>
+      !utterances.some(u => u.sourceId === cue.sourceId && u.start < cue.end && u.end > cue.start))]);
     if(!result.length)return confirmDialog({title:'安全な一致候補がありません',body:'発話区間は検出しましたが、認識結果とスクリプトの強い一致が得られませんでした。字幕は変更していません。短い単語や重複する例文は誤対応防止のため保留します。',okLabel:'閉じる',cancelLabel:null});
     // Store candidates BEFORE displaying them. No audio blobs are duplicated.
     const draft=result.map(({b,u,score})=>({blockId:b.id,blockRev:b.rev,sourceId:chosen.id,start:u.start,end:u.end,score,text:b.text}));
     const freshForDraft=await sdb.get('sets',set.id);
-    const prior = freshForDraft.speechFirstDraft || [];
-    const priorIds = new Set(prior.map(x => x.blockId));
-    await sdb.put('sets',{...freshForDraft,speechFirstDraft:[...prior,...draft.filter(x => !priorIds.has(x.blockId))]});
+    const draftIds = new Set(draft.map(x => x.blockId));
+    const prior = (freshForDraft.speechFirstDraft || []).filter(x => !draftIds.has(x.blockId));
+    await sdb.put('sets',{...freshForDraft,speechFirstDraft:[...prior,...draft]});
     const ids=await pickSpeechFirstCandidates(draft);
     if(!ids || revision !== routeRevision)return;
     if(!ids.size)return toast('候補が選択されていません',3500);
@@ -3610,8 +3744,9 @@ async function deleteSet(set) {
   const others = (await sdb.all('sets')).filter((s) => s.id !== set.id);
   const usedElsewhere = new Set((await Promise.all(others.map(async (s) => (await sdb.byIndex('blocks', 'setId', s.id)).flatMap((b) => b.segments.map((x) => x.sourceId))))).flat());
   const srcIds = new Set(blocks.flatMap((b) => b.segments.map((x) => x.sourceId)));
-  await sdb.tx(['sets', 'blocks', 'blockRevs', 'versions', 'tracks', 'oplog', 'sources'], 'readwrite', (t) => {
+  await sdb.tx(['sets', 'blocks', 'blockRevs', 'versions', 'tracks', 'oplog', 'sources', 'meta'], 'readwrite', (t) => {
     t.objectStore('sets').delete(set.id);
+    t.objectStore('meta').delete(`speech-first:${set.id}`);
     blocks.forEach((b) => t.objectStore('blocks').delete(b.id)); revs.forEach((r) => t.objectStore('blockRevs').delete(r.id));
     vers.forEach((v) => t.objectStore('versions').delete(v.id)); tracks.forEach((x) => t.objectStore('tracks').delete(x.id)); oplog.forEach((o) => t.objectStore('oplog').delete(o.id));
     for (const id of srcIds) if (!usedElsewhere.has(id)) t.objectStore('sources').delete(id);
@@ -3800,12 +3935,24 @@ function notCopiedYet(parentBlocks, b) {
   const keys = new Set(parentBlocks.map(itemKey)), from = new Set(parentBlocks.flatMap((x) => (x.lineage?.from || []).map((f) => String(f).split('@')[0])));
   return !keys.has(itemKey(b)) && !from.has(b.id) && !parentBlocks.some((x) => x.id === b.id);
 }
+function materialMetadata(blocks, materialType) {
+  const map = new Map();
+  let studySet = '';
+  for (const block of blocks) {
+    if (!block.text || block.asr) continue;
+    const word = isVocabHead(block);
+    if (word) studySet = block.id;
+    if (studySet && materialType === 'vocab') map.set(block.id, { studySet, role: word ? 'word' : 'example' });
+  }
+  return map;
+}
 async function buildMaterial(set) {
   const blocks = await liveBlocks(set), srcs = await sourcesMap(), tracks = await sdb.byIndex('tracks', 'setId', set.id);
   const media = [...new Set(blocks.flatMap((b) => b.segments.map((s) => s.sourceId)))].map((id) => srcs[id]).filter(Boolean);
   const manifest = { format: 'elpack', formatVersion: 2, packId: newId('pk_'), materialId: set.id, title: set.title, lang: 'en', source: { app: 'Englabo Studio', appVersion: STUDIO_VERSION }, createdAt: new Date().toISOString() };
-  const material = { set: { id: set.id, title: set.title, ...(set.splitRange ? { splitRange: structuredClone(set.splitRange) } : {}) },
-    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, holes: b.holes, label: b.label })),
+  const metadata = materialMetadata(blocks, set.materialType);
+  const material = { set: { id: set.id, title: set.title, materialType: set.materialType, ...(set.splitRange ? { splitRange: structuredClone(set.splitRange) } : {}) },
+    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, holes: b.holes, label: b.label, sync: b.sync, ...metadata.get(b.id) })),
     media: media.map((m) => ({ id: m.id, kind: m.kind, name: m.name, size: m.size, mime: m.mime, duration: m.duration, included: !!(m.stored ? m.blob : sessionFiles.get(m.id)) })) };
   return { manifest, material, media, blocks, tracks };
 }
@@ -3855,8 +4002,9 @@ async function exportSet(set) {
   const withMedia = inc.size > 0;
   const manifest = { format: 'elpack', formatVersion: 2, packId: newId('pk_'), materialId: set.id, materialVersion: (await sdb.byIndex('versions', 'setId', set.id)).length, title: set.title, lang: 'en', source: { app: 'Englabo Studio', appVersion: STUDIO_VERSION }, scope: 'collection', createdAt: new Date().toISOString(),
     contents: { audio: withMedia, text: true, translation: true, timestamps: true, vocab: false } };
-  const material = { set: { id: set.id, title: set.title, display: set.display }, units: [{ id: set.id, title: set.title, items: blocks.map((b) => b.id) }],
-    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, holes: b.holes, align: b.align, cueRefs: b.cueRefs, lineage: b.lineage, sync: b.sync, jaStatus: b.jaStatus, label: b.label, asr: b.asr })),
+  const metadata = materialMetadata(blocks, set.materialType);
+  const material = { set: { id: set.id, title: set.title, display: set.display, materialType: set.materialType, splitRange: set.splitRange }, units: [{ id: set.id, title: set.title, items: blocks.map((b) => b.id) }],
+    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, holes: b.holes, align: b.align, cueRefs: b.cueRefs, lineage: b.lineage, sync: b.sync, jaStatus: b.jaStatus, label: b.label, asr: b.asr, ...metadata.get(b.id) })),
     media: media.map((m) => ({ id: m.id, kind: m.kind, name: m.name, size: m.size, mime: m.mime, duration: m.duration, head: m.head, tail: m.tail, included: inc.has(m.id), path: inc.has(m.id) ? `media/${m.id}${(m.name.match(/\.\w+$/) || [''])[0]}` : null })),
     tracks: tracks.map((t) => ({ id: t.id, lang: t.lang, fileName: t.fileName, format: t.format, path: `subtitles/${t.id}-${t.fileName}` })) };
   const files = [{ name: 'manifest.json', data: JSON.stringify(manifest, null, 1) }, { name: 'material.json', data: JSON.stringify(material, null, 1) }, ...tracks.map((t) => ({ name: `subtitles/${t.id}-${t.fileName}`, data: t.raw }))];
@@ -3906,7 +4054,7 @@ async function importPack(z, manifest, material, mode) {
     await sdb.put('sources', { id: m.id, kind: m.kind, name: m.name, size: m.size, mime: m.mime, duration: m.duration, head: m.head, tail: m.tail, stored: !!blob, blob: blob || undefined, addedAt: Date.now() });
   }
   const idMap = {};
-  const blocks = material.items.map((it) => { const id = remap ? newId('b_') : it.id; idMap[it.id] = id; return { id, setId, rev: 0, deleted: false, segments: it.segments.map((s) => ({ sourceId: s.media, start: s.start, end: s.end })), text: it.text, ja: it.ja, holes: it.holes || [], align: it.align || [], cueRefs: it.cueRefs || { en: [], ja: [] }, lineage: it.lineage || { op: 'create', from: [] }, sync: it.sync || 'auto', jaStatus: it.jaStatus || 'ok', ...(it.label ? { label: it.label } : {}), ...(it.asr ? { asr: true } : {}) }; });
+  const blocks = material.items.map((it) => { const id = remap ? newId('b_') : it.id; idMap[it.id] = id; return { id, setId, rev: 0, deleted: false, segments: it.segments.map((s) => ({ sourceId: s.media, start: s.start, end: s.end })), text: it.text, ja: it.ja, holes: it.holes || [], align: it.align || [], cueRefs: it.cueRefs || { en: [], ja: [] }, lineage: it.lineage || { op: 'create', from: [] }, sync: it.sync || 'auto', jaStatus: it.jaStatus || 'ok', kind: it.role, rep: it.role === 'example' && it.segments.length > 1 ? it.segments.length : undefined, ...(it.label ? { label: it.label } : {}), ...(it.asr ? { asr: true } : {}) }; });
   let set = mode === 'update' ? await sdb.get('sets', setId) : null;
   if (!set) {
     set = { id: setId, title: material.set.title + (remap ? '（複製）' : ''), sourceId: material.media[0]?.id || null, tracks: {}, order: [], undo: [], redo: [], display: material.set.display || { show: 'both', opEn: 1, opJa: 0.8, pos: 'below', order: 'en' }, createdAt: Date.now(), updatedAt: Date.now() };
@@ -3917,6 +4065,8 @@ async function importPack(z, manifest, material, mode) {
     const live = await liveBlocks(set); const incoming = new Set(blocks.map((b) => b.id));
     blocks.push(...live.filter((b) => !incoming.has(b.id)).map((b) => ({ ...b, deleted: true })));
   }
+  if (material.set.materialType) set.materialType = material.set.materialType;
+  if (material.set.splitRange && !remap) set.splitRange = material.set.splitRange;
   await commit(set, mode === 'update' ? '教材パックで更新' : '教材パックから登録', { blocks, order: material.units[0].items.map((id) => idMap[id] || id) });
   if (mode !== 'update') { set.undo = []; await sdb.put('sets', set); }
   await saveVersion(set, '読み込み', true);

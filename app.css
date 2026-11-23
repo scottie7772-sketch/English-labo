@@ -1324,3 +1324,16 @@ dialog.st-rescue-dialog .field select { box-sizing: border-box; max-width: 100%;
 .st-range-pointer.st-range-start::before,.st-range-pointer.st-range-end::before {content:'';position:absolute;left:8px;top:0;width:12px;height:7px;border-radius:3px;background:inherit;}
 .st-range-pointer.st-range-start::before {background:var(--text,#d9e8e2)!important;}
 .st-range-pointer.st-range-end::before {background:#68c4a2!important;}
+
+.vp-root[data-mode="both"][data-primary="ja"] .subbox .sja {
+  color: #fff;
+  font-size: calc(var(--fsEn) * var(--fit, 1));
+  font-weight: 700;
+}
+.vp-root[data-mode="both"][data-primary="ja"] .subbox .sen {
+  color: rgba(255, 255, 255, .78);
+  font-size: calc(var(--fsJa) * var(--fit, 1));
+  font-weight: 400;
+}
+.vp-root[data-mode="both"][data-primary="ja"] .cue .sja { color: var(--text); font-weight: 600; }
+.vp-root[data-mode="both"][data-primary="ja"] .cue .sen { color: var(--muted); font-weight: 400; }

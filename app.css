@@ -1238,3 +1238,56 @@ body[data-zone="brown"] .tagp.warn, body[data-zone="brown"] .tagp.ai { color: va
 .st-rescue-track #rsHead,.st-trk .st-playhead {position:absolute;top:0;bottom:0;width:3px;background:#f6f7fa;z-index:8;pointer-events:none;box-shadow:0 0 0 1px rgba(0,0,0,.25)}
 .st-trk {min-height:42px;touch-action:none}
 .st-trk .h {min-width:16px;min-height:42px;touch-action:none}
+
+/* MA rescue: vertical-only dialog scrolling; oversized action rows scroll independently. */
+dialog.st-rescue-dialog {
+  box-sizing: border-box;
+  width: min(92vw, 420px);
+  max-width: 92vw;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-x: none;
+  touch-action: pan-y;
+}
+dialog.st-rescue-dialog > .dlg {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
+}
+dialog.st-rescue-dialog .st-rescue-hscroll {
+  display: flex;
+  flex-wrap: nowrap;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x;
+  padding-bottom: 6px;
+  scrollbar-width: thin;
+}
+dialog.st-rescue-dialog .st-rescue-hscroll > .btn {
+  flex: 0 0 auto;
+  width: auto;
+  white-space: nowrap;
+}
+dialog.st-rescue-dialog .st-rescue-timeline,
+dialog.st-rescue-dialog .st-rescue-track,
+dialog.st-rescue-dialog .field { min-width: 0; max-width: 100%; }
+dialog.st-rescue-dialog .field input,
+dialog.st-rescue-dialog .field select { box-sizing: border-box; max-width: 100%; min-width: 0; }
+
+/* Range selection: thin Word-like pointers below the track, clear of the playhead. */
+.st-rescue-track {margin-bottom:28px!important;height:20px!important;min-height:20px!important;overflow:visible!important}
+.st-rescue-track #rsSelection {top:3px!important;bottom:3px!important}
+.st-range-pointer {position:absolute!important;z-index:9!important;top:100%!important;width:28px!important;height:25px!important;min-height:25px!important;min-width:28px!important;padding:0!important;transform:translateX(-50%)!important;background:transparent!important;border:0!important;border-radius:0!important;touch-action:none!important;cursor:ew-resize!important}
+.st-range-pointer::after {content:'';position:absolute;top:2px;left:7px;width:14px;height:15px;background:var(--text,#d9e8e2);clip-path:polygon(0 0,100% 0,50% 100%);filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))}
+.st-range-pointer.st-range-end::after {background:#68c4a2}
+.st-trk {position:relative!important;min-height:20px!important;height:20px!important;margin-bottom:28px!important;overflow:visible!important}
+.st-trk .h {min-height:25px!important;min-width:28px!important}
+.st-trk .sel {height:100%!important}
+.st-rescue-script {padding:8px 10px;border-radius:8px;background:var(--surface-2,rgba(120,140,120,.12));margin:3px 0}

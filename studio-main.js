@@ -1,3 +1,4 @@
+import { showUpdate } from './update-manager.js';
 import { ensurePackFolder, studioFolders, folderMembers, createStudioFolder, renameStudioFolder, moveStudioSets, saveStudioFolderOrder, getFolderJa, saveFolderJa } from './studio-folders.js';
 import { readStudioJaFiles, planStudioJa, studioJaView, confirmStudioJa, studioJaChoices, findStudioJaChoices, studioJaRows, studioJaEditBlocks } from './studio-ja.js';
 import { openJaPositionEditor } from './ja-position-ui.js';
@@ -24,7 +25,7 @@ import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange,
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.23';
+export const STUDIO_VERSION = '0.21.24';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -499,17 +500,7 @@ async function setsScreen(el, params, revision) {
   };
   draw();
 }
-async function checkUpdate() {
-  toast('最新版を確認しています…', 2000);
-  try {
-    const registration = await navigator.serviceWorker?.getRegistration?.();
-    await registration?.update();
-  } catch {
-    toast('更新を確認できませんでした。接続を確認してください');
-    return;
-  }
-  location.replace(location.pathname + '?v=' + Date.now() + location.hash);
-}
+async function checkUpdate() { await showUpdate(); }
 
 // how a source is kept (for lists)
 function srcState(src) {

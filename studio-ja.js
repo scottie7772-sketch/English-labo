@@ -10,7 +10,7 @@ const stamp = text => {
 const manual = row => row.jaOverride || Boolean(row.ja);
 
 async function inflateJaEntry(raw, expectedSize) {
-  const { Inflate } = await import('./vendor/pako-inflate.js');
+  const { Inflate } = await import('./pako-inflate.js');
   const inflater = new Inflate({ raw: true });
   const chunks = [];
   let size = 0;

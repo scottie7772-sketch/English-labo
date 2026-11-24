@@ -5,6 +5,7 @@ import { homeScreen, reviewScreen, grammarScreen, comingSoon } from './hub.js';
 import { loadLang, setLang, langSwitchHTML, enabledLangs, setEnabled, LANGS } from './langs.js';
 import { seedContent } from './content.js';
 import { icon } from './icons.js';
+import { showUpdate, initUpdate } from './update-manager.js';
 import { APP_VERSION, BUILD_LABEL } from './app-version.js';
 
 
@@ -70,6 +71,7 @@ screens.settings = async (el) => {
 
   el.innerHTML = `
     <header class="top"><h1>設定</h1></header>
+    <div class="card stack"><button class="btn" id="appUpdate">アプリの更新を確認</button></div>
 
     <h2 class="sec">学習する言語</h2>
     <div class="card stack"><span class="small muted">使う言語（画面上部の EN / ES / 華 で切り替え）。言語ごとに単語・習得度・復習予定は別々に管理されます。</span>
@@ -118,6 +120,7 @@ screens.settings = async (el) => {
 
     <p class="muted center small">Englabo v${APP_VERSION} · ${BUILD_LABEL} / DB schema v${DB_VERSION}</p>`;
 
+  $('#appUpdate', el).onclick = showUpdate;
   $('#langs', el).onclick = async (e) => { const v = e.target.dataset.v; if (!v || v === 'en') return; const cur = enabledLangs().filter((c) => c !== 'en'); await setEnabled(cur.includes(v) ? cur.filter((c) => c !== v) : [...cur, v]); render(); };
   $('#swipe', el).addEventListener('click', async (e) => { const v = e.target.dataset.v; if (!v) return; await setSetting('swipeKnow', v); toast('スワイプの向きを変更しました'); render(); });
   // 1.19.31: word-card sound settings (stored on this device)
@@ -291,7 +294,7 @@ async function boot() {
   addEventListener('hashchange', () => { render(); scrollTo(0, 0); });
   await render();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('SW', e));
+    initUpdate();
   }
   // ask for persistence silently once installed to home screen
   if (matchMedia('(display-mode: standalone)').matches || navigator.standalone) requestPersist();

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { installFakeIndexedDB } from './fake-idb.mjs';
 const { zipWrite } = await import('./common-pack.js').catch(() => import('../common-pack.js'));
 const { db } = await import('./db.js').catch(() => import('../db.js'));
-const { parseMA, readMAStudyZip, importMA, linkChapter, phraseIndex, highlightRanges, indexChapter, maLinks, validMALink, saveMABoundary, playMA } =
+const { parseMA, readMAStudyZip, importMA, linkChapter, cueIndex, inferChapters, phraseIndex, highlightRanges, indexChapter, maLinks, validMALink, saveMABoundary, playMA } =
   await import('./ma-phrases.js').catch(() => import('../ma-phrases.js'));
 
 installFakeIndexedDB();
@@ -65,7 +65,7 @@ const cues = [
 await db.put('videos', v);
 await db.put('vblobs', { id: v.id, blob: wav });
 await db.putMany('cues', cues);
-assert.equal(await indexChapter(v.id, 'Chapter 01'), 4);
+assert.equal((await indexChapter(v.id, 'Chapter 01')).count, 4);
 const a = await db.get('words', initial.id);
 const [link] = maLinks(a);
 assert.equal(link.ref.start, 4);
@@ -110,7 +110,7 @@ const rows = scene.map(c => ({ id: c.id, confirmed: true, segments: [{ start: c.
 globalThis.gc?.();
 const heap = process.memoryUsage().heapUsed;
 const t0 = performance.now();
-const plan = linkChapter(synthetic, scene, v, rows, '1');
+const { entries: plan } = linkChapter(synthetic, scene, v, rows, '1');
 const elapsed = performance.now() - t0;
 assert.equal(plan.filter(x => x.found.length === 1).length, size);
 assert.equal(plan.reduce((sum, entry) => sum + entry.candidates.length, 0), 0);
@@ -118,3 +118,27 @@ const synIndex = phraseIndex(synthetic);
 const t1 = performance.now();
 for (let i = 0; i < 100; i++) assert.equal(highlightRanges(scene, i, i + 12, synIndex, [1, 2, 3]).size, 12);
 console.log(JSON.stringify({ matchMs: elapsed, highlightWindowMs: (performance.now() - t1) / 100, liveHeapDeltaMiB: (process.memoryUsage().heapUsed - heap) / 1048576 }));
+
+const sentences = [
+  'She set aside some money for the train.',
+  'The cat slipped out through the side door.',
+  'Please look after my plants this weekend.',
+  'Everyone sat down before the lights went out.',
+  'We could hear the bells from far away.',
+];
+const exampleWords = sentences.map((en, i) => ({
+  id: 'inference-' + i, headword: en.split(' ').slice(0, 2).join(' '),
+  ma: { priority: 1, variants: [], examples: [{ en, chapter: i < 2 ? 'Chapter 01' : '2' }] },
+}));
+const ambiguous = { ...exampleWords[4], id: 'collision', ma: { ...exampleWords[4].ma, examples: [{ en: sentences[4], chapter: '3' }] } };
+const sample = sentences.map((en, i) => cue('auto' + i, en, i * 2, i * 2 + 1));
+const inferred = inferChapters([...exampleWords, ambiguous], cueIndex(sample));
+assert.deepEqual([...inferred.chapters.values()], ['Chapter 01', '2']);
+assert.equal(inferred.eligible.has('we could hear the bells from far away'), false);
+assert.equal(inferChapters(exampleWords, cueIndex(sample.slice(0, 1))).chapters.size, 0);
+assert.equal(inferChapters(exampleWords, cueIndex([sample[0], sample[1], cue('auto-repeat', sample[0].en, 14, 15)])).chapters.size, 0);
+
+const audioRows = sample.map(c => ({ id: c.id, confirmed: true, segments: [{ start: c.start, end: c.end, size: 1, key: v.id, store: 'vblobs' }] }));
+const multi = linkChapter([...exampleWords, ambiguous], sample, v, audioRows, null);
+assert.deepEqual(multi.chapters, ['Chapter 01', '2']);
+assert.deepEqual(multi.entries.map(row => row.found.length), [1, 1, 1, 1, 0, 0]);

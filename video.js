@@ -693,7 +693,8 @@ export async function videoPlay(el, params) {
   const maWords = prose ? (await db.all('words')).filter(w => w.ma) : [];
   const maIndex = phraseIndex(maWords);
   let maObserver = null, maOrdered = [], maPositions = new Map(), maCache = new Map();
-  const maVisible = () => maChapter != null && maSettings.on && maIndex.size > 0 &&
+  let maDetected = false;
+  const maVisible = () => (maChapter != null || maDetected) && maSettings.on && maIndex.size > 0 &&
     !view.cloze && !editing && !rangeMode && !view.test;
   const saveView = () => setSetting('video.view', view);
   let singleSegment = null, loop = null, ab = null, curId = null, rafId = 0, saveT = 0, seekT = 0, loopN = 0, stepCue = null, revealedCue = null, editing = false;
@@ -738,7 +739,7 @@ export async function videoPlay(el, params) {
     <div class="vsheet" id="shSet" hidden><div class="vsheet-in card stack"><div class="row between"><b>表示・学習の設定</b><button class="btn sm" data-shclose>閉じる</button></div><div class="vset stack" id="set">
       ${prose ? `<fieldset class="stack" id="maSet"><legend>MAフレーズ</legend>
         <label>出典章 <input id="maChapter" type="text" value="${esc(maChapter ?? '')}" placeholder="例 12"></label>
-        <button class="btn sm" id="maLink">この章をMA教材として照合</button>
+        <button class="btn sm" id="maLink">MA教材と照合（空欄で自動）</button>
         <label class="chk"><input type="checkbox" id="maOn" ${maSettings.on ? 'checked' : ''}> 字幕ハイライト</label>
         <div class="row wrap">${priorities.map(p => `<label class="chk"><input type="checkbox" data-ma-level="${p}" ${maSettings.levels.includes(p) ? 'checked' : ''}> 優先度 ${p}</label>`).join('')}</div>
         <output id="maResult" aria-live="polite"></output>
@@ -1768,13 +1769,22 @@ export async function videoPlay(el, params) {
       run.disabled = true;
       try {
         if (manual) {
-          maChapter = $('#maChapter', el).value.trim() || v.name;
-          await setSetting('ma.chapter.' + v.id, maChapter);
+          const entered = $('#maChapter', el).value.trim();
+          await setSetting('ma.chapter.' + v.id, entered || null);
+          maChapter = entered || await chapterFor(v);
           drawList(); drawSub();
         }
         result.textContent = '照合中…';
-        const n = await indexChapter(v.id, maChapter);
-        result.textContent = `音声と照合できた使用例 ${n ?? 0}件`;
+        const match = await indexChapter(v.id, maChapter);
+        if (!box.isConnected) return;
+        const detected = Boolean(match?.chapters.length);
+        if (detected !== maDetected) {
+          maDetected = detected;
+          drawList(); drawSub();
+        }
+        result.textContent = detected
+          ? `音声と照合できた使用例 ${match.count}件${maChapter == null ? `（自動判定: ${match.chapters.join('、')}）` : ''}`
+          : '自動で章を特定できませんでした。出典章を指定できます。';
       } catch (err) { result.textContent = err.message; }
       finally { run.disabled = false; }
     };
@@ -1786,7 +1796,7 @@ export async function videoPlay(el, params) {
       setSetting('ma.highlight', maSettings);
       drawList(); drawSub();
     };
-    if (maChapter != null && maWords.length && (!vid || vid.paused)) void refreshIndex();
+    if (maWords.length && (!vid || vid.paused)) void refreshIndex();
   }
   setCleanup(() => {
     maObserver?.disconnect();

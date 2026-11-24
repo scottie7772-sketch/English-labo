@@ -30,17 +30,19 @@ export async function maImportScreen(el) {
       const n = await importMA(items);
       const message = `${n}件を登録・更新しました。単語集「MAフレーズ」で学習できます。`;
       out.textContent = message;
-      let count = 0, failed = 0, chapters = 0;
+      let count = 0, failed = 0, materials = 0;
       for (const id of await db.keys('videos')) {
         if (!out.isConnected) break;
         const video = await db.get('videos', id);
         if (!maMaterial(video)) continue;
         const chapter = await chapterFor(video);
-        if (chapter == null) continue;
-        chapters++;
-        try { count += await indexChapter(id, chapter) || 0; } catch { failed++; }
+        try {
+          const result = await indexChapter(id, chapter);
+          if (result?.chapters.length) materials++;
+          count += result?.count || 0;
+        } catch { failed++; }
       }
-      if (chapters) out.textContent = message + ` 照合 ${chapters}章・音声付き使用例 ${count}件${failed ? `（失敗 ${failed}章）` : ''}。`;
+      if (materials || failed) out.textContent = message + ` 照合 ${materials}教材・音声付き使用例 ${count}件${failed ? `（失敗 ${failed}教材）` : ''}。`;
     } catch (err) { out.textContent = err.message; }
     finally { button.disabled = false; }
   };

@@ -25,11 +25,12 @@ with ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, dir
         page.locator('[name="csv"]').set_input_files({
             "name": "synthetic.csv", "mimeType": "text/csv",
             "buffer": b"id,phrase,meaning,priority,example_en,chapter\n"
-                      b"one,turn back,return,1,Please turn back now.,1\n"
-                      b"two,back,reverse,2,Please turn back now.,1\n",
+                      b"one,turn back,return,1,Please turn back before the bridge now.,1\n"
+                      b"two,back,reverse,2,Please turn back before the bridge now.,1\n"
+                      b"three,set aside,reserve,3,She set aside some money for the train.,1\n",
         })
         page.get_by_role("button", name="端末に登録").click()
-        page.get_by_text("2件を登録・更新しました。", exact=False).wait_for()
+        page.get_by_text("3件を登録・更新しました。", exact=False).wait_for()
         page.evaluate("""async () => {
           const { db } = await import('./db.js');
           const { buildMaterial } = await import('./studio-main.js');
@@ -47,11 +48,14 @@ with ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, dir
           for (let i = 0; i < samples; i++) view.setInt16(44 + i * 2, Math.round(4000 * Math.sin(2 * Math.PI * 440 * i / rate)), true);
           const blob = new Blob([wav], { type: 'audio/wav' });
           const id = 'synthetic';
-          await sdb.put('sources', { id, kind: 'audio', mime: blob.type, name: 'chapter-1.wav', size: blob.size, duration: 4, stored: true, blob });
-          const block = newBlock('set', { text: 'Please turn back now.', ja: '翻訳の表示確認', aligned: true,
+          await sdb.put('sources', { id, kind: 'audio', mime: blob.type, name: 'recording.wav', size: blob.size, duration: 4, stored: true, blob });
+          const block = newBlock('set', { text: 'Please turn back before the bridge now.', ja: '翻訳の表示確認', aligned: true,
             segments: [{ sourceId: id, start: 0.5, end: 3 }] });
+          const second = newBlock('set', { text: 'She set aside some money for the train.', aligned: true,
+            segments: [{ sourceId: id, start: 3.1, end: 3.9 }] });
           await sdb.put('blocks', block);
-          const set = { id: 'set', folder: '', title: 'Master & Apprentice Chapter 1', materialType: 'prose', order: [block.id] };
+          await sdb.put('blocks', second);
+          const set = { id: 'set', folder: '', title: 'Untitled recording', materialType: 'prose', order: [block.id, second.id] };
           await sdb.put('sets', set);
           const { manifest, material, media } = await buildMaterial(set);
           const zip = await writeMaterialPack(manifest, material, new Map(media.map(m => [m.id, m.blob])));
@@ -75,7 +79,7 @@ with ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, dir
         video_id = page.evaluate("videoId")
         page.goto(base + "#video-play?id=" + video_id)
         page.locator("#openSet").click()
-        expect(page.locator("#maResult")).to_have_text("音声と照合できた使用例 2件", timeout=5000)
+        expect(page.locator("#maResult")).to_have_text("音声と照合できた使用例 3件（自動判定: 1）", timeout=5000)
         page.locator("#maOn").uncheck()
         assert page.locator("#cl .ma-mark").count() == 0
         page.locator("#maOn").check()

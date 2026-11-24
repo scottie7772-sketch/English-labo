@@ -160,7 +160,7 @@ export async function chapterFor(v) {
   const saved = await getSetting('ma.chapter.' + v.id, null);
   if (saved != null) return saved;
   if (!looksLikeMA(v)) return null;
-  return /(?:chapter|ch|第)[. _-]*0*(\d+)/i.exec(v.name)?.[1] || v.name;
+  return /(?:chapter|ch|第)[. _-]*0*(\d+)/i.exec(v.name)?.[1] || null;
 }
 export const chapterKey = text => keyOf(text).replace(/\b(?:chapter|ch) 0*(\d+)\b|第\s*0*(\d+)\s*章/g, (_, en, ja) => en || ja)
   .replace(/^0+(?=\d)/, '');
@@ -228,6 +228,42 @@ function matchingStarts(stream, starts, keys) {
   }
   return (starts.get(keys[anchor]) || []).map(i => i - anchor).filter(i => matches(stream, i, keys));
 }
+function exampleOccurrences(index, example, keys) {
+  const before = tokens(example.before).map(t => t.key);
+  const after = tokens(example.after).map(t => t.key);
+  const { stream, starts } = index;
+  return matchingStarts(stream, starts, keys).filter(i =>
+    (!before.length || matches(stream, i - before.length, before)) &&
+    (!after.length || matches(stream, i + keys.length, after)));
+}
+
+export function inferChapters(words, index) {
+  const texts = new Map();
+  for (const w of words) for (const example of w.ma.examples) {
+    const text = keyOf(example.en);
+    if (text) append(texts, text, example);
+  }
+  const evidence = new Map(), eligible = new Set();
+  for (const [text, examples] of texts) {
+    const chapters = new Set(examples.map(e => chapterKey(e.chapter)));
+    if (chapters.size !== 1 || chapters.has('')) continue;
+    eligible.add(text);
+    const keys = text.split(' ');
+    if (keys.length < 6) continue;
+    const starts = new Set(examples.flatMap(e => exampleOccurrences(index, e, keys)));
+    if (starts.size !== 1) continue;
+    const [start] = starts, [chapter] = chapters;
+    append(evidence, chapter, { start, end: start + keys.length, label: examples[0].chapter });
+  }
+  const chapters = new Map();
+  for (const [chapter, spans] of evidence) {
+    // Overlapping excerpts from the same passage count as one piece of evidence.
+    spans.sort((a, b) => a.end - b.end);
+    if (spans.some(span => span.start >= spans[0].end)) chapters.set(chapter, spans[0].label);
+  }
+  return { chapters, eligible };
+}
+
 const stamp = c => [c.id, c.en, c.start, c.end, c.part, Boolean(c.maAligned), c.wordTimings || null, c.sync || null, Boolean(c.timeEdited)];
 function boundary(cue, token, edge, segment) {
   const line = tokens(cue.en);
@@ -243,19 +279,20 @@ function boundary(cue, token, edge, segment) {
   return null;
 }
 export function linkChapter(words, cues, video, rows, chapter) {
-  const { stream, starts } = cueIndex(cues);
+  const index = cueIndex(cues);
+  const { stream, starts } = index;
+  const inferred = chapter == null ? inferChapters(words, index) : null;
   const byId = new Map(rows.map(r => [r.id, r]));
-  return words.map(w => {
-    const examples = w.ma.examples.filter(e => !e.chapter || chapterKey(e.chapter) === chapterKey(chapter));
+  const entries = words.map(w => {
+    const examples = w.ma.examples.filter(e => inferred
+      ? inferred.chapters.has(chapterKey(e.chapter)) && inferred.eligible.has(keyOf(e.en))
+      : !e.chapter || chapterKey(e.chapter) === chapterKey(chapter));
     const variants = patterns(w);
     const found = [], candidates = [];
     for (const e of examples) {
       const keys = keyOf(e.en).split(' ').filter(Boolean);
       if (!keys.length) continue;
-      const before = keyOf(e.before).split(' ').filter(Boolean), after = keyOf(e.after).split(' ').filter(Boolean);
-      const occurrences = matchingStarts(stream, starts, keys).filter(i =>
-        (!before.length || matches(stream, i - before.length, before)) &&
-        (!after.length || matches(stream, i + keys.length, after)));
+      const occurrences = exampleOccurrences(index, e, keys);
       if (occurrences.length !== 1) {
         if (occurrences.length) candidates.push(exampleKey(e));
         continue;
@@ -300,6 +337,7 @@ export function linkChapter(words, cues, video, rows, chapter) {
     if ((!w.ma.examples.length || examples.length) && !found.length && variants.some(keys => matchingStarts(stream, starts, keys).length)) candidates.push('');
     return { id: w.id, found, candidates };
   });
+  return { entries, chapters: inferred ? [...inferred.chapters.values()] : [chapter] };
 }
 
 export async function indexChapter(videoId, chapter) {
@@ -313,7 +351,8 @@ export async function indexChapter(videoId, chapter) {
   }
   const words = (await db.all('words')).filter(w => w.ma);
   await new Promise(resolve => setTimeout(resolve, 0));
-  const plan = linkChapter(words, cues, video, rows, chapter);
+  const { entries: plan, chapters } = linkChapter(words, cues, video, rows, chapter);
+  if (!chapters.length) return { count: 0, chapters };
   const snapshots = new Map(words.map(w => [w.id, w]));
   await db.tx(['words'], 'readwrite', async tx => {
     const store = tx.objectStore('words');
@@ -339,7 +378,7 @@ export async function indexChapter(videoId, chapter) {
       store.put(w);
     }
   });
-  return plan.reduce((n, x) => n + x.found.length, 0);
+  return { count: plan.reduce((n, x) => n + x.found.length, 0), chapters };
 }
 
 export function maLinks(w, videoId = null, allowAmbiguous = false) {

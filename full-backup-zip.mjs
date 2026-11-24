@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 globalThis.addEventListener = () => {};
 globalThis.window = {};
 globalThis.document = { addEventListener(){}, querySelector(){return null;} };
-const { db } = await import('./db.js');
-const B = await import('./backup.js');
+const { db } = await import('../db.js');
+const B = await import('../backup.js');
 const names = ['words','mastery','masteryChanges','reviews','sessions','attempts','decks','grammar','listening','speaking','videos','vblobs','cues','videoJa','imports','settings','meta'];
 const rec = Object.fromEntries(names.map(n => [n, new Map()]));
 const keyOf = (n, r) => r.id ?? r.key;
@@ -46,7 +46,7 @@ assert.equal(rec.vblobs.has('empty'), false);
 assert.equal(rec.meta.get('lastBackupAt') !== undefined, true);
 
 // rejects a plain JSON-backup-like zip and a truncated zip
-const { zipWrite } = await import('./common-pack.js');
+const { zipWrite } = await import('../common-pack.js');
 await assert.rejects(B.readFullBackupZip(await zipWrite([{ name: 'x.txt', data: 'hi' }])), /完全バックアップ/);
 await assert.rejects(B.readFullBackupZip(out.file.slice(0, 200)), /ZIP/);
 

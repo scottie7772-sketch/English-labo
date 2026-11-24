@@ -1,0 +1,31 @@
+name: release-check
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Regenerate release.json / sw.js hashes
+        run: node tools/build-release.mjs
+      - name: Commit regenerated files
+        run: |
+          if ! git diff --quiet -- release.json sw.js; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add release.json sw.js
+            git commit -m "chore: regenerate release hashes"
+            git push
+          fi
+      - run: node tools/check-release.mjs
+      - run: node tools/run-tests.mjs

@@ -1,5 +1,5 @@
 import { studioFolders, folderMembers, createStudioFolder, renameStudioFolder, moveStudioSets, saveStudioFolderOrder, getFolderJa, saveFolderJa } from './studio-folders.js';
-import { readStudioJaFiles, planStudioJa, studioJaView } from './studio-ja.js';
+import { readStudioJaFiles, planStudioJa, studioJaView, confirmStudioJa, studioJaChoices, findStudioJaChoices } from './studio-ja.js';
 // 教材スタジオ（制作）: standalone page studio.html now; later mounted inside Englabo with mount(el, { base: 'studio/' }).
 // Rules: does not import learning modules and never touches the learning database (ell-db).
 import { $, $$, esc, toast, confirmDialog, swipeToDelete } from './ui.js';
@@ -22,7 +22,7 @@ import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange,
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.15';
+export const STUDIO_VERSION = '0.21.18';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -197,7 +197,9 @@ async function folderJaScreen(el, params, revision) {
 }
 async function setsScreen(el, params, revision) {
   const allSets = (await sdb.all('sets')).sort((a, b) => b.updatedAt - a.updatedAt);
-  const registry = (await studioFolders(allSets)).sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true }));
+  const registry = await studioFolders(allSets);
+  const sortFolders = () => registry.sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true }));
+  sortFolders();
   const current = registry.find(folder => folder.id === params?.get('folder'));
   const sets = current ? folderMembers(allSets, current) : allSets;
   const srcs = await sourcesMap();
@@ -225,7 +227,7 @@ async function setsScreen(el, params, revision) {
   const lab = HOST?.studioLabState ? await HOST.studioLabState() : null;
   const est = !current && await navigator.storage?.estimate?.().catch(() => null);
   if (revision !== routeRevision) return;
-  let editing = false; const chosen = new Set();
+  let editing = false, folderMenuOpen = false; const chosen = new Set();
   const progress = members => {
     const ready = members.filter(set => jaInfo.get(set.id)).length;
     const made = members.filter(set => lab?.has(set.id)).length;
@@ -233,11 +235,11 @@ async function setsScreen(el, params, revision) {
   };
   const draw = () => {
     const suffix = current ? '?folder=' + encodeURIComponent(current.id) : '';
-    const access = `<a class="btn primary grow" href="#${BASE}import${suffix}">＋ 動画・音声・字幕</a><a class="btn" href="#${BASE}io${suffix}">教材パック</a>`;
+    const access = `<a class="btn primary" href="#${BASE}import${suffix}">＋ 動画・音声・字幕</a><a class="btn" href="#${BASE}io${suffix}">教材パック</a>`;
     el.innerHTML = `${head(current ? current.name : '教材スタジオ', current ? 'sets' : HOST ? '__exit' : null,
       current ? '<button class="icon-btn" id="folderMenu" aria-label="フォルダのメニュー">⋯</button>' :
         '<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#' + BASE + 'clean">容量</a>')}
-    <div class="row wrap">${access}${current ? `<a class="btn" href="#${BASE}${folderJaPath(current)}">英日データを取り込む</a>` : '<button class="btn" id="newFolder">＋ フォルダ</button>'}</div>
+    <div class="st-home-actions">${access}${current ? `<a class="btn" href="#${BASE}${folderJaPath(current)}">英日データを取り込む</a>` : '<button class="btn" id="newFolder">＋ フォルダ</button>'}</div>
     ${current ? `<p class="small muted">${progress(sets)}</p>` : ''}
     ${est ? `<p class="small muted">端末の保存量：${fmtSize(est.usage || 0)}${est.quota ? ` / 目安の上限 ${fmtSize(est.quota)}` : ''}</p>` : ''}
     ${sets.length ? `<div class="row end"><button class="btn sm" id="edit">${editing ? '完了' : '教材を選ぶ'}</button></div>` : ''}
@@ -249,12 +251,40 @@ async function setsScreen(el, params, revision) {
     ${current ? `${sets.length ? `<div class="card list">${sets.map(rowHTML).join('')}</div>` : '<p class="empty">このフォルダにはまだ教材がありません。</p>'}` :
       registry.map(folder => {
         const members = folderMembers(sets, folder);
-        if (!editing) return `<a class="card st-folderrow" href="#${BASE}${folderPath(folder)}"><span class="grow"><b>📁 ${esc(folder.name)}</b><small class="muted">${progress(members)}</small></span>›</a>`;
+        if (!editing) return `<div class="card st-folderrow" data-folder-row="${esc(folder.id)}">
+          <a class="grow st-folderlink" href="#${BASE}${folderPath(folder)}"><b>📁 ${esc(folder.name)}</b><small class="muted">${progress(members)}</small></a>
+          <button type="button" class="icon-btn st-foldermenu" aria-label="${esc(folder.name)}のメニュー" aria-haspopup="dialog">⋯</button>
+        </div>`;
         return members.length ? `<div class="card list"><b>📁 ${esc(folder.name)}</b>${members.map(rowHTML).join('')}</div>` : '';
       }).join('') + (!sets.some(s => !s.folder) ? '' : `<div class="card list">${sets.filter(s => !s.folder).map(rowHTML).join('')}</div>`)}
     ${!current && !sets.length && !registry.length ? '<p class="empty">まだ教材がありません。</p>' : ''}`;
     $('#eFold', el)?.addEventListener('click', () => toFolder(sets.filter(x => chosen.has(x.id))));
-    $('#folderMenu', el)?.addEventListener('click', () => openFolderMenu(current).catch(error => toast(error.message, 5500)));
+    $('#folderMenu', el)?.addEventListener('click', () => showFolderMenu(current));
+    $$('[data-folder-row]', el).forEach(row => {
+      const folder = registry.find(entry => entry.id === row.dataset.folderRow);
+      const link = $('.st-folderlink', row);
+      $('.st-foldermenu', row).onclick = () => showFolderMenu(folder, true);
+      let timer, start, held = false;
+      const stop = () => { clearTimeout(timer); start = null; };
+      link.onpointerdown = event => {
+        if (!event.isPrimary || event.button !== 0) return;
+        stop();
+        held = false;
+        start = { x: event.clientX, y: event.clientY };
+        timer = setTimeout(() => { held = true; showFolderMenu(folder, true); }, 550);
+      };
+      link.onpointermove = event => {
+        if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) stop();
+      };
+      link.onpointerup = link.onpointercancel = link.onpointerleave = stop;
+      link.oncontextmenu = event => {
+        event.preventDefault();
+        stop();
+        held = true;
+        showFolderMenu(folder, true);
+      };
+      link.onclick = event => { if (held && event.detail !== 0) { event.preventDefault(); held = false; } };
+    });
     $('#newFolder', el)?.addEventListener('click', async () => {
       const name = (await askText('フォルダを作成', ''))?.trim();
       if (name && revision === routeRevision) nav(folderPath(await createStudioFolder(name)));
@@ -292,19 +322,31 @@ async function setsScreen(el, params, revision) {
     if (del) for (const k of kids) await deleteSet(await sdb.get('sets', k.s.id));
     nav(`set?id=${P.id}&align=1`);
   }
-  async function openFolderMenu(folder) {
-    const corpus = await getFolderJa(folder.id);
+  async function showFolderMenu(folder, overview = false) {
+    if (!folder || folderMenuOpen || revision !== routeRevision) return;
+    folderMenuOpen = true;
+    try { await openFolderMenu(folder, overview); }
+    catch (error) { toast(error.message, 5500); }
+    finally { folderMenuOpen = false; }
+  }
+  async function openFolderMenu(folder, overview) {
+    const members = overview ? folderMembers(allSets, folder) : sets;
+    const corpus = overview ? null : await getFolderJa(folder.id);
     if (revision !== routeRevision) return;
-    const action = await studioDialog(folder.name,
-      `<p class="small muted">英日対応データ ${corpus?.sections.length || 0}ファイル</p>`,
-      [['register','英日対応データを登録・追加・更新'],
-        ...(corpus?.sections.length && sets.length ? [['apply','日本語訳を一括照合'],['missing','未割当の訳だけ照合']] : []),
-        ...(sets.length ? [['review','照合結果を確認']] : []),
-        ...(HOST?.sendToLab && sets.length ? [['lab','一括教材化'],['newLab','未教材化のみ教材化']] : []),
-        ['rename','フォルダ名を変更'], ...(sets.length > 1 ? [['sort','教材を並べ替え'],['merge','このフォルダの音声をまとめて照合']] : []),
-        ['close','閉じる']]);
+    const actions = overview ? [
+      ['rename','フォルダ名を変更'],
+      ...(HOST?.sendToLab && members.length ? [['lab','一括教材化']] : []),
+    ] : [
+      ['register','英日対応データを登録・追加・更新'],
+      ...(corpus?.sections.length && members.length ? [['apply','日本語訳を一括照合'],['missing','未割当の訳だけ照合']] : []),
+      ...(members.length ? [['review','照合結果を確認']] : []),
+      ...(HOST?.sendToLab && members.length ? [['lab','一括教材化'],['newLab','未教材化のみ教材化']] : []),
+      ['rename','フォルダ名を変更'], ...(members.length > 1 ? [['sort','教材を並べ替え'],['merge','このフォルダの音声をまとめて照合']] : []),
+    ];
+    const summary = overview ? progress(members) : `英日対応データ ${corpus?.sections.length || 0}ファイル`;
+    const action = await studioDialog(folder.name, `<p class="small muted">${summary}</p>`, [...actions, ['close','閉じる']]);
     if (revision !== routeRevision) return;
-    const ids = sets.map(set => set.id);
+    const ids = members.map(set => set.id);
     if (action === 'register') {
       nav(folderJaPath(folder));
     } else if (action === 'apply' || action === 'missing') {
@@ -326,7 +368,11 @@ async function setsScreen(el, params, revision) {
       const name = (await askText('フォルダの名前を変更', folder.name))?.trim();
       if (!name || name === folder.name || revision !== routeRevision) return;
       await renameStudioFolder(folder.id, name);
-      route();
+      if (revision !== routeRevision) return;
+      for (const member of members) member.folder = name;
+      folder.name = name;
+      sortFolders();
+      draw();
     } else if (action === 'sort') {
       await sortFolder(folder);
     } else if (action === 'merge') {
@@ -1660,12 +1706,14 @@ async function editorScreen(el, params, revision) {
     for (const b of blocks) for (const g of b.segments) if (!firstBySource.has(g.sourceId)) firstBySource.set(g.sourceId,b.id);
     list.innerHTML = shown.map((b) => (folds.has(b.id) ? foldHTML(folds.get(b.id)) : '') + (() => {
       const badges = [b.segments.length > 1 ? `<span class="tagp">${b.segments.length}区間</span>` : '', new Set(b.segments.map((s) => s.sourceId)).size > 1 ? '<span class="tagp">複数ファイル</span>' : '',
-        b.unconfirmed ? '<span class="tagp warn">一括仮割当・未確認</span>' : b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', overlap.has(b.id) ? `<span class="tagp warn" title="前の行と音声が重なっています。✎で開始を動かすと前の行の終わりも合わせて動きます">前と${overlap.get(b.id)}秒重なり</span>` : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length && !isSymbolRow(b) ? '<span class="tagp">音声未割当</span>' : ''].join('');
+        b.unconfirmed ? '<span class="tagp warn">一括仮割当・未確認</span>' : b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', overlap.has(b.id) ? `<span class="tagp warn" title="前の行と音声が重なっています。✎で開始を動かすと前の行の終わりも合わせて動きます">前と${overlap.get(b.id)}秒重なり</span>` : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', !b.segments.length && !isSymbolRow(b) ? '<span class="tagp">音声未割当</span>' : ''].join('');
       const sourceStart = [...firstBySource].filter(([sid,id])=>id===b.id).map(([sid])=>`<div class="st-source-boundary">音声開始：${esc(srcs[sid]?.name||'音声ファイル')} <button type="button" class="btn sm ghost" data-source-row="${esc(sid)}" data-row="${esc(b.id)}">位置へ</button></div>`).join('');
       return `${sourceStart}<div class="st-row ${sel.has(b.id) ? 'sel' : ''} ${arrange ? 'jig' : ''}" data-id="${b.id}">
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
         <span class="grow st-txt" data-play="${b.id}"><small class="muted">${b.segments.length ? `${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)}` : estMap.has(b.id) ? `≈${fmt(estMap.get(b.id).t)}（推定）` : '--:--'} ${badges}</small>
-          ${b.label ? `<b class="small">${esc(b.label)}</b>` : ''}<span class="st-en2">${holeHTML(b) || `<span class="muted">（英文なし${b.label ? '・✎で追加' : ''}）</span>`}</span><span class="st-ja2">${esc(jaView.value(b))}</span>${jaView.needsReview(b) ? '<span class="small warn-text">訳を要確認</span>' : ''}</span>
+          ${b.label ? `<b class="small">${esc(b.label)}</b>` : ''}<span class="st-en2">${holeHTML(b) || `<span class="muted">（英文なし${b.label ? '・✎で追加' : ''}）</span>`}</span><span class="st-ja2">${esc(jaView.value(b))}</span>${jaView.needsReview(b) ? (!arrange && !selectMode ?
+            `<button type="button" class="link small warn-text" data-ja-edit="${esc(b.id)}">訳を要確認</button>` :
+            '<span class="small warn-text">訳を要確認</span>') : ''}</span>
         ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `${!b.segments.length && b.text.trim() && !isSymbolRow(b) ? `<button type="button" class="btn xs ghost" data-rescue="${b.id}">音声を割当</button>` : ''}${(b.sync === 'estimated' || b.unconfirmed) && b.segments.length ? `<button type="button" class="btn xs ghost" data-confirm-row="${b.id}" title="試聴した時刻のまま確定">確定</button>` : ''}${b.sync === 'estimated' && b.segments.length && !b.unconfirmed ? `<button type="button" class="btn xs ghost" data-reestimate="${b.id}">前後から再推定</button>` : ''}<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
     })()).join('') + (folds.has('__end') ? foldHTML(folds.get('__end')) : '') || `<p class="empty">${filtering ? (view === 'done' ? '照合済みの行はまだありません' : view === 'rest' ? '残っている文字起こしはありません' : '未照合の行はありません（すべて照合済み）') : '項目がありません'}</p>`;
     if (filtering && view === 'rest' && shown.length) {
@@ -1765,6 +1813,7 @@ async function editorScreen(el, params, revision) {
   list.addEventListener('touchend', () => { if (swipe) { swipe = null; drawList(); } });
   list.addEventListener('click', (e) => {
     const chk = e.target.closest('[data-chk]'); if (chk) { if (!('ontouchstart' in window)) tapRow(chk.dataset.chk); return; }
+    const ja = e.target.closest('[data-ja-edit]'); if (ja) return editStudioJa(byId[ja.dataset.jaEdit]);
     const ed = e.target.closest('[data-edit]'); if (ed) return editBlock(byId[ed.dataset.edit]);
     const row = e.target.closest('.st-row'); if (!row) return;
     if (arrange) { if (!e.target.closest('[data-grip]')) splitSheet(byId[row.dataset.id]); return; }
@@ -2927,8 +2976,61 @@ async function editorScreen(el, params, revision) {
       if (picking) { if (a0 == null || a1 != null) { a0 = id; a1 = null; } else a1 = id; mark2(); drawFB(); return; }
       dlg.close(); if (view !== 'all') setView('all'); setTimeout(() => goNear(id), 50); }));
   }
+  async function editStudioJa(row) {
+    if (!row) return;
+    vid.pause(); playing = null;
+    editorPlayback?.cleanup?.(); editorPlayback = null;
+    const guard = jaGuard(set);
+    let choices = [], sourceError = '';
+    try {
+      const folder = parentFolder && await getFolderJa(parentFolder.id);
+      if (folder?.sections.length) choices = studioJaChoices(set, folder.sections);
+    } catch (error) { sourceError = error.message; }
+    if (revision !== routeRevision) return;
+    const result = studioDialog('この行の和訳を確定', `
+      <div class="small">${esc(row.text)}</div>
+      <label class="field">和訳<textarea id="stJaFixText" rows="3">${esc(jaView.value(row))}</textarea></label>
+      ${choices.length ? `<label class="field">フォルダの英日データから探す<input id="stJaFixSearch" type="search" placeholder="英文の一部、または日本語"></label>
+        <div id="stJaFixChoices" class="stack" style="max-height:32dvh;overflow:auto"></div>` :
+        sourceError ? `<p class="small warn-text">候補を読み込めませんでした。和訳は直接入力できます。<br>${esc(sourceError)}</p>` : ''}`,
+      [['save','この和訳で確定'],['cancel','閉じる']]);
+    const dlg = $('#dialog'), text = $('#stJaFixText', dlg);
+    const save = $('button[value=save]', dlg);
+    const updateSave = () => { save.disabled = !text.value.trim(); };
+    text.oninput = updateSave;
+    updateSave();
+    if (choices.length) {
+      const search = $('#stJaFixSearch', dlg), list = $('#stJaFixChoices', dlg);
+      const at = blocks.findIndex(block => block.id === row.id);
+      const context = { before: blocks[at - 1]?.text, after: blocks[at + 1]?.text };
+      let candidates = [];
+      const render = () => {
+        candidates = findStudioJaChoices(choices, row.text, search.value, context);
+        list.innerHTML = candidates.length ? candidates.map((candidate, index) => `<div class="card stack small">
+          <b>${esc(candidate.en)}</b><span>${esc(candidate.ja)}</span>
+          <details><summary>${esc(candidate.name)}・前後の英文</summary>
+            ${candidate.before ? `<div>前　${esc(candidate.before)}</div>` : ''}
+            ${candidate.after ? `<div>次　${esc(candidate.after)}</div>` : ''}
+          </details><button type="button" class="btn sm" data-ja-choice="${index}">この訳を入力</button></div>`).join('') :
+          '<p class="small muted">候補が見つかりません。英文の一部で検索するか、和訳を入力してください。</p>';
+      };
+      search.oninput = render;
+      search.onkeydown = event => { if (event.key === 'Enter' && !event.isComposing) event.preventDefault(); };
+      list.onclick = event => {
+        const button = event.target.closest('[data-ja-choice]');
+        if (!button) return;
+        text.value = candidates[Number(button.dataset.jaChoice)].ja;
+        updateSave();
+      };
+      render();
+    }
+    if (await result !== 'save' || revision !== routeRevision || !text.value.trim()) return;
+    await run('和訳を確定', { blocks: [confirmStudioJa(row, text.value)], guardedSet: guard });
+  }
+
   async function editBlock(b, {protectNeighbours = false,onFinish = null} = {}) {
     if (!b) return;
+    const translationGuard = jaGuard(set);
     const shownJa = jaView.value(b);
     let displayedJa = shownJa;
     vid.pause(); playing = null; editorPlayback?.cleanup?.(); editorPlayback = null;
@@ -2951,6 +3053,7 @@ async function editorScreen(el, params, revision) {
           </div>
         </div>
         <label class="field"><span>和訳</span><textarea id="eJa" rows="2">${esc(displayedJa)}</textarea></label>
+        ${jaView.needsReview(b) ? '<button class="btn sm" value="ja-only">この和訳で確定</button>' : ''}
         <label class="field"><span>英文</span><textarea id="eEn" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false">${esc(work.text)}</textarea></label>
         <div class="stack">${work.segments.map((s, i) => `<div class="st-segrow"><b>区間${i + 1}</b> <small class="muted">${esc(srcs[s.sourceId]?.name || '')}</small>
           <div class="st-trim" data-trim="${i}"><div class="st-trk"><i class="st-origin"></i><i class="st-playhead"></i><i class="sel" data-slide="${i}" title="長さを固定して移動"></i><b class="h st-range-pointer st-range-start" data-h="start"></b><b class="h st-range-pointer st-range-end" data-h="end"></b></div><div class="row small muted"><span class="st-tl0"></span><span class="grow"></span><span>中央をドラッグ＝長さ固定で移動／薄枠＝元の位置</span><span class="grow"></span><span class="st-tl1"></span></div></div>
@@ -3128,7 +3231,8 @@ async function editorScreen(el, params, revision) {
       if (en == null) return;
       if (ja !== displayedJa) {
         displayedJa = ja;
-        work = { ...ops.editText(work, en, ja), jaOverride: true, jaReview: false };
+        if (en !== work.text) work = ops.editText(work, en, work.ja || '');
+        work = confirmStudioJa(work, ja);
       } else if (en !== work.text) work = ops.editText(work, en, work.ja || '');
     };
     // ---- 1.19.19: confirm in place / give a cut-off part to the neighbour / merge with the neighbour ----
@@ -3157,6 +3261,12 @@ async function editorScreen(el, params, revision) {
       try {
         const rv = dlg.returnValue;
         if (['headPrev','tailNext','mergePrev','mergeNext'].includes(rv)) { readText(); return await editNeighbourAction(rv, b, work, originalSegments, cutParts(), prevRow, nextRow); }
+        if (rv === 'ja-only') {
+          const ja = $('#eJa', dlg).value.trim();
+          if (!ja) return editStudioJa(b);
+          await run('和訳を確定', { blocks: [confirmStudioJa(b, ja)], guardedSet: translationGuard });
+          return;
+        }
         if (rv !== 'ok' && rv !== 'confirm') return;
         readText();
         if (rv === 'confirm') { if (!work.segments.length) return; delete work.unconfirmed; work.sync = 'manual'; }
@@ -4234,7 +4344,7 @@ async function editorScreen(el, params, revision) {
     if (revision !== routeRevision) return;
     history.replaceState(null, '', `#${BASE}set?id=${encodeURIComponent(set.id)}`);
     setView('all'); goNear(reviewRow);
-    editBlock(byId[reviewRow]);
+    editStudioJa(byId[reviewRow]);
   }, 0);
   $('#moreB', el).onclick = async () => {
     const dlg = $('#dialog');
@@ -4291,7 +4401,7 @@ async function editorScreen(el, params, revision) {
         else await applyStudioJa([set.id], corpus.sections, refreshJa);
       }
       if (v === 'stJaReview') showStudioJaReview(set, jaView.summary, row => {
-        setView('all'); goNear(row.id); return editBlock(byId[row.id]);
+        setView('all'); goNear(row.id); return editStudioJa(byId[row.id]);
       });
       if (v === 'ver') nav(`versions?id=${set.id}`);
       if (v === 'exp') exportSet(set);
@@ -4529,7 +4639,7 @@ const jaCounts = ({ total, applied, review, missing }) =>
 
 function studioDialog(title, body, buttons) {
   const dlg = $('#dialog');
-  dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(title)}</h3>${body}<div class="row wrap end">
+  dlg.innerHTML = `<form method="dialog" class="dlg stack st-action-dialog"><h3>${esc(title)}</h3>${body}<div class="st-dialog-actions">
     ${buttons.map(([value, label]) => `<button class="btn sm" value="${value}">${esc(label)}</button>`).join('')}</div></form>`;
   dlg.returnValue = '';
   return new Promise(resolve => {

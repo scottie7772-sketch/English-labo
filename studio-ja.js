@@ -1,5 +1,5 @@
 import { zipRead } from './common-pack.js';
-import { readScriptJa, planScriptJa } from './video-script-ja.js';
+import { normalizeScriptJa, readScriptJa, planScriptJa } from './video-script-ja.js';
 
 const english = row => Boolean(row.text?.match(/[A-Za-z]/)) && (!row.asr || row.aligned);
 const stamp = text => {
@@ -95,7 +95,8 @@ export function studioJaView(blocks) {
     })) good.set(row.id, group);
   }
   const value = row => !row ? '' : manual(row) ? row.ja || '' : good.get(row.jaImport?.owner)?.texts.join('\n') || '';
-  const needsReview = row => Boolean(row && !manual(row) && (row.jaReview || (row.jaImport && !good.has(row.jaImport.owner))));
+  const needsReview = row => Boolean(row && !row.jaOverride && (row.jaStatus === 'needsReview' ||
+    (!manual(row) && (row.jaReview || (row.jaImport && !good.has(row.jaImport.owner))))));
   const summary = { total: 0, applied: 0, review: [], missing: [] };
   for (const row of blocks.filter(english)) {
     summary.total++;
@@ -110,6 +111,39 @@ export function studioJaView(blocks) {
   // A Studio manual edit or removal takes precedence over its imported group.
   for (const row of blocks) if (row.jaOverride && row.ja) spans.push({ ids: [row.id], texts: [row.ja] });
   return { value, needsReview, summary, spans };
+}
+
+export function confirmStudioJa(row, ja) {
+  return { ...row, ja: ja.trim(), jaOverride: true, jaReview: false, jaStatus: 'ok' };
+}
+
+export function studioJaChoices(set, sections) {
+  return sections.flatMap(({ data, name }) => {
+    if (data?.materialId != null && data.materialId !== set.id) return [];
+    const { rows, sourceChapter } = readScriptJa(data, set.id);
+    return rows.flatMap((row, i) => row.ja ? [{
+      ...row, key: normalizeScriptJa(row.en), name: name.split('/').at(-1), chapter: row.chapter || sourceChapter,
+      before: rows[i - 1]?.en, after: rows[i + 1]?.en,
+    }] : []);
+  });
+}
+
+export function findStudioJaChoices(choices, english, search = '', { before = '', after = '' } = {}) {
+  const key = normalizeScriptJa(english), query = normalizeScriptJa(search);
+  const prev = normalizeScriptJa(before), next = normalizeScriptJa(after);
+  const words = new Set(key.split(' ').filter(word => word.length > 2));
+  return choices.flatMap(choice => {
+    if (query && !choice.key.includes(query) && !normalizeScriptJa(choice.ja).includes(query)) return [];
+    const context = (prev && normalizeScriptJa(choice.before || '') === prev ? .2 : 0) +
+      (next && normalizeScriptJa(choice.after || '') === next ? .2 : 0);
+    if (choice.key === key) return [{ choice, score: 3 + context }];
+    if (key && choice.key && ((' ' + choice.key + ' ').includes(' ' + key + ' ') ||
+        (' ' + key + ' ').includes(' ' + choice.key + ' '))) return [{ choice, score: 2 + context }];
+    const parts = new Set(choice.key.split(' ').filter(word => word.length > 2));
+    const common = [...parts].filter(word => words.has(word)).length;
+    const score = 2 * common / (parts.size + words.size || 1);
+    return query || (common >= 2 && score >= .45) ? [{ choice, score: score + context }] : [];
+  }).sort((a, b) => b.score - a.score).slice(0, 10).map(result => result.choice);
 }
 
 export function planStudioJa(set, blocks, sections, { missingOnly = false } = {}) {
@@ -137,7 +171,8 @@ export function planStudioJa(set, blocks, sections, { missingOnly = false } = {}
     const members = ids.map(id => ({ id, stamp: stamp(live.get(id).text) }));
     for (const id of ids) {
       const row = live.get(id);
-      edits.set(id, { ...row, jaReview: false, jaImport: id === owner ? { owner, members, texts } : { owner } });
+      edits.set(id, { ...row, ...(row.jaStatus === 'needsReview' && { jaStatus: 'ok' }),
+        jaReview: false, jaImport: id === owner ? { owner, members, texts } : { owner } });
     }
   }
   for (const id of reviewCueIds) {
@@ -148,7 +183,8 @@ export function planStudioJa(set, blocks, sections, { missingOnly = false } = {}
   return {
     changes: [...edits.values()].filter(row => {
       const old = live.get(row.id);
-      return Boolean(row.jaReview) !== Boolean(old.jaReview) || JSON.stringify(row.jaImport) !== JSON.stringify(old.jaImport);
+      return Boolean(row.jaReview) !== Boolean(old.jaReview) || row.jaStatus !== old.jaStatus ||
+        JSON.stringify(row.jaImport) !== JSON.stringify(old.jaImport);
     }),
     summary: studioJaView(changes).summary,
   };

@@ -154,7 +154,7 @@ export async function importMA(items) {
 }
 
 export const maMaterial = v => v && (v.lang || 'en') === 'en' &&
-  (v.materialType === 'prose' || (!v.materialType && looksLikeMA(v)));
+  (v.materialType === 'prose' || !v.materialType);
 export const looksLikeMA = v => /\bmaster\s+(?:(?:and|[&＆])\s+)?apprentice\b|マスター[＆&と・ ]*アプレンティス/i.test([v.name, v.folder].join(' '));
 export async function chapterFor(v) {
   const saved = await getSetting('ma.chapter.' + v.id, null);
@@ -283,6 +283,7 @@ export function linkChapter(words, cues, video, rows, chapter) {
   const { stream, starts } = index;
   const inferred = chapter == null ? inferChapters(words, index) : null;
   const byId = new Map(rows.map(r => [r.id, r]));
+  const stats = { matches: 0, unavailable: 0, context: 0, legacy: 0 };
   const entries = words.map(w => {
     const examples = w.ma.examples.filter(e => inferred
       ? inferred.chapters.has(chapterKey(e.chapter)) && inferred.eligible.has(keyOf(e.en))
@@ -297,22 +298,35 @@ export function linkChapter(words, cues, video, rows, chapter) {
         if (occurrences.length) candidates.push(exampleKey(e));
         continue;
       }
+      stats.matches++;
       const i = occurrences[0], first = stream[i], last = stream[i + keys.length - 1];
       const slice = cues.slice(first.line, last.line + 1);
       const segments = slice.map(c => byId.get(c.id));
       const media = segments[0]?.segments[0];
-      if (!media || !segments.every((r, j) => r?.confirmed && r.segments.length === 1 && r.segments[0].key === media.key &&
+      const confirmed = segments.every(r => r?.confirmed);
+      // Old exports kept assigned cue ranges but did not carry confirmation metadata.
+      const legacy = !confirmed && Boolean(video.from?.material) && slice.every((c, j) =>
+        segments[j]?.confirmed || (c.itemId && c.sync !== 'estimated' && c.maAligned == null && c.sourceSegments?.length === 1));
+      if ((!confirmed && !legacy) || !media || !segments.every((r, j) => r?.segments.length === 1 && r.segments[0].key === media.key &&
             r.segments[0].start >= 0 && r.segments[0].end > r.segments[0].start && r.segments[0].size &&
             (!j || r.segments[0].start >= segments[j - 1].segments[0].end - .08))) {
+        stats.unavailable++;
         candidates.push(exampleKey(e));
         continue;
       }
-      const start = boundary(slice[0], first, 'start', media);
-      const end = boundary(slice.at(-1), last, 'end', segments.at(-1).segments[0]);
-      if (start == null || end == null || end - start < .08) {
+      const tail = segments.at(-1).segments[0];
+      const exactStart = confirmed ? boundary(slice[0], first, 'start', media) : null;
+      const exactEnd = confirmed ? boundary(slice.at(-1), last, 'end', tail) : null;
+      const context = exactStart == null || exactEnd == null;
+      const start = context ? media.start : exactStart;
+      const end = context ? tail.end : exactEnd;
+      if (end - start < .08) {
+        stats.unavailable++;
         candidates.push(exampleKey(e));
         continue;
       }
+      if (context) stats.context++;
+      if (legacy) stats.legacy++;
       const ref = makeRef({ ...media, start, end, limit: { min: start, max: end }, state: 'confirmed',
         origin: { from: 'lab', materialId: video.id, cueId: slice[0].id, title: video.name, text: e.en } });
       const occurrencesInExample = [];
@@ -321,7 +335,7 @@ export function linkChapter(words, cues, video, rows, chapter) {
       }
       // A cue boundary is sufficient when the matched phrase covers that cue (or entire cues).
       let phrase = null;
-      if (occurrencesInExample.length === 1) {
+      if (confirmed && occurrencesInExample.length === 1) {
         const [offset, length] = occurrencesInExample[0];
         const startToken = stream[i + offset], endToken = stream[i + offset + length - 1];
         const a = cues[startToken.line], b = cues[endToken.line];
@@ -332,18 +346,18 @@ export function linkChapter(words, cues, video, rows, chapter) {
           phrase = { ...ref, origin, start, end: finish, limit: { min: start, max: finish } };
         }
       }
-      found.push({ key: exampleKey(e), ref, phrase, cues: slice.map(stamp) });
+      found.push({ key: exampleKey(e), ref, phrase, ...(context ? { context: true } : {}), ...(legacy ? { legacy: true } : {}), cues: slice.map(stamp) });
     }
     if ((!w.ma.examples.length || examples.length) && !found.length && variants.some(keys => matchingStarts(stream, starts, keys).length)) candidates.push('');
     return { id: w.id, found, candidates };
   });
-  return { entries, chapters: inferred ? [...inferred.chapters.values()] : [chapter] };
+  return { entries, stats, chapters: inferred ? [...inferred.chapters.values()] : [chapter] };
 }
 
 export async function indexChapter(videoId, chapter) {
   const { loadLabMaterial } = await import('./audio-words-ui.js');
-  const { video, cues, rows } = await loadLabMaterial(videoId);
-  if (!maMaterial(video)) return null;
+  const { video, cues, rows, vocab } = await loadLabMaterial(videoId);
+  if (!maMaterial(video) || vocab) return null;
   const cuesById = new Map(cues.map(c => [c.id, c]));
   for (const row of rows) {
     const cue = cuesById.get(row.id);
@@ -351,8 +365,8 @@ export async function indexChapter(videoId, chapter) {
   }
   const words = (await db.all('words')).filter(w => w.ma);
   await new Promise(resolve => setTimeout(resolve, 0));
-  const { entries: plan, chapters } = linkChapter(words, cues, video, rows, chapter);
-  if (!chapters.length) return { count: 0, chapters };
+  const { entries: plan, chapters, stats } = linkChapter(words, cues, video, rows, chapter);
+  if (!chapters.length) return { count: 0, chapters, stats };
   const snapshots = new Map(words.map(w => [w.id, w]));
   await db.tx(['words'], 'readwrite', async tx => {
     const store = tx.objectStore('words');
@@ -378,7 +392,7 @@ export async function indexChapter(videoId, chapter) {
       store.put(w);
     }
   });
-  return { count: plan.reduce((n, x) => n + x.found.length, 0), chapters };
+  return { count: plan.reduce((n, x) => n + x.found.length, 0), chapters, stats };
 }
 
 export function maLinks(w, videoId = null, allowAmbiguous = false) {

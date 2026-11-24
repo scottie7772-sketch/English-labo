@@ -1,9 +1,9 @@
 {
-  "version": "1.19.38",
+  "version": "1.19.39",
   "studio": "0.21.27",
-  "id": "24d24e56387d",
+  "id": "987ae66d73c5",
   "files": {
-    "app-version.js": "78969bc28ed098efe0f388658079100d4eccf9a001b78548c28a3a16d196f793",
+    "app-version.js": "38cf02f8a81787548fd04deafbb1a41749cfcafb56c3656b4404ced8c0ebd178",
     "app.css": "47a26103740a84ee20c8674dcf1af8d9ec89c0ed71d65cd26d06d39144c77377",
     "app.js": "c7084b061cc080556860ff6343bfa6115455075a696e97fb5ab372f4fd25a994",
     "asr.js": "46f48d92bfa90703e29b27d93efd6383fbd140bda1d7ed79b64f27e3f0ba2166",
@@ -43,8 +43,8 @@
     "langs.js": "d440f6f7c8952c0720603bec0b72647f93cd1ee77f9cbc0f3775244dfa764610",
     "lesson.js": "751dd51e0c5e1c2466c1a054ff7a2bce06d6be0b8a2ffb5400575ead27decfc3",
     "listening.js": "f73db0cb38c8e93462485c6923c489f0035c830f000fefa2ed3438ccd24152e5",
-    "ma-phrases-ui.js": "109bff2ff19438dc04db493183a06c000efb8d69dbaead6c512dfecea6872575",
-    "ma-phrases.js": "f924bbc30043bf38557a8068112bbcbd005756ed8f26cddccb1e6d4e14dff960",
+    "ma-phrases-ui.js": "92243d4192351413db19f67a2f57fc556accc7dbf327eac742cd96463fe01c82",
+    "ma-phrases.js": "5b390e50096eb9570c3f4fd573af9ecb7f431311cbaef5bd4e1053eb267a6beb",
     "manifest.webmanifest": "7ab97a0984cb9388bd0bcce543920cf146b76608aaa5012ccbed9feef9e36b8a",
     "mastery.js": "a1e5059b8921979edba4125d5cd60b921c3cc5ab7db4c3959a0b8e34eb7c1463",
     "material-pack.js": "fca10d83cbfe1354d5e938eba9a69e578370b341d2c3476e038757ba8471e96c",
@@ -93,7 +93,7 @@
     "video-media-ref.js": "6339ab3fab8640b0ddf4b783641290f7e6e68273cac8d8827245379c66a6934a",
     "video-script-ja.js": "06d9709019dcae7a3d44ba0b77cc5e2309b42bdbd6f87332e474f1ad655540f1",
     "video-translations.js": "5405af7c4d6a53e163506df36e90583c1731bec8ce2e715d7598c6abec5dc1d4",
-    "video.js": "009ad5dfaf983d87affd2d41145747ab119a0c4eaa13afadfba2ecc69153b091",
+    "video.js": "0a366d13d2cfb6e6df7e2d9d96173174d13c44d3c9e5b591332a13f5654c7d0a",
     "vocab.js": "730fe9a15d97752930fa0efd5c98be94eb0fdb8b3b072ce4c870ff6ae479d1cb",
     "word-audio.js": "a48f7a416e2e5bc7ea84c7597332bd609092bf8a0a95fa95cdb7720b3051e2e4",
     "words.js": "1e5cf49bf0bc1522b29b50b279754908fb6b1b58ec8eefea94ec426ed4157e6b"

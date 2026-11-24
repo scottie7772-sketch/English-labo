@@ -30,19 +30,22 @@ export async function maImportScreen(el) {
       const n = await importMA(items);
       const message = `${n}件を登録・更新しました。単語集「MAフレーズ」で学習できます。`;
       out.textContent = message;
-      let count = 0, failed = 0, materials = 0;
+      let count = 0, failed = 0, materials = 0, inspected = 0, unavailable = 0, legacy = 0;
       for (const id of await db.keys('videos')) {
         if (!out.isConnected) break;
         const video = await db.get('videos', id);
         if (!maMaterial(video)) continue;
         const chapter = await chapterFor(video);
         try {
+          inspected++;
           const result = await indexChapter(id, chapter);
           if (result?.chapters.length) materials++;
           count += result?.count || 0;
+          unavailable += result?.stats.unavailable || 0;
+          legacy += result?.stats.legacy || 0;
         } catch { failed++; }
       }
-      if (materials || failed) out.textContent = message + ` 照合 ${materials}教材・音声付き使用例 ${count}件${failed ? `（失敗 ${failed}教材）` : ''}。`;
+      if (inspected) out.textContent = message + ` 検査 ${inspected}教材・章特定 ${materials}教材・再生可 ${count}件（旧形式の試聴 ${legacy}件）・音声区間なし／未確定 ${unavailable}件${failed ? `・エラー ${failed}教材` : ''}。`;
     } catch (err) { out.textContent = err.message; }
     finally { button.disabled = false; }
   };
@@ -90,7 +93,7 @@ export async function mountMAAudio(root, w, { videoId = null, pause = null, adju
       const saved = link.manual || phrase;
       return `<section class="stack"><small>${esc(link.ref.origin.title)}</small><div>${esc(link.ref.origin.text)}</div>
         ${valid[i] ? `<div class="row wrap">
-          <button type="button" class="btn sm" data-ma-play="${i}:example">▶ 使用例</button>
+          <button type="button" class="btn sm" data-ma-play="${i}:example">▶ ${link.legacy ? '字幕の音声を試聴（旧形式）' : link.context ? '使用例を含む字幕' : '使用例'}</button>
           ${phrase ? `<button type="button" class="btn sm" data-ma-play="${i}:word">▶ フレーズ</button>` : '<span class="small">フレーズ単体の時刻は未確定</span>'}
         </div>
         ${adjust ? `<details data-ma-edge="${i}"><summary>フレーズの境界を調整</summary>

@@ -687,7 +687,7 @@ export async function videoPlay(el, params) {
   const scriptOrder = () => cues.some(c => c.studioOrder != null) ? cues.slice().sort(
     (a, b) => (a.studioOrder ?? Infinity) - (b.studioOrder ?? Infinity) || compareVideoCues(a,b)) : cues;
   const view = await loadView();
-  const prose = maMaterial(v);
+  const prose = maMaterial(v) && !cues.some(c => c.studySet && c.role);
   let maChapter = prose ? await chapterFor(v) : null;
   const maSettings = prose ? await getSetting('ma.highlight', { on: true, levels: priorities }) : null;
   const maWords = prose ? (await db.all('words')).filter(w => w.ma) : [];
@@ -1783,7 +1783,7 @@ export async function videoPlay(el, params) {
           drawList(); drawSub();
         }
         result.textContent = detected
-          ? `音声と照合できた使用例 ${match.count}件${maChapter == null ? `（自動判定: ${match.chapters.join('、')}）` : ''}`
+          ? `音声と照合できた使用例 ${match.count}件${maChapter == null ? `（自動判定: ${match.chapters.join('、')}）` : ''}${match.stats.unavailable ? `・音声区間なし／未確定 ${match.stats.unavailable}件` : ''}${match.stats.legacy ? `・旧形式の試聴 ${match.stats.legacy}件` : ''}`
           : '自動で章を特定できませんでした。出典章を指定できます。';
       } catch (err) { result.textContent = err.message; }
       finally { run.disabled = false; }

@@ -142,3 +142,19 @@ const audioRows = sample.map(c => ({ id: c.id, confirmed: true, segments: [{ sta
 const multi = linkChapter([...exampleWords, ambiguous], sample, v, audioRows, null);
 assert.deepEqual(multi.chapters, ['Chapter 01', '2']);
 assert.deepEqual(multi.entries.map(row => row.found.length), [1, 1, 1, 1, 0, 0]);
+
+const oldVideo = { ...v, materialType: undefined, from: { material: 'old-pack' } };
+const oldCue = cue('legacy', 'Well, ' + sentences[0] + ' Then she left.', 20, 23,
+  { itemId: 'old-block', sync: 'auto', sourceSegments: [{ start: 20, end: 23 }] });
+const oldRow = { id: oldCue.id, confirmed: false, segments: [{ start: 20, end: 23, size: 1, key: v.id, store: 'vblobs' }] };
+const planForOld = (extra = {}, row = oldRow) => linkChapter(exampleWords, [{ ...oldCue, ...extra }], oldVideo, [row], '1');
+const oldResult = planForOld();
+const [oldLink] = oldResult.entries[0].found;
+assert.deepEqual([oldLink.ref.start, oldLink.ref.end], [20, 23]);
+assert.equal(oldLink.legacy, true);
+assert.equal(oldLink.phrase, null);
+assert.equal(oldResult.stats.legacy, 1);
+assert.equal(planForOld({ sync: 'estimated' }).stats.unavailable, 1);
+const [context] = planForOld({}, { ...oldRow, confirmed: true }).entries[0].found;
+assert.equal(context.context, true);
+assert.equal(context.legacy, undefined);

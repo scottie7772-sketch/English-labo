@@ -13,6 +13,7 @@ export async function readStudioJaFiles(files) {
   const sections = [];
   const add = (name, text) => {
     const data = JSON.parse(text);
+    readScriptJa(data, data?.materialId);
     sections.push({ name, data, index: sections.length });
   };
   for (const file of files) {
@@ -26,6 +27,10 @@ export async function readStudioJaFiles(files) {
     }
   }
   if (!sections.length) throw new Error('英日対応JSONがありません');
+  return orderStudioJaSections(sections);
+}
+
+export function orderStudioJaSections(sections) {
   // A BEFORE interlude may explicitly identify its position in the ZIP filename.
   const position = section => {
     const after = section.name.match(/before[_ -]+after[_ -]+chapter[_ -]+(\d+)/i);
@@ -33,7 +38,8 @@ export async function readStudioJaFiles(files) {
     const chapter = String(section.data?.chapter ?? '').match(/^(?:chapter\s+)?(\d+)$/i);
     return chapter ? Number(chapter[1]) : 0;
   };
-  return sections.sort((a, b) => position(a) - position(b) || a.index - b.index);
+  return sections.map((section, index) => ({ ...section, index }))
+    .sort((a, b) => position(a) - position(b) || a.index - b.index);
 }
 
 const englishChapter = text => {
@@ -77,7 +83,7 @@ export function studioJaView(blocks) {
   return { value, needsReview, summary, spans };
 }
 
-export function planStudioJa(set, blocks, sections) {
+export function planStudioJa(set, blocks, sections, { missingOnly = false } = {}) {
   const rows = sections.flatMap(({ data, index }) => {
     if (data?.materialId != null && data.materialId !== set.id) return [];
     const input = readScriptJa(data, set.id);
@@ -86,12 +92,14 @@ export function planStudioJa(set, blocks, sections) {
   const cues = blocks.filter(english).map(row => ({ id: row.id, en: row.text, chapter: englishChapter(row.text) }));
   const { patch, reviewCueIds } = planScriptJa(cues, { rows }, { allowUnknownChapters: true });
   const live = new Map(blocks.map(row => [row.id, row]));
+  const missing = missingOnly ? new Set(studioJaView(blocks).summary.missing.map(row => row.id)) : null;
+  const writable = id => !manual(live.get(id)) && (!missing || missing.has(id));
   const edits = new Map();
   const groups = new Map();
   for (const [id, entries] of patch) {
     // Blank translations in the shared file format are not a Studio delete instruction.
-    if (!entries.length || manual(live.get(id))) continue;
-    const ids = entries[0].cueIds.filter(member => !manual(live.get(member)));
+    if (!entries.length || !writable(id)) continue;
+    const ids = entries[0].cueIds.filter(writable);
     const key = JSON.stringify(ids);
     if (!groups.has(key)) groups.set(key, { ids, texts: entries.map(entry => entry.ja) });
   }
@@ -105,7 +113,7 @@ export function planStudioJa(set, blocks, sections) {
   }
   for (const id of reviewCueIds) {
     const row = live.get(id);
-    if (!edits.has(id) && !manual(row) && !row.jaImport) edits.set(id, { ...row, jaReview: true });
+    if (!edits.has(id) && writable(id) && !row.jaImport) edits.set(id, { ...row, jaReview: true });
   }
   const changes = blocks.map(row => edits.get(row.id) || row);
   return {

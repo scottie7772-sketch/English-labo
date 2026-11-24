@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 globalThis.addEventListener = () => {};
 globalThis.window = {};
 globalThis.document = { addEventListener(){}, querySelector(){return {textContent:'',hidden:true};} };
-const {importMaterial,videoBlob} = await import('../video.js');
+const {importMaterial,videoBlob,studioLabState,syncStudioLabFolder} = await import('../video.js');
 const {db} = await import('../db.js');
 const {cueStamps,saveVideoJa,videoJaView} = await import('../video-ja.js');
-const names = ['videos','vblobs','cues','videoJa'];
+const names = ['videos','vblobs','cues','videoJa','settings'];
 const records = Object.fromEntries(names.map(name=>[name,new Map()]));
 db.all = async store => [...records[store].values()].map(row=>structuredClone(row));
 db.get = async (store,id) => structuredClone(records[store].get(id));
@@ -15,11 +15,24 @@ db.tx = async (stores,mode,task) => {
   const requests = result => {
     const request = {result}; queueMicrotask(() => request.onsuccess?.()); return request;
   };
-  return task({objectStore:name=>({
-    put: row=>records[name].set(row.id,structuredClone(row)), delete: id=>records[name].delete(id),
+  const result = task({objectStore:name=>({
+    put: row=>records[name].set(row.id ?? row.key,structuredClone(row)), delete: id=>records[name].delete(id),
     get: id=>requests(structuredClone(records[name].get(id))),
     index: key=>({getAll: id=>requests([...records[name].values()].filter(row=>row[key]===id).map(row=>structuredClone(row)))}),
+    openCursor: () => {
+      const rows = [...records[name].entries()];
+      const request = {};
+      const next = () => {
+        const row = rows.shift();
+        request.result = row ? { value: structuredClone(row[1]), update: v => records[name].set(row[0],structuredClone(v)), continue: () => queueMicrotask(next) } : null;
+        request.onsuccess?.();
+      };
+      queueMicrotask(next);
+      return request;
+    },
   })});
+  await new Promise(resolve => setImmediate(resolve));
+  return result;
 };
 const audio = new Blob([new Uint8Array(160)],{type:'audio/wav'});
 const secondAudio = new Blob([new Uint8Array(80).fill(2)],{type:'audio/wav'});
@@ -65,5 +78,21 @@ await assert.rejects(() => importMaterial({materialId:'studio-m',title:'Multiple
   {...multi,items:[...multi.items].reverse()},()=>{throw Error('unexpected copy');},{askUpdate:false,direct:true}),
   error => error.skip && error.message.includes('順序'));
 assert.deepEqual(await db.byIndex('cues','videoId',m.id),multiCues);
+await db.put('videos',{id:'interrupted',from:{material:'not-completed',importComplete:false}});
+await db.put('videos',{id:'legacy',from:{material:'legacy-set'},blob:audio});
+assert.deepEqual(await studioLabState(),new Set(['studio-a','studio-b','studio-m','legacy-set']));
+const beforeFolderSync = await db.all('videos');
+const unchanged = await db.all('cues');
+const allJa = await db.all('videoJa');
+await syncStudioLabFolder('New common name', ['studio-m','studio-b','studio-a','not-completed','legacy-set']);
+for (const video of await db.all('videos')) {
+  const { folder, folderOrder, ...base } = beforeFolderSync.find(old => old.id === video.id);
+  const rank = ['studio-m','studio-b','studio-a'].indexOf(video.from.material);
+  assert.deepEqual(video, rank < 0 ? base : { ...base, folder:'New common name', folderOrder:rank });
+}
+assert.deepEqual(await db.all('cues'),unchanged);
+assert.deepEqual(await db.all('videoJa'),allJa);
+assert.deepEqual((await db.get('settings','video.studioLegacyFolders')).value.legacy,{folder:'New common name',folderOrder:4});
+assert.equal(records.vblobs.size,2);
 console.log('Video Lab direct imports: independent sets, shared media, repeat/update policy, manual protection, multi-file translation and times');
 clearTimeout((await import('../ui.js')).toast._t);

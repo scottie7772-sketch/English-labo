@@ -130,6 +130,7 @@ export async function commit(set, label, { blocks = [], order, guardedSet }, sou
     request.onsuccess = () => {
       const fresh = request.result;
       const changed = !fresh || fresh.updatedAt !== guardedSet.updatedAt ||
+        (Object.hasOwn(guardedSet, 'folder') && fresh.folder !== guardedSet.folder) ||
         ['order','undo','redo'].some(key => JSON.stringify(fresh[key] || []) !== JSON.stringify(guardedSet[key]));
       if (changed) { rejected = true; t.abort(); return; }
       write(fresh);

@@ -1,3 +1,3 @@
 // Display identifiers only; keep database schema versions independent.
-export const APP_VERSION = '1.19.20';
-export const BUILD_LABEL = '2026-11-24-studio-ja-batch-lab';
+export const APP_VERSION = '1.19.21';
+export const BUILD_LABEL = '2026-11-24-studio-folders';

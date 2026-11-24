@@ -180,7 +180,7 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true,
         if (m.trackIndex != null) v.audioTrack = m.trackIndex;
       }
     }
-    if (mat.set?.folder != null || direct) v.folder = mat.set?.folder || '';
+    if (mat.set?.folder != null || direct) setStudioLabFolder(v, mat.set);
     // the studio's cut (start/end) = the range covered by the items: playback stays inside it
     const segs = mat.items.flatMap((it) => (it.segments || []).filter((g) => g.media === m.id));
     delete v.trim;
@@ -223,7 +223,7 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true,
     const P = (update && oldParent) ? { ...(await db.get('videos', oldParent.id)) } : { id: uid('v_'), lang: manifest.lang || curLang(), lastTime: 0, createdAt: Date.now() };
     Object.assign(P, { kind: 'multi', name: manifest.title, parts, duration: off, size: 0, mime: 'audio/mp4', audioChecked: true, audioFixed: true, from: { ...P.from, material: manifest.materialId, multi: true, pack: manifest.packId, updatedAt: Date.now() } });
     if (direct) P.from.importComplete = false;
-    if (mat.set?.folder != null || direct) P.folder = mat.set?.folder || '';
+    if (mat.set?.folder != null || direct) setStudioLabFolder(P, mat.set);
     delete P.blob; delete P.trim; P.materialType = mat.set?.materialType || P.materialType;
     await db.put('videos', P);
     const partOf = Object.fromEntries(parts.map((p) => [p.media, p]));
@@ -250,10 +250,62 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true,
     await db.tx(['videos'], 'readwrite', tx => {
       for (const video of completed.values()) tx.objectStore('videos').put({ ...video, from: { ...video.from, importComplete: true } });
     });
+    if ([...completed.values()].some(video => video.blob || video.audioBlob)) {
+      await syncStudioLabFolder(mat.set?.folder || '', [manifest.materialId], mat.set?.folderOrder);
+    }
   }
   if (missing.length) toast(`音声が入っていない部分（${missing.length}件）は取り込めませんでした。スタジオで音声を含めて書き出してください`, 5000);
   if (!missing.length) toast(`${nUpd ? `更新しました` : '取り込みました'}（字幕 ${mat.items.filter((it) => it.segments?.length && (it.text || it.ja)).length}行）`);
   return first;
+}
+
+function setStudioLabFolder(video, set) {
+  video.folder = set?.folder || '';
+  if (Number.isInteger(set?.folderOrder) && video.folder) video.folderOrder = set.folderOrder;
+  else delete video.folderOrder;
+}
+const legacyStudioFolders = 'video.studioLegacyFolders';
+
+export async function studioLabState() {
+  const videos = await db.all('videos');
+  const children = new Set(videos.flatMap(video => (video.parts || []).map(part => part.videoId)));
+  return new Set(videos.filter(video => video.from?.material && video.from.importComplete !== false &&
+    !children.has(video.id)).map(video => video.from.material));
+}
+
+// Publish the Studio folder and order without republishing any Lab subtitles or audio.
+export async function syncStudioLabFolder(folder, ids, startRank = 0) {
+  const ranks = new Map(ids.map((id, index) => [id, startRank + index]));
+  return db.tx(['videos', 'settings'], 'readwrite', tx => {
+    const settings = tx.objectStore('settings'), previous = settings.get(legacyStudioFolders);
+    previous.onsuccess = () => {
+      const overrides = previous.result?.value || {};
+      let changed = false;
+      const request = tx.objectStore('videos').openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          if (changed) settings.put({ key: legacyStudioFolders, value: overrides });
+          return;
+        }
+        const video = cursor.value, order = ranks.get(video.from?.material);
+        if (order != null && video.from.importComplete !== false) {
+          if (video.blob || video.audioBlob) {
+            // Older videos may still carry the original file in the metadata record.
+            overrides[video.id] = { folder, folderOrder: order };
+            changed = true;
+          } else {
+            if (Object.hasOwn(overrides, video.id)) { delete overrides[video.id]; changed = true; }
+            if (video.folder !== folder || video.folderOrder !== order) {
+              setStudioLabFolder(video, { folder, folderOrder: order });
+              cursor.update(video);
+            }
+          }
+        }
+        cursor.continue();
+      };
+    };
+  });
 }
 // names for display: inner file paths / ids made by the pack are hidden (the saved name is not changed)
 export function displayName(n) {
@@ -309,8 +361,9 @@ async function migrateBlob(v) {
 async function videoMetas() {
   const files = new Set(await db.keys('vblobs'));
   const videos = await db.all('videos');
+  const legacy = await getSetting(legacyStudioFolders, {});
   const locations = new Map(videos.map(v => [v.id, v.mediaRef]));
-  return videos.map(({ blob, ...m }) => ({ ...m, hasBlob: m.kind === 'multi' ? (m.parts || []).every((p) => (files.has(p.videoId) || files.has(locations.get(p.videoId)))) : !!blob || files.has(m.id) || files.has(m.mediaRef) })).sort((a, b) => b.createdAt - a.createdAt);
+  return videos.map(({ blob, ...m }) => ({ ...m, ...legacy[m.id], hasBlob: m.kind === 'multi' ? (m.parts || []).every((p) => (files.has(p.videoId) || files.has(locations.get(p.videoId)))) : !!blob || files.has(m.id) || files.has(m.mediaRef) })).sort((a, b) => b.createdAt - a.createdAt);
 }
 export async function videoNames() { return Object.fromEntries((await videoMetas()).map((v) => [v.id, v])); }
 
@@ -353,7 +406,8 @@ export async function videoList(el) {
     <input type="file" id="vpack" hidden><input type="file" id="vfile" accept="video/*" hidden>
     <div id="vlbar"></div>
     <div id="vl">${[...folders].map(([folder, materials]) => folder ?
-      `<details class="card" open><summary>📁 ${esc(folder)}（${materials.length}）</summary>${materials.map(renderMaterial).join('')}</details>` :
+      `<details class="card" open><summary>📁 ${esc(folder)}（${materials.length}）</summary>${materials.sort((a,b) =>
+        (a.folderOrder ?? Infinity) - (b.folderOrder ?? Infinity) || recent(b) - recent(a)).map(renderMaterial).join('')}</details>` :
       materials.map(renderMaterial).join('')).join('') || '<div class="card center muted">まだ教材がありません。「教材を作る」から作れます。</div>'}</div>`;
   // ⋯: less used things and the explanations
   $('#vlMenu', el).onclick = async () => {

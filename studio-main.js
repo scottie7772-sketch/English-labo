@@ -24,7 +24,7 @@ import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange,
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.22';
+export const STUDIO_VERSION = '0.21.23';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -4427,6 +4427,7 @@ async function editorScreen(el, params, revision) {
       <button class="btn" value="mergeset">別の教材をこの教材にまとめる</button>
       <button class="btn" value="names">固有名詞をまとめて直す</button>
       <button class="btn" value="words">単語リストを作る</button>
+      ${set.materialType === 'vocab' ? '<button class="btn" value="audioWords">音声付きで単語帳に登録（金フレ型）</button>' : ''}
       <button class="btn" value="txt">テキストを書き出す</button>
       <button class="btn" value="diag">照合・重複の診断データを書き出す（変更なし）</button>
       ${Object.values(srcs).some((x) => x.audio?.count > 1 && x.derived !== 'audio16k') ? '<button class="btn" value="track">使う音声トラックを選ぶ</button>' : ''}
@@ -4473,6 +4474,7 @@ async function editorScreen(el, params, revision) {
       if (v === 'splitAudio') splitAudioRange();
       if (v === 'asr') runAsr();
       if (v === 'words') nav(`words?id=${set.id}`);
+      if (v === 'audioWords') { ++playbackRequest; vid.pause(); playing = null; (await import('./audio-words-ui.js')).openAudioWordBulk({ kind: 'studio', id: set.id }); }
       if (v === 'names') fixNames();
       if (v === 'add') nav(`import?to=${set.id}&script=1`);
       if (v === 'addMedia') nav(`import?to=${set.id}`);
@@ -4509,6 +4511,8 @@ async function deleteSet(set) {
   const others = (await sdb.all('sets')).filter((s) => s.id !== set.id);
   const usedElsewhere = new Set((await Promise.all(others.map(async (s) => (await sdb.byIndex('blocks', 'setId', s.id)).flatMap((b) => b.segments.map((x) => x.sourceId))))).flat());
   const srcIds = new Set(blocks.flatMap((b) => b.segments.map((x) => x.sourceId)));
+  // 1.19.31: a recording used by word cards (単語帳の音声) is kept
+  try { const { referencedMedia } = await import('./audio-refs.js'); for (const id of (await referencedMedia()).studio.keys()) usedElsewhere.add(id); } catch {}
   await sdb.tx(['sets', 'blocks', 'blockRevs', 'versions', 'tracks', 'oplog', 'sources', 'meta'], 'readwrite', (t) => {
     t.objectStore('sets').delete(set.id);
     t.objectStore('meta').delete(`speech-first:${set.id}`);
@@ -4599,6 +4603,7 @@ async function cleanScreen(el) {
   const est = await navigator.storage?.estimate?.().catch(() => null);
   const sets = await sdb.all('sets'), srcs = await sdb.all('sources');
   const used = {}; for (const st of sets) for (const b of await sdb.byIndex('blocks', 'setId', st.id)) if (!b.deleted) for (const g of b.segments) (used[g.sourceId] ||= new Set()).add(st.title);
+  try { const { referencedMedia } = await import('./audio-refs.js'); for (const id of (await referencedMedia()).studio.keys()) (used[id] ||= new Set()).add('単語帳の音声'); } catch {}   // 1.19.31
   const orphans = srcs.filter((x) => !used[x.id]);
   const oplogN = (await sdb.all('oplog')).length, revN = (await sdb.all('blockRevs')).length;
   const names = (await caches.keys().catch(() => [])) || [];

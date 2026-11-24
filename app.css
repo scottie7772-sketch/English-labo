@@ -1378,3 +1378,13 @@ dialog:has(.jp-form) { width: min(96vw, 560px); max-width: 96vw; overflow-x: hid
 .jp-grid4 { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
 .jp-grid4 .btn { min-height: 38px; padding: 0 4px; font-size: 13px; }
 .jp-form .jp-tools .jp-target { font-size: 13px; }
+
+/* 1.19.31: word audio */
+.fc2-after { margin-top: 10px; font-size: 22px; color: var(--muted); text-align: center; overflow-wrap: anywhere; }
+.wa-box { display: flex; flex-direction: column; gap: 8px; }
+.wa-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.wa-row .grow { min-width: 0; overflow-wrap: anywhere; }
+.wa-tag { font-size: 12px; padding: 1px 6px; border-radius: 6px; background: var(--surface2); }
+.wa-tag.warn { color: var(--warn-text, #f3d48a); }
+.wa-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+.wa-grid .btn { min-height: 36px; padding: 0 4px; font-size: 13px; white-space: normal; }

@@ -28,8 +28,13 @@ async function build() {
     }
   } catch { /* no studio data */ }
   try {
-    const vids = new Set((await db.all('videos')).map((v) => v.id));
-    for (const c of await db.all('cues')) if (vids.has(c.videoId) && c.text && c.end > c.start) put(c.text, { from: 'lab', id: c.videoId, start: c.start, end: c.end, kind: c.kind || '' });
+    // 1.19.31 fix: Lab subtitles keep their English in c.en (c.text was never set, so Lab recordings were never found)
+    const byId = new Map((await db.all('videos')).map((v) => [v.id, v]));
+    for (const c of await db.all('cues')) {
+      const v = byId.get(c.videoId), text = c.en || c.text;
+      if (!v || v.kind === 'multi' || !text || !(c.end > c.start) || c.sync === 'estimated') continue;   // a guessed time is not used
+      put(text, { from: 'lab', id: v.mediaRef || v.id, start: c.start, end: c.end, kind: c.role || c.kind || '' });
+    }
   } catch { /* no lab data */ }
   index = m; near.clear(); builtAt = Date.now(); return m;
 }
@@ -63,40 +68,104 @@ export const has = (text) => !!lookup(text);
 export const find = (text) => lookup(text);
 
 // ---- playback: one shared <audio>; one object URL per file (the 2 most recent are kept) ----
+// 1.19.31: every request takes a token; a request that finishes loading after a newer one started never plays
+// (fast swipes cannot make two words sound at once). The range end is watched every frame, so the next word in the
+// same recording is not heard; the padding never goes past the neighbouring line (ref.limit).
 const PAD0 = 0.06, PAD1 = 0.14;   // a little before / after so the first and last sounds are not clipped
-let el = null, timer = 0;
+let el = null, timer = 0, raf = 0, token = 0, endAt = null, onDone = null;
 const urls = new Map();
 const audioEl = () => { if (!el) { el = new Audio(); el.preload = 'auto'; el.playsInline = true; } return el; };
-async function fileOf(e) {
-  const key = e.from + ':' + e.id;
+async function urlFor(key, load) {
   if (urls.has(key)) { const u = urls.get(key); urls.delete(key); urls.set(key, u); return u; }
-  let blob = null;
-  if (e.from === 'studio') { const { sdb } = await import('./studio-db.js'); blob = (await sdb.get('sources', e.id))?.blob || null; }
-  else { blob = (await db.get('vblobs', e.id))?.blob || (await db.get('videos', e.id))?.blob || null; }
-  if (!blob) return null;
+  const blob = await load(); if (!blob) return null;
+  if (urls.has(key)) return urls.get(key);
   const u = URL.createObjectURL(blob); urls.set(key, u);
-  while (urls.size > 2) { const [k, v] = urls.entries().next().value; urls.delete(k); try { URL.revokeObjectURL(v); } catch {} }
+  while (urls.size > 2) {
+    const [k, v] = urls.entries().next().value; urls.delete(k);
+    if (el?.src !== v) try { URL.revokeObjectURL(v); } catch {}
+  }
   return u;
 }
 // the first touch on a card screen: play nothing once so later plays (after a swipe) are allowed on the iPhone
 export function unlock() {
   const a = audioEl(); if (a.dataset.ok) return; a.dataset.ok = '1';
+  if (a.src) return;   // already playing something: the element is unlocked
   try { a.muted = true; a.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA='; a.play().then(() => { a.pause(); a.muted = false; }).catch(() => { a.muted = false; delete a.dataset.ok; }); } catch {}
 }
-export function stop() { clearTimeout(timer); try { el?.pause(); } catch {} }
+function finish(my) {
+  if (my !== token) return;
+  clearTimeout(timer); cancelAnimationFrame?.(raf); endAt = null;
+  try { el?.pause(); } catch {}
+  const done = onDone; onDone = null; done?.();
+}
+export function stop() { token++; clearTimeout(timer); try { cancelAnimationFrame(raf); } catch {} endAt = null; try { el?.pause(); } catch {} const done = onDone; onDone = null; done?.(); }
+export const playing = () => endAt != null;
+// play [start, end) of a file; resolves true when it started. `until` resolves when it ended or was stopped.
+async function playRange(key, load, start, end, limit = null) {
+  stop();
+  const my = token;
+  const u = await urlFor(key, load);
+  if (!u || my !== token) return false;
+  const a = audioEl();
+  if (a.src !== u) {
+    a.src = u;
+    await new Promise((ok) => { const t = setTimeout(ok, 2000); a.onloadedmetadata = () => { clearTimeout(t); ok(); }; a.onerror = () => { clearTimeout(t); ok(); }; });
+    if (my !== token) return false;
+  }
+  const s = Math.max(limit?.min ?? 0, start - PAD0, 0);
+  const t = Math.min(limit?.max ?? Infinity, end + PAD1);
+  a.muted = false;
+  try { a.currentTime = s; } catch { return false; }
+  endAt = t;
+  try { await a.play(); } catch { if (my === token) endAt = null; return false; }
+  if (my !== token) { try { a.pause(); } catch {} return false; }
+  const watch = () => { if (my !== token) return; if (a.currentTime >= t - 0.015 || a.ended) return finish(my); raf = requestAnimationFrame(watch); };
+  raf = requestAnimationFrame(watch);
+  // backup for when frames are not drawn (screen locked / background)
+  const backup = () => { if (my !== token) return; if (a.currentTime >= t - 0.03 || a.ended || a.paused) return finish(my); timer = setTimeout(backup, Math.max(20, ((t - a.currentTime) * 1000) / (a.playbackRate || 1) - 15)); };
+  timer = setTimeout(backup, ((t - s) * 1000) / (a.playbackRate || 1));
+  return true;
+}
+// a stored reference (audio-refs.js); false when the recording is not there (the caller falls back)
+export async function playRef(ref, { onEnd = null } = {}) {
+  if (!ref?.src?.key) return false;
+  const { refBlob } = await import('./audio-refs.js');
+  const ok = await playRange(`${ref.src.store}:${ref.src.key}`, () => refBlob(ref.src), ref.start, ref.end, ref.limit);
+  if (ok) onDone = onEnd; else onEnd?.();
+  return ok;
+}
+// several references one after the other (word, then example); stops with the next request
+export async function playRefs(refs, { gap = 0.35, onEnd = null } = {}) {
+  const list = refs.filter(Boolean);
+  for (let i = 0; i < list.length; i++) {
+    let ended; const done = new Promise((r) => { ended = r; });
+    const ok = await playRef(list[i], { onEnd: ended });
+    if (!ok) { onEnd?.(); return i > 0; }
+    const mine = token;
+    await done;
+    if (token !== mine) return true;   // stopped, or another request took over
+    if (i < list.length - 1) { await new Promise((r) => setTimeout(r, gap * 1000)); if (token !== mine) return true; }
+  }
+  onEnd?.();
+  return true;
+}
+// a word's registered sound (word.audio). Resolves false when it has none (the caller keeps its old voice).
+export async function playWord(w, kind = 'word', opts = {}) {
+  const { wordAudio } = await import('./audio-refs.js');
+  const ref = wordAudio(w, kind);
+  return ref ? playRef(ref, opts) : false;
+}
 // play the original sound of `text`; resolves true when it plays, false when there is none (use TTS then)
-export async function play(text) {
+export async function play(text, { onEnd = null } = {}) {
   let e = find(text); if (!e) return false;
   try {
     if (e.line) e = await refine(e);
-    const u = await fileOf(e); if (!u) return false;
-    const a = audioEl(); stop();
-    if (a.src !== u) { a.src = u; await new Promise((ok, ng) => { a.onloadedmetadata = ok; a.onerror = ng; setTimeout(ok, 1500); }); }
-    const s = Math.max(0, e.start - PAD0), t = e.end + PAD1;
-    a.currentTime = s; a.muted = false; await a.play();
-    const end = () => { if (a.currentTime >= t - 0.02) { a.pause(); return; } timer = setTimeout(end, Math.max(15, ((t - a.currentTime) * 1000) / (a.playbackRate || 1) - 10)); };
-    timer = setTimeout(end, ((t - s) * 1000) / (a.playbackRate || 1));
-    return true;
+    const ok = await playRange(e.from + ':' + e.id, async () => {
+      if (e.from === 'studio') { const { sdb } = await import('./studio-db.js'); return (await sdb.get('sources', e.id))?.blob || null; }
+      return (await db.get('vblobs', e.id))?.blob || (await db.get('videos', e.id))?.blob || null;
+    }, e.start, e.end);
+    if (ok) onDone = onEnd;
+    return ok;
   } catch { return false; }
 }
 
@@ -113,7 +182,8 @@ async function lineBlob(e) {
   if (!blob) return null;
   const { cutAac } = await import('./compress.js');
   try { return { blob: (await cutAac(blob, e.line.start, e.line.end, 'line')).file, off: 0 }; } catch { /* not AAC */ }
-  if (blob.size <= 25e6) return { blob, off: e.line.start };   // small file: decode it whole, then look at the line only
+  // 1.19.31: only a small file is decoded whole (a long recording is never expanded to PCM: ~10x its size in memory)
+  if (blob.size <= 6e6) return { blob, off: e.line.start };
   return null;
 }
 async function partsOf(e) {

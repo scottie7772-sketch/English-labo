@@ -1579,7 +1579,13 @@ export async function videoPlay(el, params) {
     if ((v.lang || 'en') !== 'en') { const w = await pickWordsDialog({ text: c.en, ja: jaFor(c), lang: v.lang, source: { type: 'video', videoId: v.id, cueId: c.id, time: c.start, text: c.en }, title: '字幕から語句を登録' }); if (w) { w.videoRefs = [...(w.videoRefs || []).filter((r) => r.cueId !== c.id), { videoId: v.id, cueId: c.id, time: c.start, text: c.en }]; await saveWord(w); } return; }
     const toks = c.en.split(/(\s+)/);
     let n = 0;
+    // 1.19.31: the word / example sound from this material (a range of the existing recording)
+    const wa = await import('./audio-words-ui.js');
+    const partVideos = new Map();
+    for (const p of v.parts || []) { const child = await db.get('videos', p.videoId); if (child) { const { blob, audioBlob, ...meta } = child; partVideos.set(p.videoId, meta); } }
+    const audioOpts = wa.labCueAudioOptions(v, scriptOrder(), c, { parts: partVideos });
     const dlg = $('#dialog');
+    const audioUI = wa.cueAudioSection(dlg, audioOpts, () => $('#wh', dlg)?.value || '');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>字幕から単語を登録</h3>
       <p class="hint">語をタップ（隣り合う語を続けて選ぶと熟語）</p>
       <div class="ptext">${toks.map((tk) => { if (!tk.trim()) return tk; const m = tk.match(/^([^A-Za-z']*)([A-Za-z][A-Za-z'\-]*)([^A-Za-z']*)$/); return m ? `${esc(m[1])}<span class="tok" data-n="${n++}">${esc(m[2])}</span>${esc(m[3])}` : esc(tk); }).join('')}</div>
@@ -1587,7 +1593,10 @@ export async function videoPlay(el, params) {
       <label class="field"><span>登録する語（編集可）</span><input id="wh" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
       <label class="field"><span>意味（「/」で複数・あとで入力も可）</span><input id="wm"></label>
       <label class="chk"><input type="checkbox" id="wb"> ブックマークする</label>
+      ${audioUI.html}
       <div class="row end"><button class="btn ghost" value="cancel">キャンセル</button><button class="btn primary" value="ok">登録</button></div></form>`;
+    audioUI.bind();
+    if (audioOpts.word && c.role === 'word') $('#wh', dlg).value = c.en.replace(/[.!?。]+$/, '');
     const sync = () => {
       const on = $$('.tok.on', dlg).map((t) => +t.dataset.n);
       const all = $$('.tok', dlg);
@@ -1597,26 +1606,32 @@ export async function videoPlay(el, params) {
     $('.ptext', dlg).onclick = (e) => { const t = e.target.closest('.tok'); if (t) { t.classList.toggle('on'); sync(); } };
     dlg.returnValue = '';
     dlg.onclose = async () => {
+      import('./word-audio.js').then((m) => m.stop()).catch(() => {});
       if (dlg.returnValue !== 'ok') return;
       const head = $('#wh', dlg).value.trim();
       if (!head) return toast('語を選んでください');
+      const sounds = audioUI.result();
+      // 1.19.31: from a 金フレ word line, the example is the example line of the same group (not the word itself)
+      const exCue = c.role === 'word' ? (cues.find((x) => x.studySet && x.studySet === c.studySet && x.role === 'example') || c) : c;
       const ref = { videoId: v.id, cueId: c.id, time: c.start, text: c.en };
       const exist = findDuplicate(await wordsByHead(), head, splitList($('#wm', dlg).value));
       if (exist) {
         exist.videoRefs = [...(exist.videoRefs || []).filter((r) => r.cueId !== c.id), ref];
         const s0 = exist.senses[0];
-        if (!(s0.examples || []).some((x) => x.en === c.en)) s0.examples = [...(s0.examples || []), { en: c.en, ja: jaFor(c) || '' }];
+        if (exCue !== c || c.role !== 'word') { if (!(s0.examples || []).some((x) => x.en === exCue.en)) s0.examples = [...(s0.examples || []), { en: exCue.en, ja: jaFor(exCue) || '' }]; }
         const add = splitList($('#wm', dlg).value).filter((m) => !s0.meanings.includes(m));
         s0.meanings.push(...add);
         if ($('#wb', dlg).checked) exist.bookmarked = true;
+        if (sounds.word || sounds.example) exist.audio = { ...(exist.audio || {}), ...sounds };   // replaces the earlier sound of the same kind
         await saveWord(exist);
-        toast(`「${exist.headword}」は登録済み：例文と動画の位置を追加しました`);
+        toast(`「${exist.headword}」は登録済み：例文と動画の位置${sounds.word || sounds.example ? '・音声' : ''}を追加しました`);
       } else {
         const w = newWord({ lang: v.lang || 'en', headword: head, bookmarked: $('#wb', dlg).checked, source: { type: 'video', ...ref },
-          senses: [newSense({ meanings: splitList($('#wm', dlg).value), examples: [{ en: c.en, ja: jaFor(c) || '' }] })] });
+          senses: [newSense({ meanings: splitList($('#wm', dlg).value), examples: exCue !== c || c.role !== 'word' ? [{ en: exCue.en, ja: jaFor(exCue) || '' }] : [] })] });
         w.videoRefs = [ref];
+        if (sounds.word || sounds.example) w.audio = sounds;
         await saveWord(w);
-        toast(`「${w.headword}」を登録しました`);
+        toast(`「${w.headword}」を登録しました${sounds.word || sounds.example ? '（音声付き）' : ''}`);
       }
     };
     dlg.showModal();
@@ -1630,6 +1645,7 @@ export async function videoPlay(el, params) {
       <button class="btn" value="pen">${esc(TL)}字幕を貼り付け</button>
       <button class="btn" value="pja">日本語訳を貼り付け</button>
       <button class="btn" value="copy" ${cues.some((c) => c.en) ? '' : 'disabled'}>${esc(TL)}字幕ID・英文・表示順を書き出す</button>
+      ${cues.some((c) => c.studySet && c.role) ? '<button class="btn" value="audioWords">音声付きで単語帳に登録（金フレ型）</button>' : ''}
       <button class="btn" value="rename">名前を変更</button>
       <button class="btn danger" value="del">動画を削除</button>
       <button class="btn ghost" value="cancel">閉じる</button></form>`;
@@ -1638,6 +1654,7 @@ export async function videoPlay(el, params) {
     dlg.onclose = async () => {
       const r = dlg.returnValue;
       if (r === 'pen' || r === 'pja') pasteDialog(r === 'pen' ? 'en' : 'ja');
+      else if (r === 'audioWords') { await new Promise((ok) => setTimeout(ok, 60)); vid?.pause(); (await import('./audio-words-ui.js')).openAudioWordBulk({ kind: 'lab', id: v.id }); }
       else if (r === 'copy') exportJaSource(); else if (r === 'rename') {
         const name = await askName('動画の名前', v.name);
         if (name?.trim()) { const cur = await db.get('videos', v.id); cur.name = name.trim(); await saveVideoMeta(cur); videoPlay(el, params); }

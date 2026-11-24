@@ -81,6 +81,10 @@ screens.settings = async (el) => {
       <div class="seg" id="swipe">${[['up', '上下（片手）'], ['right', '右＝わかる'], ['left', '左＝わかる']].map(([v, l]) => `<button data-v="${v}" class="${swipe === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
 
     <div class="card stack"><label class="chk"><input type="checkbox" id="fcOrig" ${(() => { try { return localStorage.getItem('fc-orig') !== '0'; } catch { return true; } })() ? 'checked' : ''}> カードの音声に元の録音を使う</label>
+      ${(() => { const f = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v === '1'; } catch { return d; } };
+        return `<label class="chk"><input type="checkbox" id="fcAuto" ${f('fc-auto', true) ? 'checked' : ''}> カードを出したら単語の音声を自動再生</label>
+      <label class="chk"><input type="checkbox" id="fcSeq" ${f('fc-seq', false) ? 'checked' : ''}> 自動再生で単語→例文を続けて再生（例文の音声がある単語）</label>
+      <label class="chk"><input type="checkbox" id="fcListenEn" ${f('fc-listen-en', false) ? 'checked' : ''}> 音声→意味のカードで、再生後に英文を表示</label>`; })()}
       <p class="hint">教材スタジオで照合した行・動画ラボの字幕に同じ単語・例文があれば、その部分の録音を再生します（出元にかかわらず同じ音声）。無い単語は読み上げ音声です。</p></div>
 
     <h2 class="sec">バックアップ</h2>
@@ -114,6 +118,8 @@ screens.settings = async (el) => {
 
   $('#langs', el).onclick = async (e) => { const v = e.target.dataset.v; if (!v || v === 'en') return; const cur = enabledLangs().filter((c) => c !== 'en'); await setEnabled(cur.includes(v) ? cur.filter((c) => c !== v) : [...cur, v]); render(); };
   $('#swipe', el).addEventListener('click', async (e) => { const v = e.target.dataset.v; if (!v) return; await setSetting('swipeKnow', v); toast('スワイプの向きを変更しました'); render(); });
+  // 1.19.31: word-card sound settings (stored on this device)
+  for (const [id, key] of [['fcAuto', 'fc-auto'], ['fcSeq', 'fc-seq'], ['fcListenEn', 'fc-listen-en']]) $('#' + id, el)?.addEventListener('change', (e) => { try { localStorage.setItem(key, e.target.checked ? '1' : '0'); } catch {} });
   $('#fcOrig', el)?.addEventListener('change', (e) => { try { localStorage.setItem('fc-orig', e.target.checked ? '1' : '0'); } catch {} toast(e.target.checked ? '元の録音を使います' : '読み上げ音声だけにします'); });
   $('#bk-json', el).onclick = async () => {
     try { const r = await exportJSON(); if (r !== 'cancelled') { toast('バックアップを作成しました'); render(); } }
@@ -152,7 +158,11 @@ screens.settings = async (el) => {
     const wordIds = new Set((await db.all('words')).map((w) => w.id));
     const notWord = (id) => !wordIds.has(id);
     await (await import('./studio-db.js')).releaseLabRefs(null).catch(() => 0);   // studio sets keep their own copy of the sounds
-    await db.clear('cues'); await db.clear('vblobs'); await db.clear('videos'); await db.clear('listening');
+    // 1.19.31: recordings that word cards use are kept (単語帳の音声; 容量の整理 shows and removes them)
+    const { referencedMedia } = await import('./audio-refs.js');
+    const keepAudio = (await referencedMedia()).vblobs;
+    for (const key of await db.keys('vblobs')) if (!keepAudio.has(key)) await db.delete('vblobs', key);
+    await db.clear('cues'); await db.clear('videos'); await db.clear('listening');
     const atts = (await db.all('attempts')).filter((a) => (a.mode === 'listening' || a.mode === 'video') && notWord(a.wordId));
     for (const a of atts) await db.delete('attempts', a.id);
     const gone = new Set(atts.map((a) => a.wordId));

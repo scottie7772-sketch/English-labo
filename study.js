@@ -3,7 +3,10 @@ import { db, uid, getSetting, setSetting, attemptsSince } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, speak, toEyeLine } from './ui.js';
 import { SKILL_LABELS, LEVEL_LABELS, effLevel, filterLevel, levelText, loadAllMastery, loadWordMastery } from './mastery.js';
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
-import { makeSwipeCard, swipeCardHTML, answerStripHTML, swipeMap, isOneHand, swipeHint, oneHandPadHTML, fitStage, fc2FaceHTML, fc2CardHTML, fitBig, fc2Setup, fc2Fit, fc2Voice } from './swipecard.js';
+import { makeSwipeCard, swipeCardHTML, answerStripHTML, swipeMap, isOneHand, swipeHint, oneHandPadHTML, fitStage, fc2FaceHTML, fc2CardHTML, fitBig, fc2Setup, fc2Fit, fc2Voice, listenRevealOn, showAfterAudio } from './swipecard.js';
+import { playWord } from './word-audio.js';
+// 1.19.31: a word's registered sound when it has one, else the synthetic voice (as before)
+const sayW = (w) => { if (!w) return; playWord(w).then((ok) => { if (!ok) speak(w.headword); }); };
 import { icon } from './icons.js';
 import { L, curLang, langOf, compareAnswer, numToMarks, isZh } from './langs.js';
 
@@ -353,11 +356,15 @@ export async function sessionScreen(el, params) {
       if ($('#qpad', el)) fitStage($('#fstage', el), $('#qpad', el));
       if (oneHand) {   // 1.14 single-card design
         const qr = $('.qrun', el);
-        el._voice = fc2Voice(qr, (t) => speak(t));
-        fc2Setup(qr, { info: () => $('#left', el).textContent, items: [{ label: '直前の回答を取り消す', run: () => flashUndo(), disabled: () => !undoStack.length }] });
+        const voice = el._voice = fc2Voice(qr, (t) => speak(t));
+        const curW = () => el._flashCur?.w || null;
+        fc2Setup(qr, { info: () => $('#left', el).textContent, items: [{ label: '直前の回答を取り消す', run: () => flashUndo(), disabled: () => !undoStack.length },
+        { label: '単語の音声を再生', run: () => { const w = curW(); if (w) voice.tap(w.headword, w); } },
+        { label: '例文の音声を再生', run: () => { const w = curW(); if (w) voice.example(w); } },
+        { label: '単語→例文を続けて再生', run: () => { const w = curW(); if (w) voice.both(w); } },] });
         fc2Fit($('#fstage', el));
       }
-      $('#say', el)?.addEventListener('click', () => speak(words[s.queue[idx]?.wordId]?.headword));
+      $('#say', el)?.addEventListener('click', () => sayW(words[s.queue[idx]?.wordId]));
     }
     $('#left', el).textContent = `残り ${left}`;
     $('#prog', el).style.width = `${(answeredN / s.queue.length) * 100}%`;
@@ -367,24 +374,24 @@ export async function sessionScreen(el, params) {
     const fc2 = oneHand, voice = el._voice;
     stage.insertAdjacentHTML('afterbegin', fc2 ? fc2CardHTML(fc2FaceHTML(w, q.direction, meanings)) : swipeCardHTML(front, knowRight));
     const card = stage.firstElementChild;
-    const st = { flipped: false, revealed: false, t0: performance.now() };
+    const st = { w, flipped: false, revealed: false, t0: performance.now() };
     if (fc2) fitBig(card);
     st.flip = () => {
       st.flipped = !st.flipped;
       card.classList.add('flipping');
       setTimeout(() => { $('.face', card).innerHTML = st.flipped ? back : front; card.classList.remove('flipping'); }, 90);
-      if (st.flipped) { st.revealed = true; if (q.direction === 'ja2en') speak(w.headword); }
+      if (st.flipped) { st.revealed = true; if (q.direction === 'ja2en') sayW(w); }
     };
     const qpad = $('#qpad', el);
-    if (fc2) st.flip = () => { st.flipped = !st.flipped; card.classList.toggle('revealed', st.flipped); if (st.flipped) { st.revealed = true; if (q.direction === 'ja2en') voice.tap(w.headword); } };
+    if (fc2) st.flip = () => { st.flipped = !st.flipped; card.classList.toggle('revealed', st.flipped); if (st.flipped) { st.revealed = true; if (q.direction === 'ja2en') voice.tap(w.headword, w); } };
     st.ctl = makeSwipeCard(card, {
       map, pads: fc2 ? [$('.qrun', el)] : qpad ? [qpad] : [], paper: fc2,
       revealOnCommit: () => back,
-      onTap: fc2 ? (t) => { const sayEl = t?.closest?.('[data-say]'); if (sayEl) voice.tap(sayEl.classList.contains('fc2-audio') ? w.headword : sayEl.textContent); else st.flip(); } : () => {
+      onTap: fc2 ? (t) => { const sayEl = t?.closest?.('[data-say]'); if (sayEl) voice.tap(sayEl.classList.contains('fc2-audio') ? w.headword : sayEl.textContent, w); else st.flip(); } : () => {
         st.flipped = !st.flipped;
         card.classList.add('flipping');
         setTimeout(() => { $('.face', card).innerHTML = st.flipped ? back : front; card.classList.remove('flipping'); }, 90);
-        if (st.flipped) { st.revealed = true; if (q.direction === 'ja2en') speak(w.headword); }
+        if (st.flipped) { st.revealed = true; if (q.direction === 'ja2en') sayW(w); }
       },
       onCommit: (result) => {
         if (fc2) voice.stop();
@@ -420,8 +427,8 @@ export async function sessionScreen(el, params) {
       },
     });
     el._flashCur = st;
-    if (fc2) { if (q.direction !== 'ja2en') voice.auto(w.headword); }
-    else if (isAudio) speak(w.headword);
+    if (fc2) { if (q.direction !== 'ja2en') voice.auto(w.headword, w, { listening: isAudio }).then((done) => { if (done && isAudio && listenRevealOn() && el._flashCur === st) showAfterAudio(card, w); }); }
+    else if (isAudio) sayW(w);
   }
 
   async function flashUndo() {
@@ -476,8 +483,8 @@ export async function sessionScreen(el, params) {
       <div id="fb"></div>`;
 
     $('#quit', el).onclick = () => { toast(`中断しました（残り${left}問）。学習タブから再開できます`); go('#study'); };
-    $('#say', el)?.addEventListener('click', () => speak(w.headword));
-    if (isAudio) speak(w.headword);
+    $('#say', el)?.addEventListener('click', () => sayW(w));
+    if (isAudio) sayW(w);
 
     const ans = $('#ans', el);
     if (q.format === 'typing') {
@@ -523,7 +530,7 @@ export async function sessionScreen(el, params) {
           <div class="card reveal">${q.direction === 'ja2en' ? `<div class="q-en">${esc(w.headword)}</div>` : `<div class="q-en sm">${esc(w.headword)}</div><div class="q-ja">${esc(meanings.join('、'))}</div>`}</div>
           <p class="small muted center">思い出せましたか？</p>
           <div class="evals"><button class="btn" data-e="no">✕ わからない</button><button class="btn" data-e="vague">△ あいまい</button><button class="btn primary" data-e="yes">○ わかった</button></div>`;
-        if (q.direction === 'ja2en') speak(w.headword);
+        if (q.direction === 'ja2en') sayW(w);
         ans.addEventListener('click', (e) => {
           const ev = e.target.dataset.e; if (!ev) return;
           const correct = ev !== 'no', hint = ev === 'vague';
@@ -587,7 +594,7 @@ export async function sessionScreen(el, params) {
           </details>
         </div>
         <button class="btn primary" id="next">${last ? '結果を見る' : '次へ'}</button>`;
-      $('#say2', el).onclick = () => speak(w.headword);
+      $('#say2', el).onclick = () => sayW(w);
       $('#ans', el)?.classList.remove('dock');
       const next = $('#next', el);
       next.classList.add('dockbtn'); next.insertAdjacentHTML('afterend', '<div class="dockspace"></div>');

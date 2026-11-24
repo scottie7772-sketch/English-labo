@@ -2,7 +2,9 @@ import { words } from './studio-align.js';
 
 const key = text => words(text).map(word => word.w).join(' ');
 const valid = g => g.sourceId && Number.isFinite(g.start) && Number.isFinite(g.end) && g.start >= 0 && g.end > g.start;
-const script = b => Boolean(b.text?.trim()) && (!b.asr || b.aligned || b.sync === 'manual');
+// rows of symbols only (─, ───) are separators: never matched or rescued
+export const hasWords = text => /[\p{L}\p{N}]/u.test(text || '');
+const script = b => Boolean(b.text?.trim()) && hasWords(b.text) && (!b.asr || b.aligned || b.sync === 'manual');
 const missing = b => !b.segments.length && b.sync !== 'manual';
 export const sameRescueVersion = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 export function rescuePreviewRange(start, end, duration, part = 'all') {

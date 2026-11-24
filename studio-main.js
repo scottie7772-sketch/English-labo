@@ -14,12 +14,13 @@ import { speechFirstPlaybackRange, nextSourceSegment } from './studio-playback-b
 import { planVocabAlignment, isVocabTarget, unassignedVocabRanges, vocabKey, isVocabHead } from './studio-vocab-align.js';
 import { maSeams, maWindow, inspectMaSeam, proposeMaSeam, maBoundaryUpdates, wavRangeReader } from './studio-ma-boundary.js';
 import { createRescueSearch, sameRescueVersion, rescuePreviewRange } from './studio-prose-rescue.js';
+import { isSymbolRow, needsWork, wordCount, planBulkGaps, rangePieces, keepInPiece, withoutTaken, adjacentWithSound } from './studio-ma-tools.js';
 import { alignUtterances } from './studio-import-align.js';
 import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.11';
+export const STUDIO_VERSION = '0.21.12';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -1473,24 +1474,24 @@ async function editorScreen(el, params, revision) {
     const base = onlySel ? blocks.filter((b) => sel.has(b.id)) : blocks;
     const filtering = view !== 'all' && !arrange; // Keep 未/済/残 filters visible while selecting rows.
     const isRest = (b) => !b.aligned && b.segments.length && (b.asr || !b.text.trim());   // left over from transcription / matching
-    const shown = !filtering ? base : view === 'done' ? base.filter((b) => b.aligned) : view === 'rest' ? base.filter(isRest) : base.filter((b) => !b.aligned);
+    const shown = !filtering ? base : view === 'done' ? base.filter((b) => !needsWork(b) && !isSymbolRow(b)) : view === 'rest' ? base.filter(isRest) : base.filter(needsWork);
     // "未" view: each run of matched lines becomes one folded line (tap = show all)
     const folds = new Map();
     if (filtering && view === 'todo') { let run = 0, first = null; const flush = (nextId) => { if (run) folds.set(nextId ?? '__end', { n: run, from: first }); run = 0; first = null; };
-      for (const b of base) { if (b.aligned) { if (!run) first = b; run++; } else flush(b.id); } flush(null); }
-    const foldHTML = (f) => `<div class="st-fold1" data-unfold="1" data-oid="${f.from.id}">✓ 照合済み ${f.n}行（${fmt(f.from.segments[0]?.start)}〜）<small class="muted">タップで全表示</small></div>`;
+      for (const b of base) { if (!needsWork(b)) { if (!run) first = b; run++; } else flush(b.id); } flush(null); }
+    const foldHTML = (f) => `<div class="st-fold1" data-unfold="1" data-oid="${f.from.id}">✓ 済み ${f.n}行（${fmt(f.from.segments[0]?.start)}〜）<small class="muted">タップで全表示</small></div>`;
     list.classList.toggle('arranging', arrange);
     const firstBySource = new Map();
     for (const b of blocks) for (const g of b.segments) if (!firstBySource.has(g.sourceId)) firstBySource.set(g.sourceId,b.id);
     list.innerHTML = shown.map((b) => (folds.has(b.id) ? foldHTML(folds.get(b.id)) : '') + (() => {
       const badges = [b.segments.length > 1 ? `<span class="tagp">${b.segments.length}区間</span>` : '', new Set(b.segments.map((s) => s.sourceId)).size > 1 ? '<span class="tagp">複数ファイル</span>' : '',
-        b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', overlap.has(b.id) ? `<span class="tagp warn" title="前の行と音声が重なっています。✎で開始を動かすと前の行の終わりも合わせて動きます">前と${overlap.get(b.id)}秒重なり</span>` : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length ? '<span class="tagp">音声未割当</span>' : ''].join('');
+        b.unconfirmed ? '<span class="tagp warn">一括仮割当・未確認</span>' : b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', overlap.has(b.id) ? `<span class="tagp warn" title="前の行と音声が重なっています。✎で開始を動かすと前の行の終わりも合わせて動きます">前と${overlap.get(b.id)}秒重なり</span>` : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length && !isSymbolRow(b) ? '<span class="tagp">音声未割当</span>' : ''].join('');
       const sourceStart = [...firstBySource].filter(([sid,id])=>id===b.id).map(([sid])=>`<div class="st-source-boundary">音声開始：${esc(srcs[sid]?.name||'音声ファイル')} <button type="button" class="btn sm ghost" data-source-row="${esc(sid)}" data-row="${esc(b.id)}">位置へ</button></div>`).join('');
       return `${sourceStart}<div class="st-row ${sel.has(b.id) ? 'sel' : ''} ${arrange ? 'jig' : ''}" data-id="${b.id}">
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
         <span class="grow st-txt" data-play="${b.id}"><small class="muted">${b.segments.length ? `${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)}` : estMap.has(b.id) ? `≈${fmt(estMap.get(b.id).t)}（推定）` : '--:--'} ${badges}</small>
           ${b.label ? `<b class="small">${esc(b.label)}</b>` : ''}<span class="st-en2">${holeHTML(b) || `<span class="muted">（英文なし${b.label ? '・✎で追加' : ''}）</span>`}</span><span class="st-ja2">${esc(b.ja || '')}</span></span>
-        ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `${!b.segments.length && b.text.trim() ? `<button type="button" class="btn xs ghost" data-rescue="${b.id}">音声を割当</button>` : ''}${b.sync === 'estimated' && b.segments.length ? `<button type="button" class="btn xs ghost" data-reestimate="${b.id}">前後から再推定</button>` : ''}<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
+        ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `${!b.segments.length && b.text.trim() && !isSymbolRow(b) ? `<button type="button" class="btn xs ghost" data-rescue="${b.id}">音声を割当</button>` : ''}${(b.sync === 'estimated' || b.unconfirmed) && b.segments.length ? `<button type="button" class="btn xs ghost" data-confirm-row="${b.id}" title="試聴した時刻のまま確定">確定</button>` : ''}${b.sync === 'estimated' && b.segments.length && !b.unconfirmed ? `<button type="button" class="btn xs ghost" data-reestimate="${b.id}">前後から再推定</button>` : ''}<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
     })()).join('') + (folds.has('__end') ? foldHTML(folds.get('__end')) : '') || `<p class="empty">${filtering ? (view === 'done' ? '照合済みの行はまだありません' : view === 'rest' ? '残っている文字起こしはありません' : '未照合の行はありません（すべて照合済み）') : '項目がありません'}</p>`;
     if (filtering && view === 'rest' && shown.length) {
       list.insertAdjacentHTML('afterbegin', `<div class="notice row small"><span class="grow">スクリプトと照合できなかった文字起こし・文字にできなかった部分：${shown.length}行</span><button class="btn sm" id="restRedo">起こし直す→照合</button><button class="btn sm danger" id="restDel">すべて削除</button></div>`);
@@ -1504,6 +1505,7 @@ async function editorScreen(el, params, revision) {
     }
     $$('[data-rescue]', list).forEach(x => x.onclick = () => rescueUnassigned(x.dataset.rescue));
     $$('[data-reestimate]', list).forEach(x => x.onclick = () => reestimateFromNeighbours(x.dataset.reestimate));
+    $$('[data-confirm-row]', list).forEach(x => x.onclick = (e) => { e.stopPropagation(); confirmRow(x.dataset.confirmRow); });
     $$('[data-source-row]', list).forEach(x=>x.onclick=()=>{const b=byId[x.dataset.row];jumpToSource(x.dataset.sourceRow,b?.segments.find(g=>g.sourceId===x.dataset.sourceRow)?.start||0,b?.id);});
     $$('[data-unfold]', list).forEach((x) => (x.onclick = () => { const id = x.dataset.oid; setView('all'); goNear(id); }));
     $('#undoB', el).disabled = !(set.undo || []).length; $('#redoB', el).disabled = !(set.redo || []).length;
@@ -1526,7 +1528,7 @@ async function editorScreen(el, params, revision) {
       bar.innerHTML = `<div class="small">≡ をつかんで動かします。<b>行の上に重ねる</b>と結合、<b>行と行の間</b>に置くと移動。行をタップすると分けられます。</div>
         <div class="row"><button class="btn sm" id="arrUndo" ${(set.undo || []).length ? '' : 'disabled'} aria-label="元に戻す">${icon('undo')}</button><button class="btn sm" id="arrRedo" ${(set.redo || []).length ? '' : 'disabled'} aria-label="やり直す">${icon('redo')}</button>
         <button class="btn sm" id="arrCancel">キャンセル${n0 > 0 ? `（${n0}件）` : ''}</button><button class="btn sm primary grow" id="arrDone">完了</button></div>`;
-      $('#arrDone', bar).onclick = () => { arrange = false; drawList(); };
+      $('#arrDone', bar).onclick = () => { const an = viewAnchor(); arrange = false; drawList(); restoreViewAnchor(an, viewSwitchSerial); };
       $('#arrUndo', bar).onclick = () => $('#undoB', el).click();
       $('#arrRedo', bar).onclick = () => $('#redoB', el).click();
       $('#arrCancel', bar).onclick = async () => {   // undo everything done since 結合・移動 was opened
@@ -2058,56 +2060,82 @@ async function editorScreen(el, params, revision) {
     if (changes.length < selected.length) toast(`${selected.length - changes.length}行は変更・重なりがあるため保留しました`, 4500);
   }
 
+  // 1.19.19: a range of any length (up to 3 minutes) in one go. Only the chosen part is read from the file when the
+  // format allows it (mp4/m4a/mov, wav); it is recognised in ~18 s pieces that overlap by 2 s and put back on the file's
+  // clock. Nothing is saved until the preview is accepted; cancelling keeps every assignment as it was.
   async function reanalyseRescueRange(sourceId, start, end, targets, prose = null) {
     const source = srcs[sourceId];
     const blob = source?.stored ? source.blob : sessionFiles.get(sourceId);
-    if (!blob) return toast('音声ファイルを選び直してください');
-    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end - start < .2 || end - start > 20 ||
-        end > source.duration || !(source.duration > 0) || source.duration > 300 || blob.size > 25 * 1024 * 1024) {
-      return toast('開始・終了は20秒以内で指定してください。再解析できる元ファイルは5分・25MBまでです', 5000);
-    }
+    if (!blob) return toast('音声ファイルがつながっていません。ファイルを選び直してください', 5000);
+    if (![start, end].every(Number.isFinite) || start < 0 || end - start < .2) return toast('開始・終了の時刻を確認してください（開始より後に終了を）', 5000);
+    if (source.duration > 0 && end > source.duration + .1) return toast(`終了がファイルの長さ（${fmt(source.duration)}）を超えています`, 5000);
+    if (end - start > 180) return toast('一度に解析できるのは3分までです。範囲を分けてください', 5000);
     const dlg = $('#dialog');
     if (dlg.open) return;
-    dlg.innerHTML = '<form method="dialog" class="dlg stack"><h3>指定区間の解析</h3><p id="vocabProgress">音声を準備しています…</p><button class="btn ghost" value="cancel">中止</button></form>';
+    dlg.innerHTML = '<form method="dialog" class="dlg stack"><h3>指定区間の解析</h3><p id="vocabProgress">音声を準備しています…</p><div class="st-meter"><i id="raBar" style="width:0%"></i></div><button class="btn ghost" value="cancel">中止（割り当ては変わりません）</button></form>';
     const progress = $('#vocabProgress', dlg);
     let tr, cancelled = false;
     const stopped = () => cancelled || !dlg.open || revision !== routeRevision;
     dlg.onclose = () => { cancelled = true; tr?.close(); };
     dlg.showModal();
     try {
-      const decoded = await sourceAudio16k(source, blob);
-      if (stopped()) return;
-      const first = Math.round(start * 16000);
-      const clip = decoded.audio.subarray(first, Math.round(end * 16000));
-      highPass(clip);
-      const regions = speechRegions(clip, 16000, prose ? undefined : {gapFrames:5,minGap:.08});
-      if (!regions.length || regions.length > 24) throw new Error('独立した発話の境界を絞り込めませんでした');
+      // read only the needed part when the format allows it
+      let reader = null, whole = null;
+      if (isContainer(source, blob)) {
+        const info = await probe(blob, { presentation: true }).catch(() => null);
+        const tracks = info ? audioTracks(info) : [];
+        const track = tracks.find(t => t.id === source.audio?.trackId) || (source.audio?.index != null ? tracks[source.audio.index] : tracks.length === 1 ? tracks[0] : null);
+        if (track?.presentation && canExtract(track)) reader = (a, b) => extractPresentationRange(blob, track, a, b);
+      } else reader = await wavRangeReader(blob).catch(() => null);
+      const clipAt = async (a, z) => {
+        if (reader) {
+          const clip = await reader(a, z);
+          const { audio } = await decodeTo16k(clip.blob);
+          const first = Math.max(0, Math.ceil(((clip.from ?? a) - clip.start) * 16000));
+          const last = Math.min(audio.length, Math.floor(((clip.to ?? z) - clip.start) * 16000));
+          return { audio: audio.slice(first, last), at: clip.start + first / 16000 };
+        }
+        if (!whole) {
+          if (source.duration > 300 || blob.size > 25 * 1024 * 1024) throw new Error('この形式（MP3など）は区間だけを読み出せません。5分・25MBを超える元ファイルは、m4a/mp4/wav にするか、短いファイルに分けてください');
+          whole = await sourceAudio16k(source, blob);
+        }
+        return { audio: whole.audio.slice(Math.round(a * 16000), Math.round(z * 16000)), at: a };
+      };
+      const pieces = rangePieces(start, end, 18, 2);
       tr = openTranscriber('en', text => { if (!stopped()) progress.textContent = text; }, {quality:'acc'});
       const cues = [];
-      for (const region of regions) {
+      for (const [k, [a, z]] of pieces.entries()) {
         if (stopped()) return;
-        const result = await recognisePiece(tr, clip, region.start, region.end);
-        const text = (result.raw || result.map(cue => cue.text).join(' ')).trim();
-        const offset = first / 16000;
-        if (prose && result.length && result.every(cue => !cue.est && !cue.boundaryEstimated)) {
-          cues.push(...result.map(cue => ({sourceId,text:cue.text,start:offset+cue.start,end:offset+cue.end})));
-        } else if (text) {
-          // An independent VAD window can supply the boundary of a whole utterance.
-          cues.push({sourceId, start:+(offset+region.start).toFixed(2), end:+(offset+region.end).toFixed(2), text});
+        progress.textContent = `区間 ${k + 1} / ${pieces.length}（${fmt(a)}〜${fmt(z)}）を解析中…`;
+        const bar = $('#raBar', dlg); if (bar) bar.style.width = `${Math.round((k / pieces.length) * 100)}%`;
+        const { audio: clip, at } = await clipAt(a, z);
+        if (stopped()) return;
+        highPass(clip);
+        const regions = speechRegions(clip, 16000, prose ? undefined : {gapFrames:5,minGap:.08});
+        if (regions.length > 60) throw new Error('発話の区切りを絞り込めませんでした（範囲を狭めてください）');
+        // keep a cue only in the middle part of its piece, so a sentence across a seam is counted once
+        for (const region of regions) {
+          if (stopped()) return;
+          const result = await recognisePiece(tr, clip, region.start, region.end);
+          const text = (result.raw || result.map(cue => cue.text).join(' ')).trim();
+          const add = (cue) => { if (keepInPiece(cue, k, pieces, 2)) cues.push(cue); };
+          if (prose && result.length && result.every(cue => !cue.est && !cue.boundaryEstimated)) result.forEach(cue => add({sourceId,text:cue.text,start:+(at+cue.start).toFixed(2),end:+(at+cue.end).toFixed(2)}));
+          else if (text) add({sourceId, start:+(at+region.start).toFixed(2), end:+(at+region.end).toFixed(2), text});
         }
       }
       if (stopped()) return;
+      cues.sort((x, y) => x.start - y.start);
       tr.close();
       tr = null;
       dlg.onclose = null;
       dlg.close();
       await new Promise(resolve => setTimeout(resolve, 60));
       if (!dlg.open && revision === routeRevision) {
-        if (prose) await previewProseAssignment(prose.rows,{sid:sourceId,start,end},{local:cues,expected:prose.expected});
+        if (prose) await previewProseAssignment(prose.rows,{sid:sourceId,start,end},{local:cues,expected:prose.expected,wide:prose.wide || null});
         else await previewVocabAlignment(targets,cues);
       }
     } catch (error) {
-      if (!stopped()) toast('この区間を解析できませんでした：' + error.message, 5000);
+      if (!stopped()) toast('この区間を解析できませんでした：' + error.message, 6000);
     } finally {
       tr?.close();
       if (dlg.open && dlg.contains(progress)) { dlg.onclose = null; dlg.close(); }
@@ -2135,6 +2163,33 @@ async function editorScreen(el, params, revision) {
     return free.sort((a,b)=>(b.end-b.start)-(a.end-a.start))[0] || null;
   }
 
+  // 1.19.19: keep the heard times and mark the line as checked (removes 時間は推定 / 一括仮割当・未確認)
+  async function confirmRow(id) {
+    await reload(); const row = byId[id];
+    if (!row?.segments.length) return toast('音声区間のない行です');
+    const {unconfirmed, ...rest} = row;
+    await run('この位置で確定', {blocks:[{...rest,sync:'manual',lineage:{op:'confirm-position',from:[`${row.id}@${row.rev}`],at:Date.now()}}]});
+  }
+  // 1.19.19: every line that is the ONLY unassigned line between two lines with sound gets the sound between them
+  // (previous end → next start) as an estimate, marked 一括仮割当・未確認 until confirmed. Neighbours are not moved.
+  async function bulkGapTrial() {
+    await reload();
+    const { can, skip } = planBulkGaps(set.order, byId, (seg, id) => rescueUnoccupied(seg, new Set([id])));
+    if (!can.length && !skip.length) return toast('単独の未割当行はありません');
+    const tally = {}; skip.forEach((x) => (tally[x.r] = (tally[x.r] || 0) + 1));
+    const ok = await confirmDialog({title:'単独の未割当行を一括で仮割り当て',
+      body:`<p><b>仮割り当てできる：${can.length}行</b>　見送り：${skip.length}行</p>
+        ${skip.length ? `<p class="small muted">${Object.entries(tally).map(([r, n]) => `${esc(r)} ${n}行`).join('・')}</p>` : ''}
+        <p class="small">前の字幕の終わり〜次の字幕の始まりを、その1行の仮区間にします。前後の時刻は動かしません。保存後は「一括仮割当・未確認」と表示され、「確定」するまで「未」の一覧に残ります（↶で全部戻せます）。見送った行は「音声を割当」や手動編集で直せます。</p>`,
+      okLabel: can.length ? `${can.length}行を仮割り当て` : '閉じる'});
+    if (!ok || !can.length || revision !== routeRevision) return;
+    await reload();
+    const ups = can.filter(({b}) => byId[b.id] && byId[b.id].rev === b.rev && !byId[b.id].segments.length)
+      .map(({b, seg}) => ({...byId[b.id],segments:[seg],sync:'estimated',unconfirmed:true,align:[],lineage:{op:'bulk-gap-trial',from:[`${b.id}@${b.rev}`],at:Date.now()}}));
+    if (!ups.length) return toast('対象の行が更新されました。もう一度実行してください');
+    await run(`${ups.length}行を一括仮割り当て`, {blocks:ups});
+    if (view !== 'todo') toast('表示切替「未」で未確認の行だけを確認できます', 3000);
+  }
   async function reestimateFromNeighbours(id) {
     await reload();
     if (revision !== routeRevision) return;
@@ -2177,8 +2232,10 @@ async function editorScreen(el, params, revision) {
 
   // 1.19.18: the chosen sound is (partly) inside other lines' saved ranges (often a neighbour aligned too long).
   // Offer to shorten those lines so the chosen range goes to this line. Manually edited lines are never shortened.
+  // a line that really owns its sound (script line / matched / manual); left-over transcripts and empty pieces do not
+  const isAssigned = (b) => !!(b.text || '').trim() && (!b.asr || b.aligned || b.sync === 'manual');
   async function takeOverRange(row, seg, {label, sync, op, guardedSet}) {
-    const hits = blocks.filter(b => b.id !== row.id && b.segments.some(g => g.sourceId === seg.sourceId && g.start < seg.end - .05 && g.end > seg.start + .05));
+    const hits = blocks.filter(b => isAssigned(b) && b.id !== row.id && b.segments.some(g => g.sourceId === seg.sourceId && g.start < seg.end - .05 && g.end > seg.start + .05));
     if (!hits.length) return false;
     const locked = hits.filter(b => b.sync === 'manual');
     if (locked.length) { toast(`手動で調整した行と重なります：「${locked[0].text.slice(0,30)}」。範囲を狭めるか、その行を先に直してください`, 6000); return true; }
@@ -2197,7 +2254,7 @@ async function editorScreen(el, params, revision) {
     await run(label,{blocks:updates,guardedSet});
     return true;
   }
-  async function previewProseAssignment(rows, range, {local = null,manual = false,expected} = {}) {
+  async function previewProseAssignment(rows, range, {local = null,manual = false,expected,wide = null} = {}) {
     await reload();
     if (revision !== routeRevision) return;
     const guardedSet = rescueVersion();
@@ -2206,14 +2263,15 @@ async function editorScreen(el, params, revision) {
       return rescueUnassigned(rows[0].id);
     }
     const currentRows = rows.map(b => byId[b.id]);
-    const search = currentRescueSearch();
-    if (currentRows.some((b,i) => !b || b.rev !== rows[i].rev || b.text !== rows[i].text || !search.byRow.has(b.id))) {
+    // 前後を含めて再照合: the neighbouring lines included this time do not block the search (their old times are only replaced on save)
+    const search = wide ? createRescueSearch(blocks.filter(b => !wide.has(b.id)), materialSourceIds(), srcs) : currentRescueSearch();
+    if (currentRows.some((b,i) => !b || b.rev !== rows[i].rev || b.text !== rows[i].text || (!wide?.has(b.id) && !search.byRow.has(b.id) && !wide))) {
       return toast('対象の字幕が更新されました。候補を開き直してください');
     }
     const rawProposed = manual ? [{row:currentRows[0],segment:{sourceId:range.sid,start:range.start,end:range.end},evidence:[]}] :
       search.assignments(currentRows,range,local,{partial:true});
     const mine = new Set(currentRows.map(r=>r.id));
-    let proposed = rawProposed.map(x => ({...x,segment:rescuePreferredFragment(x.segment,mine)}));
+    let proposed = rawProposed.map(x => ({...x,segment:wide ? (search.isFree(x.segment) ? x.segment : null) : rescuePreferredFragment(x.segment,mine)}));
     if (manual) {   // the user chose the exact range: if other lines hold (part of) it, offer to shorten them
       const want = {sourceId:range.sid,start:range.start,end:range.end}, got = proposed[0]?.segment;
       if (!got || got.start - want.start > .1 || want.end - got.end > .1) {
@@ -2231,9 +2289,9 @@ async function editorScreen(el, params, revision) {
         const prev = i > 0 ? got.get(currentRows[i-1].id) : null, next = i < currentRows.length-1 ? got.get(currentRows[i+1].id) : null;
         const a = prev ? prev.segment.end : i === 0 ? range.start : null, z = next ? next.segment.start : i === currentRows.length-1 ? range.end : null;
         if (a == null || z == null || !(prev || next) || z - a < 0.3) continue;
-        const segment = rescuePreferredFragment({sourceId:range.sid,start:a,end:z},mine);
+        const segment = wide ? (search.availableRanges({sourceId:range.sid,start:a,end:z}).sort((p,q)=>(q.end-q.start)-(p.end-p.start))[0] || null) : rescuePreferredFragment({sourceId:range.sid,start:a,end:z},mine);
         if (!segment || !search.isFree(segment)) continue;
-        const n = Math.max(1, r.text.trim().split(/\s+/).length), d = segment.end - segment.start;
+        const n = Math.max(1, wordCount(r.text)), d = segment.end - segment.start;
         proposed.push({row:r,segment,evidence:[],est:true,doubt:d < n/6 || d > Math.max(4,n*1.2)});
       }
       proposed.sort((x,y) => currentRows.indexOf(x.row) - currentRows.indexOf(y.row));
@@ -2245,12 +2303,22 @@ async function editorScreen(el, params, revision) {
     }
     // Recheck against current occupied intervals; user sees the trimmed boundaries in preview.
     if (proposed.some(x => !search.isFree(x.segment))) return toast('他の割当と重複するため保存できません。候補を確認してください');
-    const nOk = proposed.filter(x => !x.est).length, nEst = proposed.length - nOk, nNone = currentRows.length - proposed.length;
+    // 前後を含めて再照合: an included neighbour that was not matched again keeps its time, minus any part now given to another line
+    if (wide) {
+      const taken = proposed.map(x => x.segment);
+      for (const r of currentRows) {
+        if (!wide.has(r.id) || proposed.some(x => x.row.id === r.id)) continue;
+        const segs = withoutTaken(r.segments, taken);
+        if (JSON.stringify(segs) !== JSON.stringify(r.segments)) proposed.push({row:r,segment:segs[0] || null,segs,trim:true,evidence:[]});
+      }
+      proposed.sort((x,y) => currentRows.indexOf(x.row) - currentRows.indexOf(y.row));
+    }
+    const nOk = proposed.filter(x => !x.est && !x.trim).length, nEst = proposed.filter(x => x.est).length, nNone = currentRows.filter(r => !proposed.some(x => x.row.id === r.id && !x.trim)).length;
     const keep = new Set(proposed.map((x,i) => (x.doubt ? -1 : i)).filter(i => i >= 0));
     const accepted = confirmDialog({title:'朗読の音声区間を保存',
       body:`${manual ? '' : `<p class="small"><b>一致 ${nOk}行</b>${nEst ? `・前後の間から推定 ${nEst}行` : ''}${nNone ? `・<span class="muted">見つからず ${nNone}行（そのまま）</span>` : ''}。チェックした行だけ保存します。</p>`}<p class="small">${manual ? '入力した範囲を1行に割り当てます。' : local ? '指定区間の発話と本文が順番に一致した行です。' : '保存済みASRと本文が順番に一致した行です。'}各行を試聴して確認できます。</p>
         <div class="stack" style="max-height:45vh;overflow:auto">${proposed.map(({row,segment,est,doubt},i) =>
-          `<div class="row wrap">${manual ? '' : `<input type="checkbox" data-prose-keep="${i}" ${keep.has(i) ? 'checked' : ''} aria-label="保存する">`}<span class="grow">${est ? `<span class="tagp warn">${doubt ? '推定・長さ要確認' : '推定'}</span> ` : ''}${esc(row.text)}</span><button type="button" class="btn sm" data-prose-preview="${i}">▶ ${fmt(segment.start)}〜${fmt(segment.end)}</button></div>`).join('')}</div>`,
+          `<div class="row wrap">${manual ? '' : `<input type="checkbox" data-prose-keep="${i}" ${keep.has(i) ? 'checked' : ''} aria-label="保存する">`}<span class="grow">${est ? `<span class="tagp warn">${doubt ? '推定・長さ要確認' : '推定'}</span> ` : ''}${proposed[i].trim ? '<span class="tagp warn">境界を調整</span> ' : wide?.has(row.id) ? '<span class="tagp">前後の行・付け直し</span> ' : ''}${esc(row.text)}${wide?.has(row.id) ? `<br><small class="muted">今：${row.segments.map(g=>`${fmt(g.start)}〜${fmt(g.end)}`).join('・') || 'なし'} → ${proposed[i].trim ? (proposed[i].segs.map(g=>`${fmt(g.start)}〜${fmt(g.end)}`).join('・') || '音声なし') : `${fmt(segment.start)}〜${fmt(segment.end)}`}</small>` : ''}</span>${segment ? `<button type="button" class="btn sm" data-prose-preview="${i}">▶ ${fmt(segment.start)}〜${fmt(segment.end)}</button>` : ''}</div>`).join('')}</div>`,
       okLabel:'区間を保存'});
     $$('[data-prose-keep]', $('#dialog')).forEach(box => box.onchange = () => { const i = Number(box.dataset.proseKeep); if (box.checked) keep.add(i); else keep.delete(i); });
     $$('[data-prose-preview]', $('#dialog')).forEach(button => button.onclick = () => {
@@ -2263,7 +2331,7 @@ async function editorScreen(el, params, revision) {
     if (!ok) return;
     if (!manual) proposed = proposed.filter((x,i) => keep.has(i));
     if (!proposed.length) return toast('保存する行がありません');
-    const updates = proposed.map(({row,segment,est}) => ({...row,segments:[segment],
+    const updates = proposed.map(({row,segment,est,trim,segs}) => trim ? ({...row,segments:segs,align:[],aligned:segs.length ? row.aligned : false,lineage:{op:'prose-rescue-trim',from:[`${row.id}@${row.rev}`],at:Date.now()}}) : ({...(({unconfirmed,...r}) => r)(row),segments:[segment],
       aligned:manual || est ? row.aligned : true, sync:manual ? 'manual' : est ? 'estimated' : 'auto', align:[],
       lineage:{op:manual ? 'prose-rescue-manual' : est ? 'prose-rescue-gap' : 'prose-rescue-match',from:[`${row.id}@${row.rev}`],at:Date.now()}}));
     if (!local && !manual) {
@@ -2276,6 +2344,27 @@ async function editorScreen(el, params, revision) {
     await run('朗読の音声割当',{blocks:updates,order:set.order.filter(id => !removed.has(id)),guardedSet});
   }
 
+  // 1.19.19: the unassigned lines plus k lines with sound on each side are matched again together. The neighbours' saved
+  // times do not block the search (their sound may hide this line's sound); saved recognition is used first, and the
+  // range is recognised again only when that is not enough. Manually confirmed lines are never included (they stay fixed).
+  async function rescueWithNeighbours(selected, sid, a, z, k, expected) {
+    await reload();
+    const ids = set.order.filter(id => byId[id] && !isSymbolRow(byId[id]));
+    const i0 = ids.indexOf(selected[0].id), i1 = ids.indexOf(selected.at(-1).id);
+    if (i0 < 0 || i1 < 0) return toast('対象の字幕が見つかりません');
+    const side = (from, step) => { const out = []; for (let i = from; i >= 0 && i < ids.length && out.length < k; i += step) { const b = byId[ids[i]]; if (!b.segments.length) continue; if (b.sync === 'manual' || !b.segments.every(g => g.sourceId === sid)) break; out.push(b); } return out; };
+    const before = side(i0 - 1, -1).reverse(), after = side(i1 + 1, 1);
+    if (!before.length && !after.length) return toast('前後に同じ音声ファイルの字幕がありません（手動確定済みの行は含めません）', 5000);
+    const rows = [...before, ...ids.slice(i0, i1 + 1).map(id => byId[id]), ...after];
+    const wide = new Set([...before, ...after].map(b => b.id));
+    const nb = [...before, ...after].flatMap(b => b.segments);
+    const A = Math.max(0, Math.min(a, ...nb.map(g => g.start)) - .3), Z = Math.min(srcs[sid]?.duration || Infinity, Math.max(z, ...nb.map(g => g.end)) + .3);
+    // saved recognition first
+    const search = createRescueSearch(blocks.filter(b => !wide.has(b.id)), materialSourceIds(), srcs);
+    const saved = search.assignments(rows, {sid, start:A, end:Z}, undefined, {partial:true});
+    if (saved.length === rows.length) return previewProseAssignment(rows, {sid, start:A, end:Z}, {expected, wide});
+    return reanalyseRescueRange(sid, A, Z, new Set(rows.map(b => b.id)), {rows, expected, wide});
+  }
   async function rescueUnassigned(id) {
     if (revision !== routeRevision) return;
     await reload();
@@ -2308,6 +2397,8 @@ async function editorScreen(el, params, revision) {
         <button id="rsEditAnchor" class="btn" value="anchor" hidden>既存字幕の境界を確認</button>
         <button id="rsSaved" class="btn" value="saved">既存ASRと照合</button>
         <button id="rsLocal" class="btn" value="local">指定区間を再解析</button>
+        <button id="rsWide" class="btn" value="wide" title="前後の字幕も一緒に照合し直す（前後の区間がずれて、この行の音声を覆っているとき）">前後を含めて再照合</button>
+        <label class="small">前後に含める行 <select id="rsWideN"><option value="1">1行ずつ</option><option value="2">2行ずつ</option><option value="3">3行ずつ</option></select></label>
         <button id="rsGap" class="btn" value="gap" hidden>前後の間を仮割当</button>
       </div></form>`;
     const pick=$('#rsCandidate',dlg),st=$('#rsStart',dlg),en=$('#rsEnd',dlg);
@@ -2456,9 +2547,11 @@ async function editorScreen(el, params, revision) {
       return editBlock(anchor,{protectNeighbours:true, onFinish:() => rescueUnassigned(id)});
     }
     if (action === 'saved' && !prose) return previewVocabAlignment(targets);
+    if (action === 'wide' && c && Number.isFinite(a) && Number.isFinite(z)) return rescueWithNeighbours(selected, c.sid, a, z, +($('#rsWideN', dlg)?.value || 1), expected);
     if (!c || c.review || !Number.isFinite(a) || !Number.isFinite(z) || a < 0 || z-a < .12) return toast('音声範囲を確認してください');
     const range = {sid:c.sid,start:a,end:z};
     if (action === 'local') return reanalyseRescueRange(c.sid,a,z,targets,prose ? {rows:selected,expected} : null);
+    if (action === 'wide') return rescueWithNeighbours(selected, c.sid, a, z, +($('#rsWideN', dlg)?.value || 1), expected);
     if (action === 'saved') return previewProseAssignment(selected,range,{expected});
     if (action === 'gap') {
       if (!prose || selected.length!==1 || group.rows.length!==1 || !c.inside) return toast('前後アンカーに挟まれた1行のみ仮割当できます');
@@ -2508,6 +2601,7 @@ async function editorScreen(el, params, revision) {
   // ---------- actions (each = one undoable operation) ----------
   const ordered = () => ops.orderedSelection(set.order, sel).map((id) => byId[id]).filter(Boolean);
   async function run(label, changes) {
+    const keepAt = (() => { try { return viewAnchor(); } catch { return null; } })();   // 1.19.19: the list stays where it was
     try {
       await commit(set, label, changes, srcs);
       // A successful edit/alignment replaces subtitle records and ordering.
@@ -2523,6 +2617,7 @@ async function editorScreen(el, params, revision) {
       lastHighlightedRow = null;
       await reload();
       drawList();
+      if (keepAt) try { restoreViewAnchor(keepAt, viewSwitchSerial); } catch {}
       drawSub();
       toast(`${label}しました`, 1200);
     } catch (e) { toast((e?.message || String(e)), 3500); }
@@ -2727,8 +2822,8 @@ async function editorScreen(el, params, revision) {
         const range = k === 'all' ? {start:g.start,end:g.end} : rescuePreviewRange(g.start,g.end,duration,k);
         if (!range) return toast('再生範囲を確認してください');
         playRange(g.sourceId,range.start,range.end); }));
-      if (!$('#eFollow', dlg) && work.segments.length) { const st = $('.st-segrow', dlg); st?.insertAdjacentHTML('beforebegin', `<label class="chk small"><input type="checkbox" id="eFollow" ${follow ? 'checked' : ''}> 前後の行もつなげて動かす（音のダブり・抜けを防ぐ）</label>`);
-        $('#eFollow', dlg).onchange = (e) => { follow = e.target.checked; try { localStorage.setItem('st-follow', follow ? '1' : '0'); } catch {} }; }
+      if (!$('#eFollow', dlg) && work.segments.length) { const st = $('.st-segrow', dlg); st?.insertAdjacentHTML('beforebegin', `<label class="chk small"><input type="checkbox" id="eFollow" ${follow ? 'checked' : ''}> 境界を共有している直前・直後の行も一緒に動かす（初期設定はオフ）</label>`);
+        $('#eFollow', dlg).onchange = (e) => { follow = e.target.checked; try { localStorage.setItem('st-follow2', follow ? '1' : '0'); } catch {} }; }
       $$('[data-range-view]', dlg).forEach((x) => (x.onclick = () => { readText(); fullRangeView = !fullRangeView; draw(); }));
       $$('[data-range-edge]', dlg).forEach((x) => (x.onclick = () => {
         readText(); const [i, edge] = x.dataset.rangeEdge.split(':');
@@ -2807,16 +2902,21 @@ async function editorScreen(el, params, revision) {
     // 1.17.7: neighbours follow — when this line's start / end moves, the line before ends there / the line after starts there,
     // so the sound is neither heard twice nor lost between the two lines (only lines of the same file that touch or overlap)
     const ids0 = set.order.filter((id) => byId[id]), at0 = ids0.indexOf(b.id);
-    const prevB = (() => { for (let k = at0 - 1; k >= 0; k--) { const x = byId[ids0[k]]; if (x.segments.length) return x; } return null; })();
-    const nextB = (() => { for (let k = at0 + 1; k < ids0.length; k++) { const x = byId[ids0[k]]; if (x.segments.length) return x; } return null; })();
-    let follow = !protectNeighbours && (() => { try { return localStorage.getItem('st-follow') !== '0'; } catch { return true; } })();
+    // 1.19.19 fix: only the line directly before / after (never a line further away past an unassigned line — that moved
+    // a correct line C when A was corrected over an unassigned B), only when they shared the boundary, and only when
+    // the user ticks it (off by default). Otherwise other lines are never changed: an overlap is reported instead.
+    const prevB = adjacentWithSound(ids0, byId, b.id, -1), nextB = adjacentWithSound(ids0, byId, b.id, 1);
+    let follow = !protectNeighbours && (() => { try { return localStorage.getItem('st-follow2') === '1'; } catch { return false; } })();
     function neighbourChanges() {
       if (!follow || !work.segments.length || !b.segments.length) return [];
       const out = [], s0 = b.segments[0], s1 = b.segments.at(-1), n0 = work.segments[0], n1 = work.segments.at(-1);
-      if (prevB && n0.start !== s0.start) { const pl = prevB.segments.at(-1); if (pl.sourceId === n0.sourceId && (Math.abs(pl.end - s0.start) < 1.0 || pl.end > n0.start) && n0.start > pl.start + 0.1) out.push({ ...prevB, segments: [...prevB.segments.slice(0, -1), { ...pl, end: n0.start }], sync: 'manual', align: [] }); }
-      if (nextB && n1.end !== s1.end) { const nf = nextB.segments[0]; if (nf.sourceId === n1.sourceId && (Math.abs(nf.start - s1.end) < 1.0 || nf.start < n1.end) && n1.end < nf.end - 0.1) out.push({ ...nextB, segments: [{ ...nf, start: n1.end }, ...nextB.segments.slice(1)], sync: 'manual', align: [] }); }
+      if (prevB && prevB.sync !== 'manual' && n0.start !== s0.start) { const pl = prevB.segments.at(-1); if (pl.sourceId === n0.sourceId && Math.abs(pl.end - s0.start) < 0.05 && n0.start > pl.start + 0.1) out.push({ ...prevB, segments: [...prevB.segments.slice(0, -1), { ...pl, end: n0.start }], align: [] }); }
+      if (nextB && nextB.sync !== 'manual' && n1.end !== s1.end) { const nf = nextB.segments[0]; if (nf.sourceId === n1.sourceId && Math.abs(nf.start - s1.end) < 0.05 && n1.end < nf.end - 0.1) out.push({ ...nextB, segments: [{ ...nf, start: n1.end }, ...nextB.segments.slice(1)], align: [] }); }
       return out;
     }
+    // overlap with other assigned lines after this save (reported, not fixed automatically)
+    const overlapsAfter = (changed) => blocks.filter((x) => x.id !== work.id && isAssigned(x) && !changed.some((c) => c.id === x.id) &&
+      x.segments.some((g) => work.segments.some((w) => w.sourceId === g.sourceId && w.start < g.end - .05 && w.end > g.start + .05)));
     const playRange = (sid, from, to) => {
       readText();
       if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return toast('再生範囲を確認してください');
@@ -2846,18 +2946,43 @@ async function editorScreen(el, params, revision) {
       });
     };
     const readText = () => { const en = $('#eEn', dlg)?.value, ja = $('#eJa', dlg)?.value; if (en != null && (en !== work.text || ja !== work.ja)) work = ops.editText(work, en.trim(), (ja || '').trim()); };
+    // ---- 1.19.19: confirm in place / give a cut-off part to the neighbour / merge with the neighbour ----
+    const idsE = set.order.filter((id) => byId[id] && !isSymbolRow(byId[id])), atE = idsE.indexOf(b.id);
+    const prevRow = atE > 0 ? byId[idsE[atE - 1]] : null, nextRow = atE >= 0 && atE < idsE.length - 1 ? byId[idsE[atE + 1]] : null;
+    const cutParts = () => {
+      const s0 = originalSegments[0], s1 = originalSegments.at(-1), n0 = work.segments[0], n1 = work.segments.at(-1);
+      return { head: s0 && n0 && n0.sourceId === s0.sourceId && n0.start > s0.start + .05 ? {sourceId:s0.sourceId,start:s0.start,end:n0.start} : null,
+        tail: s1 && n1 && n1.sourceId === s1.sourceId && n1.end < s1.end - .05 ? {sourceId:s1.sourceId,start:n1.end,end:s1.end} : null };
+    };
+    const _draw0 = draw;
+    draw = () => {
+      _draw0();
+      const form = dlg.querySelector('form.st-edit'); if (!form) return;
+      if (work.segments.length) $('.st-editor-sticky', dlg)?.insertAdjacentHTML('beforeend', `<button class="btn sm" value="confirm" title="開始・終了を動かさずに、今の時刻で確定">この位置で確定</button>`);
+      const {head, tail} = cutParts();
+      form.insertAdjacentHTML('beforeend', `<div class="stack st-edextra">
+        ${head && prevRow ? `<button class="btn sm" value="headPrev">切り離した冒頭（${fmt(head.start)}〜${fmt(head.end)}）を前の字幕へ</button>` : ''}
+        ${tail && nextRow ? `<button class="btn sm" value="tailNext">切り離した末尾（${fmt(tail.start)}〜${fmt(tail.end)}）を次の字幕へ</button>` : ''}
+        <div class="row wrap">${prevRow ? '<button class="btn sm ghost" value="mergePrev">前の字幕と結合</button>' : ''}${nextRow ? '<button class="btn sm ghost" value="mergeNext">次の字幕と結合</button>' : ''}</div></div>`);
+    };
     draw();
     dlg.returnValue = '';
     dlg.onclose = async () => {
       if (editorPlayback?.dlg === dlg) { editorPlayback.cleanup?.(); editorPlayback = null; vid.pause(); playing = null; }
       try {
-        if (dlg.returnValue !== 'ok') return;
+        const rv = dlg.returnValue;
+        if (['headPrev','tailNext','mergePrev','mergeNext'].includes(rv)) { readText(); return await editNeighbourAction(rv, b, work, originalSegments, cutParts(), prevRow, nextRow); }
+        if (rv !== 'ok' && rv !== 'confirm') return;
         readText();
+        if (rv === 'confirm') { if (!work.segments.length) return; delete work.unconfirmed; work.sync = 'manual'; }
+        else if (JSON.stringify(work.segments) !== JSON.stringify(originalSegments)) delete work.unconfirmed;   // times moved by hand
         if (JSON.stringify(work) === JSON.stringify(b)) return;
         if (work.text !== b.text) delete work.asr;
         const nb = neighbourChanges();
+        const ov = JSON.stringify(work.segments) !== JSON.stringify(originalSegments) ? overlapsAfter(nb) : [];
         await run('編集', { blocks: [work, ...nb] });
-        if (nb.length) toast(`前後の行（${nb.length}行）の区間もつなげました（↶で戻せます）`, 2500);
+        if (ov.length) toast(`要確認：ほかの行と音声が重なっています（「${ov[0].text.slice(0, 24)}」${ov.length > 1 ? ` ほか${ov.length - 1}行` : ''}）。ほかの行は変更していません`, 6000);
+        else if (nb.length) toast(`境界を共有していた隣の行（${nb.length}行）もつなげました（↶で戻せます）`, 2500);
       } finally {
         if (onFinish && revision === routeRevision) setTimeout(onFinish,60);
       }
@@ -2865,6 +2990,51 @@ async function editorScreen(el, params, revision) {
     dlg.showModal();
   }
 
+  // 1.19.19: from the edit screen — give the cut-off start / end to the neighbouring line, or merge with it (one save, one undo)
+  async function editNeighbourAction(rv, b0, work, originalSegments, cuts, prevRow, nextRow) {
+    await new Promise((r) => setTimeout(r, 60)); await reload();
+    if (rv === 'mergePrev' || rv === 'mergeNext') {
+      const other = byId[(rv === 'mergePrev' ? prevRow : nextRow)?.id], cur = byId[b0.id];
+      if (!other || !cur) return toast('前後の行が見つかりません');
+      const list = rv === 'mergePrev' ? [other, {...cur, text:work.text, ja:work.ja}] : [{...cur, text:work.text, ja:work.ja}, other];
+      const m = ops.merge(list);
+      const half = list.some((x) => x.segments.length) && list.some((x) => !x.segments.length && (x.text || '').trim());
+      if (half) { m.unconfirmed = true; m.sync = 'estimated'; }
+      const segTxt = m.segments.length ? m.segments.map((g) => `${fmt(g.start)}〜${fmt(g.end)}`).join('・') : '音声なし';
+      const okP = confirmDialog({title: rv === 'mergePrev' ? '前の字幕と結合' : '次の字幕と結合',
+        body:`<p>${esc(m.text)}</p>${m.ja ? `<p class="small muted">訳：${esc(m.ja)}（訳の区切りを確認してください）</p>` : ''}<p class="small">音声：${segTxt} ${m.segments.length ? '<button type="button" class="btn xs" id="mgPlay">▶ 試聴</button>' : ''}</p>
+          ${half ? '<p class="warn-text small">片方の行には音声がありません。今の音声が結合後の全文をカバーしているか不明なので「要確認（一括仮割当・未確認）」として保存します。「音声を割当」の「前後を含めて再照合」で直せます。</p>' : ''}`, okLabel:'結合する'});
+      $('#mgPlay', $('#dialog'))?.addEventListener('click', () => { stopRescuePreview(); playBlock({segments:m.segments}); });
+      if (!(await okP) || revision !== routeRevision) return stopRescuePreview();
+      stopRescuePreview();
+      const order = set.order.slice(); const k = order.indexOf(list[0].id); order.splice(k, 2, m.id);
+      return run('結合', {blocks:[m, ...list.map((x) => ({...byId[x.id], deleted:true}))], order});
+    }
+    const head = rv === 'headPrev', cut = head ? cuts.head : cuts.tail, target = byId[(head ? prevRow : nextRow)?.id];
+    if (!cut || !target) return toast('移せる部分がありません');
+    const tg = head ? target.segments.at(-1) : target.segments[0];
+    const touching = tg && tg.sourceId === cut.sourceId && (head ? tg.end <= cut.start + .05 && cut.start - tg.end <= 1.5 : tg.start >= cut.end - .05 && tg.start - cut.end <= 1.5);
+    const others = blocks.filter((x) => isAssigned(x) && x.id !== target.id && x.id !== b0.id && x.segments.some((g) => g.sourceId === cut.sourceId && g.start < cut.end - .05 && g.end > cut.start + .05));
+    if (others.length) return toast(`その部分はほかの行（「${others[0].text.slice(0, 25)}」）と重なっています`, 5000);
+    const conn = touching ? (head ? {...tg, end:cut.end} : {...tg, start:cut.start}) : null;
+    const opts = target.segments.length ? (conn ? ['connect', 'replace'] : ['replace']) : ['assign'];
+    const label = {connect:`今の区間につなぐ（${conn ? `${fmt(conn.start)}〜${fmt(conn.end)}` : ''}）`, replace:`今の区間と置き換える（${fmt(cut.start)}〜${fmt(cut.end)}）`, assign:`この区間を割り当てる（${fmt(cut.start)}〜${fmt(cut.end)}）`};
+    const okP = confirmDialog({title: head ? '切り離した冒頭を前の字幕へ' : '切り離した末尾を次の字幕へ',
+      body:`<p class="small">移す音声：${fmt(cut.start)}〜${fmt(cut.end)} <button type="button" class="btn xs" id="mvPlay">▶ 試聴</button></p>
+        <p>移動先：「${esc(target.text.slice(0, 80))}」<br><span class="small muted">今の音声：${target.segments.length ? target.segments.map((g) => `${fmt(g.start)}〜${fmt(g.end)}`).join('・') : 'なし'}</span></p>
+        ${target.sync === 'manual' ? '<p class="warn-text small">移動先は手動で確定した行です。下の内容で変更します。</p>' : ''}
+        <div class="stack small">${opts.map((o, i) => `<label class="chk"><input type="radio" name="mvOpt" value="${o}" ${i === 0 ? 'checked' : ''}> ${label[o]}</label>`).join('')}</div>
+        <p class="small muted">移動先の全文をカバーしているかは分からないので、移動先は「一括仮割当・未確認」になります（確定は試聴後に）。この行の新しい区間と合わせて1回で保存・↶で戻せます。</p>`, okLabel:'移す'});
+    const dd = $('#dialog'); let pick = opts[0];
+    dd.querySelectorAll('[name=mvOpt]').forEach((r) => (r.onchange = () => { pick = r.value; }));
+    $('#mvPlay', dd)?.addEventListener('click', () => { stopRescuePreview(); playBlock({segments:[cut]}); });
+    if (!(await okP) || revision !== routeRevision) return stopRescuePreview();
+    stopRescuePreview();
+    const segs = pick === 'connect' ? target.segments.map((g) => (g === tg ? conn : g)) : [cut];
+    const tUp = {...target, segments:segs, sync:'estimated', unconfirmed:true, align:[], lineage:{op:'move-cut-part',from:[`${target.id}@${target.rev}`],at:Date.now()}};
+    const me = {...work, sync:'manual', align:[]}; delete me.unconfirmed;
+    return run(head ? '冒頭を前の字幕へ移動' : '末尾を次の字幕へ移動', {blocks:[me, tUp]});
+  }
   // ---------- proper nouns: list probable mis-hearings, the user confirms each one (with the sound), then one undoable replace ----------
   async function fixNames() {
     const dlg = $('#dialog'); await new Promise((r) => setTimeout(r, 60)); if (dlg.open) { dlg.onclose = null; dlg.close(); }
@@ -3594,7 +3764,7 @@ async function editorScreen(el, params, revision) {
     toast(`診断データを出力しました（${rows.length}行・重複候補${overlaps.length}組）。音声ファイルは含みません`, 4500);
   }
   // ---------- script ↔ audio: the transcription (with mistakes) gives the times, the script gives the text ----------
-  function scriptLines() { return set.order.map((id) => byId[id]).filter((b) => b && !b.segments.length && b.text.trim()); }
+  function scriptLines() { return set.order.map((id) => byId[id]).filter((b) => b && !b.segments.length && b.text.trim() && !isSymbolRow(b)); }
   async function runAlign({ afterAsr = 0, mode = "standard" } = {}) {
     const sl = scriptLines().filter(b => b.sync !== 'manual');
     if (!sl.length) return toast('音声の付いていないスクリプトの行がありません（「⋯」→「スクリプト・音声を追加」でテキストを入れます）', 4500);
@@ -3840,7 +4010,7 @@ async function editorScreen(el, params, revision) {
   $('#undoB', el).onclick = () => restoreEdit(undo,'元に戻しました：');
   $('#redoB', el).onclick = () => restoreEdit(redo,'やり直しました：');
   $('#selB', el).onclick = () => { selectMode = !selectMode; arrange = false; if (!selectMode) { sel.clear(); onlySel = false; } drawList(); };
-  $('#arrB', el).onclick = () => { arrange = !arrange; if (arrange) { arrangeBase = (set.undo || []).length; selectMode = false; sel.clear(); onlySel = false; vid.pause(); playing = null; } drawList(); };
+  $('#arrB', el).onclick = () => { const an = viewAnchor(); arrange = !arrange; if (arrange) { arrangeBase = (set.undo || []).length; selectMode = false; sel.clear(); onlySel = false; } drawList(); restoreViewAnchor(an, viewSwitchSerial); };
   $('#pp', el).onclick = () => {
     if (!vid.paused) return vid.pause();
     if (playing || playFromSourcePosition) {
@@ -3903,6 +4073,7 @@ async function editorScreen(el, params, revision) {
       ${Object.values(srcs).some((x) => x.audio?.count > 1 && x.derived !== 'audio16k') ? '<button class="btn" value="track">使う音声トラックを選ぶ</button>' : ''}
       ${Object.values(srcs).some((x) => x.stored && (x.derived !== 'audio16k' || x.codec === 'aac')) ? '<button class="btn" value="toaudio">容量を減らす（音声だけ・低音質に）</button>' : ''}
       <button class="btn" value="full">スクリプト全文を見る（抜け・重複の確認・範囲で削除）</button>
+      <button class="btn" value="bulkGap">単独の未割当行を一括で仮割り当て</button>
       <button class="btn" value="cutNoA">音声のないスクリプト行を削除</button>
       <button class="btn" value="cutNoS">スクリプトのない音声の行を削除</button>
       <button class="btn" value="dupset">この教材を複製</button>
@@ -3917,6 +4088,7 @@ async function editorScreen(el, params, revision) {
       if (v === 'exp') exportSet(set);
       if (v === 'send') sendToLab(set);
       if (v === 'full') fullText();
+      if (v === 'bulkGap') bulkGapTrial();
       if (v === 'cutNoA') bulkDel(blocks.filter((b) => !b.segments.length && b.text.trim()), '音声のないスクリプト行');
       if (v === 'cutNoS') bulkDel(blocks.filter((b) => b.segments.length && !b.aligned && (b.asr || !b.text.trim())), 'スクリプトのない音声の行（照合できなかった文字起こし・文字にできなかった部分）');
       if (v === 'dupset') dupSet();

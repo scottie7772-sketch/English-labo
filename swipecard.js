@@ -259,6 +259,7 @@ export function fc2Voice(root, speakFn) {
   // 1.17.10: the original recording first (when the same word / sentence is in a matched material), else the synthetic voice
   // 1.19.31: a word that has its own registered sound (word.audio) plays exactly that range first
   import('./word-audio.js').then((m) => { wa = m; return m.prepare(true); }).catch(() => {});
+  const tell = (m) => { if (m) import('./ui.js').then((u) => u.toast(m, 3500)).catch(() => {}); };   // 1.19.36: say why the synthetic voice is used
   const tts = (text, onEnd) => {
     try { const u = speakFn(text); if (u) { u.onstart = () => { unlocked = true; pending = null; }; if (onEnd) { u.onend = onEnd; u.onerror = onEnd; } } else onEnd?.(); }
     catch { onEnd?.(); /* the cards still work without sound */ }
@@ -275,15 +276,15 @@ export function fc2Voice(root, speakFn) {
     try { speechSynthesis.cancel(); } catch {}
     const ref = refOf(w, text);
     if (ref) {
-      const run = (m) => m.playRef(ref, { onEnd }).then((ok) => { if (ok) { unlocked = true; pending = null; } else if (my === seq) tts(text, onEnd); else onEnd?.(); });
+      const run = (m) => m.playRef(ref, { onEnd }).then((ok) => { if (ok) { unlocked = true; pending = null; } else if (my === seq) { tell(wa?.STATE_LABEL?.broken + '：合成音声で読み上げます'); tts(text, onEnd); } else onEnd?.(); });
       if (wa) return void run(wa);
       return void import('./word-audio.js').then((m) => { wa = m; if (my === seq) run(m); else onEnd?.(); }).catch(() => tts(text, onEnd));
     }
     if (wa && origOn() && !wa.ready() && !waited) {   // 1.18.6: the list of recordings is still loading: wait a moment instead of using TTS
       Promise.race([wa.prepare(), new Promise((r) => setTimeout(r, 2500))]).then(() => { if (my === seq) { seq--; say(text, { w, waited: true, onEnd }); } else onEnd?.(); }); return;
     }
-    if (wa?.has(text) && origOn()) { wa.play(text, { onEnd }).then((ok) => { if (ok) { unlocked = true; pending = null; } else if (my === seq) tts(text, onEnd); else onEnd?.(); }); return; }
-    wa?.stop(); tts(text, onEnd);
+    if (wa?.has(text) && origOn()) { wa.play(text, { onEnd }).then((ok) => { if (ok) { unlocked = true; pending = null; } else if (my === seq) { tell(wa.note(text, true)); tts(text, onEnd); } else onEnd?.(); }); return; }
+    wa?.stop(); if (wa && origOn()) tell(wa.note(text)); tts(text, onEnd);
   };
   // word, then the example (both from the registered sounds; the example only when it has its own sound)
   const both = (w, onEnd) => {

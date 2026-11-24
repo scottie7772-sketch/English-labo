@@ -58,7 +58,7 @@ export async function vocabList(el) {
       </div><p class="hint">未評価・判定保留は「未習得」に含まれます</p></div>
       <div class="fgrp"><span>タグ</span><select id="tag"><option value="">すべて</option>${tags.map((t) => `<option ${f.tag === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
       <div class="fgrp"><span>出元（登録元・教材）</span><select id="src"><option value="">すべて</option>${[...new Set(words.map(srcKey))].sort((a, b) => srcText(a).localeCompare(srcText(b), 'ja')).map((k) => `<option value="${esc(k)}" ${f.src === k ? 'selected' : ''}>${esc(srcText(k))}（${words.filter((w) => srcKey(w) === k).length}）</option>`).join('')}</select></div>
-      <div class="fgrp"><span>元の録音</span>${seg('au', [['all', 'すべて'], ['yes', 'あり'], ['no', 'なし（読み上げ）']], f.au || 'all')}</div>
+      <div class="fgrp"><span>元の録音</span>${seg('au', [['all', 'すべて'], ['yes', 'あり'], ['no', 'なし（読み上げ）'], ['bad', '参照切れ・未確定']], f.au || 'all')}</div>
       <div class="fgrp"><span>単語集</span><select id="deck"><option value="">すべて</option>${decks.map((d) => `<option value="${d.id}" ${f.deck === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
         <a href="#decks" class="link small">単語集を管理</a></div>
       <div class="fgrp"><span>並び順</span><select id="sort">${[['new', '新しい順'], ['old', '古い順'], ['abc', 'ABC順'], ['weak', '習得度が低い順'], ['src', '出元順']].map(([v, l]) => `<option value="${v}" ${f.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
@@ -89,6 +89,7 @@ export async function vocabList(el) {
       const hasA = Boolean(w.audio?.word?.state === 'confirmed') || wa?.has(w.headword);   // 1.19.31: a registered sound counts too
       if (f.au === 'yes' && !hasA) return false;
       if (f.au === 'no' && hasA) return false;
+      if (f.au === 'bad' && !['broken', 'unsure'].includes(wa?.status?.(w.headword, w))) return false;   // 1.19.36
       if (q) {
         const hay = (w.headword + ' ' + (w.senses || []).flatMap((s) => s.meanings || []).join(' ') + ' ' + srcText(srcKey(w)) + ' ' + (w.tags || []).join(' ')).toLowerCase();
         if (!hay.includes(q)) return false;
@@ -117,7 +118,7 @@ export async function vocabList(el) {
         ${sel ? `<input type="checkbox" class="wsel" data-sel="${w.id}" ${sel.has(w.id) ? 'checked' : ''} aria-label="選ぶ">` : ''}
         <a class="wmain" href="#word?id=${w.id}">
           <b class="tl">${esc(w.headword)}</b>${w.ipa && isZh(langOf(w)) ? `<span class="small muted"> ${esc(numToMarks(w.ipa))}</span>` : ''}${w.review === 'unverified' ? '<span class="tagp ai">未検証</span>' : ''}${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}${headCount[headKey(w.headword)] > 1 ? '<span class="tagp">多義</span>' : ''}${w.slim ? '<span class="tagp slim">軽量</span>' : ''}
-          <span class="mean">${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>${f.sort === 'src' || f.src || f.au !== 'all' ? `<small class="muted wsrc">${w.audio?.word?.state === 'confirmed' || wa?.has(w.headword) ? '🔊 ' : ''}${esc(srcText(srcKey(w)))}</small>` : ''}
+          <span class="mean">${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>${f.sort === 'src' || f.src || f.au !== 'all' ? `<small class="muted wsrc">${w.audio?.word?.state === 'confirmed' || wa?.has(w.headword) ? '🔊 ' : ''}${['broken', 'unsure'].includes(wa?.status?.(w.headword, w)) ? `⚠${wa.STATE_LABEL[wa.status(w.headword, w)]} ` : ''}${esc(srcText(srcKey(w)))}</small>` : ''}
         </a>
         <div class="wact">
           <button class="icon-btn spk" data-say="${esc(w.headword)}" aria-label="発音">${icon('speaker', 22)}</button>

@@ -213,7 +213,7 @@ export async function unusedRecordings() {
 export async function refBlob(src) {
   if (!src?.key) return null;
   try {
-    if (src.store === 'studio') { const { sdb } = await import('./studio-db.js'); return (await sdb.get('sources', src.key))?.blob || null; }
+    if (src.store === 'studio') { const { sdb } = await import('./studio-db.js'); const x = await sdb.get('sources', src.key); return x?.blob || (x?.labRef ? (await db.get('vblobs', x.labRef))?.blob : null) || null; }
     return (await db.get('vblobs', src.key))?.blob || null;
   } catch { return null; }
 }

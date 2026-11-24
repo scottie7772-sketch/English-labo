@@ -48,8 +48,8 @@ const section = (chapter, name, en, ja) => ({ name, data:{ chapter, items:[{en,j
 const c2 = section(2, 'MA/CHAPTER_02.json', 'The first team arrived at the station.', '最初の一団が駅に着きました。');
 const before = section('BEFORE', 'BEFORE_AFTER_CHAPTER_02.json', 'A long time ago they sailed together.', '昔、一緒に船に乗りました。');
 const c3 = section(3, 'CHAPTER_03.json', 'The door had already been closed.', 'その扉はすでに閉まっていました。');
-await saveFolderJa(empty.id, [c3,c2,before], false);
-await saveFolderJa(empty.id, [{...c2,name:'chapter_02.json',data:{...c2.data,items:[{...c2.data.items[0],ja:'最初の一団が駅に到着しました。'}]}}], true);
+assert.equal(await saveFolderJa(empty.id, [c3,c2,before], false), 3);
+assert.equal(await saveFolderJa(empty.id, [{...c2,name:'chapter_02.json',data:{...c2.data,items:[{...c2.data.items[0],ja:'最初の一団が駅に到着しました。'}]}}], true), 3);
 await renameStudioFolder(empty.id, 'Master & Apprentice');
 await assert.rejects(() => renameStudioFolder(empty.id, 'MA'), /同じ名前/);
 const renamed = (await studioFolders([])).find(folder => folder.id === empty.id);

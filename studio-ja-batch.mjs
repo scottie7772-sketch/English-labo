@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { deflateRawSync } from 'node:zlib';
 import { readStudioJaFiles, planStudioJa, studioJaView } from '../studio-ja.js';
 import { zipWrite } from '../common-pack.js';
 import { cueStamps, planJaWrites, studioJaPatch, videoJaView } from '../video-ja.js';
@@ -19,6 +20,32 @@ const file = new File([zip], 'chapters.zip');
 const sections = await readStudioJaFiles([file]);
 assert.deepEqual(sections.map(s => s.data.chapter),[2,5,'BEFORE',6,10,11,12,13]);
 assert.equal((await readStudioJaFiles(docs.map((d,i) => new File([JSON.stringify(d)],i+'.json')))).length,docs.length);
+assert.equal((await readStudioJaFiles([new File([zip], 'archive'), new File([JSON.stringify(docs[0])], 'chapter.txt')])).length,docs.length + 1);
+
+// Convert a one-member stored ZIP to a standard deflate ZIP without keeping a binary fixture.
+const stored = await zipWrite([{ name:'chapter.json', data:JSON.stringify(docs[0]) }]);
+const end = new DataView(await stored.slice(-22).arrayBuffer());
+const centralStart = end.getUint32(16,true);
+const central = new DataView(await stored.slice(centralStart,-22).arrayBuffer());
+const local = new DataView(await stored.slice(0,30 + central.getUint16(28,true)).arrayBuffer());
+const compressed = deflateRawSync(Buffer.from(JSON.stringify(docs[0])));
+local.setUint16(8,8,true);
+local.setUint32(18,compressed.length,true);
+central.setUint16(10,8,true);
+central.setUint32(20,compressed.length,true);
+end.setUint32(16,local.byteLength + compressed.length,true);
+const packed = new File([local.buffer,compressed,central.buffer,end.buffer], 'Archive.zip');
+const nativeDecoder = globalThis.DecompressionStream;
+try {
+  for (const decoder of [nativeDecoder, undefined, class { constructor() { throw TypeError('Unsupported format'); } }]) {
+    globalThis.DecompressionStream = decoder;
+    assert.deepEqual((await readStudioJaFiles([packed]))[0].data,docs[0]);
+  }
+} finally {
+  globalThis.DecompressionStream = nativeDecoder;
+}
+await assert.rejects(() => readStudioJaFiles([new File(['invalid'],'broken.zip')]), /broken\.zip.*ZIP/);
+await assert.rejects(() => readStudioJaFiles([new File(['{}'],'other.json')]), /other\.json.*英文と訳文/);
 const make = (texts) => texts.map((text,i) => ({ id:'c'+i,rev:3,text,segments:[{sourceId:'s',start:i,end:i+1}], aligned:true,
   sync:'manual', unconfirmed:true, boundary:{status:'checked'}, ja:'' }));
 const apply = (blocks, plan) => {

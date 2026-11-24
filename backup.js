@@ -1,5 +1,6 @@
 import { db, STORES, DB_VERSION, setMeta } from './db.js';
 import { effLevel } from './mastery.js';
+import { zipRead, zipWrite } from './common-pack.js';
 
 export const APP_ID = 'english-learning-lab';
 const EXCLUDE_FIELDS = { videos: ['blob', 'audioBlob'] }; // video files are too large for JSON
@@ -116,4 +117,87 @@ export async function exportJSON() {
 export async function exportCSV() {
   const stamp = new Date().toISOString().slice(0, 10);
   return saveFile(`ell-words-${stamp}.csv`, await wordsCSV(), 'text/csv');
+}
+
+// ---------------------------------------------------------------------------------------------
+// 1.19.33: full backup = ZIP with the JSON backup AND the media files (videos / audio in 'vblobs').
+// The JSON backup above leaves media out; this one keeps everything needed to rebuild the library.
+//   manifest.json  { format, formatVersion, app, createdAt, media:[{id,path,size,type,at}] }
+//   backup.json    same content as the JSON backup
+//   media/<n>.bin  raw media files
+// Saving is split in two taps on purpose (see saveFileNow): iPhone only opens the share sheet right after a tap.
+// ---------------------------------------------------------------------------------------------
+export const FULL_FORMAT = 'ell-full-backup';
+
+export async function buildFullBackupZip(onProgress) {
+  const backup = await buildBackup();
+  const keys = await db.keys('vblobs');
+  const media = [], files = [];
+  let total = 0;
+  for (const [i, key] of keys.entries()) {
+    onProgress?.({ phase: 'read', done: i, total: keys.length });
+    const rec = await db.get('vblobs', key);
+    const blob = rec?.blob;
+    if (!(blob?.size > 0)) continue;   // empty / broken record: nothing to save
+    total += blob.size;
+    if (total > 3.8 * 1024 ** 3) throw new Error('音声・動画の合計が大きすぎます（ZIPは約4GBまで）。容量の整理で不要な動画を消してから書き出してください。');
+    const path = `media/${media.length}.bin`;
+    media.push({ id: key, path, size: blob.size, type: blob.type || '', at: rec.at ?? null });
+    files.push({ name: path, data: blob });
+  }
+  const manifest = { format: FULL_FORMAT, formatVersion: 1, app: APP_ID, schemaVersion: DB_VERSION, createdAt: backup.exportedAt, media };
+  const zip = await zipWrite([
+    { name: 'manifest.json', data: JSON.stringify(manifest) },
+    { name: 'backup.json', data: JSON.stringify(backup) },
+    ...files,
+  ], (fraction) => onProgress?.({ phase: 'zip', fraction }));
+  const stamp = backup.exportedAt.slice(0, 16).replace(/[-:T]/g, '');
+  return { file: new File([zip], `ell-full-backup-${stamp}.zip`, { type: 'application/zip' }), backup, mediaCount: media.length, mediaBytes: total };
+}
+
+// Reads the ZIP and checks it. Nothing is changed in the app yet.
+export async function readFullBackupZip(file) {
+  const zip = await zipRead(file);
+  if (!zip.names.includes('manifest.json') || !zip.names.includes('backup.json')) throw new Error('完全バックアップのZIPではありません');
+  const manifest = JSON.parse(await zip.text('manifest.json'));
+  if (manifest?.format !== FULL_FORMAT) throw new Error('完全バックアップのZIPではありません');
+  if (manifest.formatVersion > 1) throw new Error('新しい形式のバックアップです。アプリを更新してください');
+  const backup = JSON.parse(await zip.text('backup.json'));
+  const missing = (manifest.media || []).filter((m) => !(zip.entrySize(m.path) > 0) || zip.entrySize(m.path) !== m.size);
+  if (missing.length) throw new Error(`ZIPの中の音声・動画が欠けています（${missing.length}件）。書き出し直してください`);
+  return { zip, manifest, backup };
+}
+
+// Restores the JSON part, then writes each media file back and reads it again to check it is really readable.
+export async function restoreFullBackup({ zip, manifest, backup }, onProgress) {
+  await restoreBackup(backup);
+  const failed = [];
+  let restored = 0;
+  for (const [i, m] of (manifest.media || []).entries()) {
+    onProgress?.({ done: i, total: manifest.media.length });
+    try {
+      const f = await zip.file(m.path);
+      const blob = f.slice(0, f.size, m.type || f.type);
+      await db.put('vblobs', { id: m.id, blob, size: blob.size, at: m.at ?? Date.now() });
+      const back = await db.get('vblobs', m.id);
+      if (back?.blob?.size !== m.size) throw new Error('read-back mismatch');
+      restored++;
+    } catch { failed.push(m.id); }
+  }
+  return { restored, failed };
+}
+
+// Call this DIRECTLY inside a click handler (no await before it). Share sheet -> "ファイルに保存"; otherwise a download link.
+export function saveFileNow(file) {
+  const download = () => {
+    const url = URL.createObjectURL(file);
+    const a = Object.assign(document.createElement('a'), { href: url, download: file.name });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    return 'downloaded';
+  };
+  if (navigator.canShare?.({ files: [file] })) {
+    return navigator.share({ files: [file], title: file.name }).then(() => 'shared', (e) => (e?.name === 'AbortError' ? 'cancelled' : download()));
+  }
+  return Promise.resolve(download());
 }

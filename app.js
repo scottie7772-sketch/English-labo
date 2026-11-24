@@ -1,4 +1,4 @@
-import { openDB, db, getSetting, setSetting, getMeta, uid, storageInfo, requestPersist, DB_VERSION } from './db.js';
+import { openDB, db, getSetting, setSetting, getMeta, setMeta, uid, storageInfo, requestPersist, DB_VERSION } from './db.js';
 import { $, esc, toast, confirmDialog } from './ui.js';
 import { seedIfNeeded, splitSeedIfNeeded } from './words.js';
 import { homeScreen, reviewScreen, grammarScreen, comingSoon } from './hub.js';
@@ -60,7 +60,7 @@ const LAZY = {
 for (const [file, map] of Object.entries(LAZY)) for (const [route, fn] of Object.entries(map)) screens[route] = async (el, params) => (await import(file))[fn](el, params);
 
 screens.settings = async (el) => {
-  const [{ getSwipe }, { exportJSON, exportCSV, validateBackup, restoreBackup, STORE_LABELS }] = await Promise.all([import('./quick.js'), import('./backup.js')]);
+  const [{ getSwipe }, { exportJSON, exportCSV, validateBackup, restoreBackup, STORE_LABELS, buildFullBackupZip, readFullBackupZip, restoreFullBackup, saveFileNow }] = await Promise.all([import('./quick.js'), import('./backup.js')]);
   const swipe = await getSwipe();
   const lastBackup = await getMeta('lastBackupAt', null);
   const st = await storageInfo();
@@ -90,10 +90,12 @@ screens.settings = async (el) => {
     <h2 class="sec">バックアップ</h2>
     <div class="card stack">
       <p class="muted">最終バックアップ: ${fmtDate(lastBackup)}</p>
-      <button class="btn primary" id="bk-json">JSONバックアップを保存</button>
-      <p class="hint">共有シートが開いたら「"ファイル"に保存」→ iCloud Drive を選ぶと安全です。動画ファイル本体は含まれません（字幕は含まれます）。</p>
-      <label class="btn" for="bk-file">バックアップから復元</label>
-      <input type="file" id="bk-file" accept=".json,application/json" hidden>
+      <button class="btn primary" id="bk-full">音声・動画つき完全バックアップ（ZIP）を作る</button>
+      <p class="hint" id="bk-full-st">教材（字幕・日本語訳）と音声・動画ファイルをまとめて1つのZIPにします。1回目のタップで準備、2回目のタップで共有シートが開くので「"ファイル"に保存」を選んでください。</p>
+      <button class="btn" id="bk-json">JSONバックアップを保存（軽量・音声なし）</button>
+      <p class="hint">共有シートが開いたら「"ファイル"に保存」→ iCloud Drive を選ぶと安全です。JSONには動画・音声ファイル本体は含まれません（字幕は含まれます）。</p>
+      <label class="btn" for="bk-file">バックアップから復元（JSON / ZIP）</label>
+      <input type="file" id="bk-file" accept=".json,.zip,application/json,application/zip" hidden>
       <button class="btn" id="bk-csv">単語一覧をCSVで書き出し</button>
     </div>
 
@@ -125,12 +127,40 @@ screens.settings = async (el) => {
     try { const r = await exportJSON(); if (r !== 'cancelled') { toast('バックアップを作成しました'); render(); } }
     catch (e) { toast('失敗: ' + e.message); }
   };
+  // 1.19.33: full backup. Tap 1 builds the ZIP in memory; tap 2 opens the share sheet right inside the tap (iPhone requirement).
+  let preparedZip = null;
+  $('#bk-full', el).onclick = async (e) => {
+    const btn = e.currentTarget, status = $('#bk-full-st', el);
+    if (preparedZip) {
+      const file = preparedZip;
+      const r = await saveFileNow(file);   // no await before this line
+      if (r === 'cancelled') { status.textContent = '保存をキャンセルしました。もう一度タップすると共有シートを開きます。'; return; }
+      preparedZip = null; btn.textContent = '音声・動画つき完全バックアップ（ZIP）を作る';
+      await setMeta('lastBackupAt', Date.now());
+      status.textContent = (r === 'shared' ? '共有しました: ' : 'ダウンロードしました: ') + file.name + '（「ファイル」アプリで確認してください）';
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const out = await buildFullBackupZip((p) => {
+        status.textContent = p.phase === 'read' ? `音声・動画を読み込み中… ${p.done}/${p.total}` : `ZIPを作成中… ${Math.floor((p.fraction || 0) * 100)}%`;
+      });
+      preparedZip = out.file;
+      btn.textContent = `ファイルに保存（${fmtBytes(out.file.size)}）をタップ`;
+      status.textContent = `準備完了: 音声・動画 ${out.mediaCount}件。もう一度ボタンをタップすると共有シートが開きます。`;
+    } catch (err) { status.textContent = '失敗: ' + err.message; }
+    finally { btn.disabled = false; }
+  };
   $('#bk-csv', el).onclick = async () => { try { await exportCSV(); } catch (e) { toast('失敗: ' + e.message); } };
   $('#bk-file', el).onchange = async (e) => {
     const f = e.target.files[0]; e.target.value = '';
     if (!f) return;
-    let obj;
-    try { obj = JSON.parse(await f.text()); } catch { return toast('JSONとして読み込めませんでした'); }
+    let obj, full = null;
+    if (/\.zip$/i.test(f.name)) {
+      try { full = await readFullBackupZip(f); obj = full.backup; } catch (err) { return toast('ZIPを読み込めませんでした: ' + err.message); }
+    } else {
+      try { obj = JSON.parse(await f.text()); } catch { return toast('JSONとして読み込めませんでした'); }
+    }
     const v = validateBackup(obj);
     if (!v.ok) {
       return confirmDialog({ title: '復元できません', body: `<ul class="errs">${v.errors.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`, okLabel: '閉じる' });
@@ -143,7 +173,13 @@ screens.settings = async (el) => {
       okLabel: '置き換える', danger: true,
     });
     if (!ok) return;
-    try { await restoreBackup(v.backup); toast('復元しました'); render(); }
+    try {
+      if (full) {
+        const r = await restoreFullBackup(full, (p) => toast(`音声・動画を復元中… ${p.done}/${p.total}`, 4000));
+        toast(r.failed.length ? `復元しました（音声・動画 ${r.failed.length}件は戻せませんでした）` : `復元しました（音声・動画 ${r.restored}件）`);
+      } else { await restoreBackup(v.backup); toast('復元しました'); }
+      render();
+    }
     catch (err) { toast('復元に失敗: ' + err.message); }
   };
   $('#persist', el)?.addEventListener('click', async () => {

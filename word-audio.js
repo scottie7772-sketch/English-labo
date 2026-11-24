@@ -7,24 +7,26 @@ import { db } from './db.js';
 export const norm = (t) => String(t || '').toLowerCase().replace(/^\s*(no\.?\s*)?\d+[.):：]?\s+/, '').replace(/[’‘`]/g, "'").replace(/[“”"]/g, '').replace(/\s*[×x✕*]\s*\d+\s*$/i, '')
   .replace(/[^a-z0-9' -]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^'+|'+$/g, '');
 
-let index = null, loading = null, builtAt = 0;
+let index = null, loading = null, builtAt = 0, soft = new Set();   // soft: text that exists only as a guessed / unconfirmed range
 // text → { from: 'studio'|'lab', id: file id, start, end, kind }
 async function build() {
-  const m = new Map();
+  const m = new Map(), srcOk = new Set(), sf = new Set();
+  let labKeys = new Set(); try { labKeys = new Set(await db.keys('vblobs')); } catch {}
   const put = (text, e) => { const k = norm(text); if (!k || k.length > 300) return; const o = m.get(k);
     // prefer: a line made for the word (kind word) > matched to a script > a subtitle
-    const score = (x) => (x.kind === 'word' ? 3 : 0) + (x.aligned ? 2 : 0) + (x.from === 'studio' ? 1 : 0);
+    const score = (x) => (x.ok ? 8 : 0) + (x.kind === 'word' ? 3 : 0) + (x.aligned ? 2 : 0) + (x.from === 'studio' ? 1 : 0);
     if (!o || score(e) > score(o)) m.set(k, e); };
   try {
     const { sdb } = await import('./studio-db.js');
     const raw = (n) => sdb.all(n);
+    for (const x of await raw('sources')) if (x.blob || (x.labRef && labKeys.has(x.labRef))) srcOk.add(x.id);
     const sets = await raw('sets'); const live = new Set(sets.flatMap((s) => s.order || []));
     for (const b of await raw('blocks')) {
-      if (b.deleted || !live.has(b.id) || !b.text || b.segments?.length !== 1) continue;
-      if (b.asr && !b.aligned) continue;   // a rough transcript is not the right text
-      if (b.sync === 'estimated' && !b.kind) continue;   // time only guessed
+      if (b.deleted || !live.has(b.id) || !b.text || !b.segments?.length) continue;   // 1.19.36: a repeated example (several segments) plays its first reading
+      if (b.asr && !b.aligned) { sf.add(norm(b.text)); continue; }   // a rough transcript is not the right text
+      if (b.unconfirmed || b.sync === 'estimated') { sf.add(norm(b.text)); continue; }   // time only guessed
       const g = b.segments[0]; if (!(g.end > g.start)) continue;
-      put(b.text, { from: 'studio', id: g.sourceId, start: g.start, end: g.end, kind: b.kind || '', aligned: !!b.aligned });
+      put(b.text, { from: 'studio', id: g.sourceId, start: g.start, end: g.end, kind: b.kind || '', aligned: !!b.aligned, ok: srcOk.has(g.sourceId) });
     }
   } catch { /* no studio data */ }
   try {
@@ -32,11 +34,15 @@ async function build() {
     const byId = new Map((await db.all('videos')).map((v) => [v.id, v]));
     for (const c of await db.all('cues')) {
       const v = byId.get(c.videoId), text = c.en || c.text;
-      if (!v || v.kind === 'multi' || !text || !(c.end > c.start) || c.sync === 'estimated') continue;   // a guessed time is not used
-      put(text, { from: 'lab', id: v.mediaRef || v.id, start: c.start, end: c.end, kind: c.role || c.kind || '' });
+      if (!v || v.kind === 'multi' || !text) continue;
+      if (c.sync === 'estimated') { sf.add(norm(text)); continue; }   // a guessed time is not used
+      const g = c.segments?.[0] || c; if (!(g.end > g.start)) continue;   // repeats: the first reading
+      const key = [v.id, v.mediaRef].find((k) => k && labKeys.has(k)) || (v.blob ? v.id : null);
+      put(text, { from: 'lab', id: key || v.mediaRef || v.id, start: g.start, end: g.end, kind: c.role || c.kind || '', ok: !!key });
     }
   } catch { /* no lab data */ }
-  index = m; near.clear(); builtAt = Date.now(); return m;
+  for (const k of sf) if (m.has(k)) sf.delete(k);
+  soft = sf; index = m; near.clear(); builtAt = Date.now(); return m;
 }
 // load (again) — called when a card session starts; cheap enough to rebuild each time (text only)
 export function prepare(force = false) {
@@ -155,15 +161,31 @@ export async function playWord(w, kind = 'word', opts = {}) {
   const ref = wordAudio(w, kind);
   return ref ? playRef(ref, opts) : false;
 }
+async function entryBlob(e) {
+  if (e.from === 'studio') {
+    const { sdb } = await import('./studio-db.js'); const src = await sdb.get('sources', e.id);
+    return src?.blob || (src?.labRef ? (await db.get('vblobs', src.labRef))?.blob : null) || null;   // a studio file shared with the Lab is kept once, in vblobs
+  }
+  return (await db.get('vblobs', e.id))?.blob || (await db.get('videos', e.id))?.blob || null;
+}
+// Why a word has / has not an original sound (never switch to the synthetic voice without a reason the person can see)
+export const STATE_LABEL = { orig: '元音声あり', tts: '合成音声のみ', broken: '音声参照切れ', unsure: '音声区間未確定' };
+export function status(text, w = null) {
+  const r = w?.audio?.word || w?.audio?.example;
+  if (r && r.state !== 'confirmed') return 'unsure';
+  const e = lookup(text);
+  if (!e) return r ? 'broken' : soft.has(norm(text)) ? 'unsure' : 'tts';
+  return e.ok === false ? 'broken' : 'orig';
+}
+export const note = (text, failed = false) => {
+  const st = failed ? 'broken' : status(text); return st === 'orig' || st === 'tts' && !failed ? '' : STATE_LABEL[st] + '：合成音声で読み上げます';
+};
 // play the original sound of `text`; resolves true when it plays, false when there is none (use TTS then)
 export async function play(text, { onEnd = null } = {}) {
-  let e = find(text); if (!e) return false;
+  let e = find(text); if (!e || e.ok === false) return false;   // the recording is gone: the caller says so and uses the synthetic voice
   try {
     if (e.line) e = await refine(e);
-    const ok = await playRange(e.from + ':' + e.id, async () => {
-      if (e.from === 'studio') { const { sdb } = await import('./studio-db.js'); return (await sdb.get('sources', e.id))?.blob || null; }
-      return (await db.get('vblobs', e.id))?.blob || (await db.get('videos', e.id))?.blob || null;
-    }, e.start, e.end);
+    const ok = await playRange(e.from + ':' + e.id, () => entryBlob(e), e.start, e.end);
     if (ok) onDone = onEnd;
     return ok;
   } catch { return false; }

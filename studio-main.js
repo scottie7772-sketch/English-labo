@@ -23,9 +23,10 @@ import { isSymbolRow, needsWork, wordCount, planBulkGaps, rangePieces, keepInPie
 import { alignUtterances } from './studio-import-align.js';
 import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange, chooseTrack, mp4Audio } from './media-probe.js';
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
+import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.25';
+export const STUDIO_VERSION = '0.21.26';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -352,6 +353,8 @@ async function setsScreen(el, params, revision) {
       ...(members.length ? publish : []),
       ['io','教材パック（読み込み・書き出し）'],
       ['register','英日対応データを登録・追加・更新'],
+      ['kfScript','金フレ全体スクリプトを登録・差し替え'],
+      ...(members.length ? [['kfLocate','金フレ範囲を自動特定（フォルダ内すべて）']] : []),
       ...(corpus?.sections.length && members.length ? [['apply','日本語訳を一括照合'],['missing','未割当の訳だけ照合']] : []),
       ...(members.length ? [['review','照合結果を確認']] : []),
       ['rename','フォルダ名を変更'], ...(members.length > 1 ? [['sort','教材を並べ替え'],['merge','このフォルダの音声をまとめて照合']] : []),
@@ -362,7 +365,11 @@ async function setsScreen(el, params, revision) {
     const ids = members.map(set => set.id);
     if (action === 'open') return nav(folderPath(folder));
     if (action === 'io') return nav('io?folder=' + encodeURIComponent(folder.id));
-    if (action === 'register') {
+    if (action === 'kfScript') {
+      await kfRegisterScript({ folderId: folder.id, folderName: folder.name });
+    } else if (action === 'kfLocate') {
+      await kfLocateFlow({ folderId: folder.id, folderName: folder.name, members, onDone: () => revision === routeRevision && route() });
+    } else if (action === 'register') {
       nav(folderJaPath(folder));
     } else if (action === 'apply' || action === 'missing') {
       await applyStudioJa(ids, corpus.sections, refreshFolderProgress, { missingOnly: action === 'missing' });
@@ -1334,6 +1341,28 @@ async function editorScreen(el, params, revision) {
     const desiredOffset = distance === 0 ? anchor.offset : 0;
     window.scrollBy({top: target.getBoundingClientRect().top - stickyBottom - desiredOffset, behavior: 'instant'});
   };
+  // 1.19.29: window for long lists (see drawList) and goNear (it was used but never defined since 1.19.19)
+  const WIN = 300, WIN_MAX = 600;
+  let listFrom = 0, lastShown = [];
+  const goNear = (id) => {
+    if (!id) return;
+    const k = set.order.indexOf(id);
+    if (k < 0) return;
+    if (lastShown.length > WIN_MAX) {
+      let at = lastShown.findIndex((b) => b.id === id);
+      if (at < 0) { const rank = (x) => set.order.indexOf(x.id); at = Math.max(0, lastShown.findIndex((b) => rank(b) >= k)); }
+      if (at < listFrom || at >= listFrom + WIN) { listFrom = Math.max(0, at - WIN / 2); drawList(); }
+    }
+    const lim = (el.querySelector('.st-stick')?.getBoundingClientRect().bottom || 0) + 8;
+    let best = null, bd = Infinity;
+    for (const node of list.querySelectorAll('.st-row[data-id], .st-fold1[data-oid]')) {
+      const kk = set.order.indexOf(node.dataset.id || node.dataset.oid);
+      if (kk < 0) continue;
+      const d = Math.abs(kk - k) + (kk < k ? 0.5 : 0);
+      if (d < bd) { bd = d; best = node; }
+    }
+    if (best) window.scrollBy({ top: best.getBoundingClientRect().top - lim, behavior: 'instant' });
+  };
   const setView = (v) => {
     const anchor = viewAnchor();
     // While playing, use the audio clock as the navigation anchor, not the
@@ -1588,6 +1617,10 @@ async function editorScreen(el, params, revision) {
     }
     if (lastHighlightedRow?.isConnected) lastHighlightedRow.classList.remove('cur');
     let row = b ? Array.from(list.querySelectorAll('.st-row')).find(r => r.dataset.id === b.id) : null;
+    if (!row && b && lastShown.length > WIN_MAX) {
+      const at = lastShown.findIndex(x => x.id === b.id);
+      if (at >= 0 && (at < listFrom || at >= listFrom + WIN)) { listFrom = Math.max(0, at - WIN / 4); drawList(); row = Array.from(list.querySelectorAll('.st-row')).find(r => r.dataset.id === b.id); }
+    }
     if (!row && b && view === 'todo') {
       const at = set.order.indexOf(b.id);
       const folds = Array.from(list.querySelectorAll('.st-fold1[data-oid]'));
@@ -1717,7 +1750,13 @@ async function editorScreen(el, params, revision) {
     list.classList.toggle('arranging', arrange);
     const firstBySource = new Map();
     for (const b of blocks) for (const g of b.segments) if (!firstBySource.has(g.sourceId)) firstBySource.set(g.sourceId,b.id);
-    list.innerHTML = shown.map((b) => (folds.has(b.id) ? foldHTML(folds.get(b.id)) : '') + (() => {
+    // 1.19.29: very long lists (a whole 金フレ script) draw only a window of rows; the rest is one tap away
+    lastShown = shown;
+    const windowed = shown.length > WIN_MAX;
+    listFrom = windowed ? Math.max(0, Math.min(listFrom, shown.length - WIN)) : 0;
+    const rowsShown = windowed ? shown.slice(listFrom, listFrom + WIN) : shown;
+    const winBar = (dir, n) => `<div class="notice row small st-winbar"><span class="grow">${dir < 0 ? '前' : '後'}に ${n}行（全${shown.length}行のうち ${listFrom + 1}〜${listFrom + rowsShown.length} を表示中）</span><button class="btn sm" data-win="${dir}">${dir < 0 ? '前の' : '次の'}${Math.min(WIN / 2, n)}行を表示</button></div>`;
+    list.innerHTML = (windowed && listFrom > 0 ? winBar(-1, listFrom) : '') + rowsShown.map((b) => (folds.has(b.id) ? foldHTML(folds.get(b.id)) : '') + (() => {
       const badges = [b.segments.length > 1 ? `<span class="tagp">${b.segments.length}区間</span>` : '', new Set(b.segments.map((s) => s.sourceId)).size > 1 ? '<span class="tagp">複数ファイル</span>' : '',
         b.unconfirmed ? '<span class="tagp warn">一括仮割当・未確認</span>' : b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', overlap.has(b.id) ? `<span class="tagp warn" title="前の行と音声が重なっています。✎で開始を動かすと前の行の終わりも合わせて動きます">前と${overlap.get(b.id)}秒重なり</span>` : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', !b.segments.length && !isSymbolRow(b) ? '<span class="tagp">音声未割当</span>' : ''].join('');
       const sourceStart = [...firstBySource].filter(([sid,id])=>id===b.id).map(([sid])=>`<div class="st-source-boundary">音声開始：${esc(srcs[sid]?.name||'音声ファイル')} <button type="button" class="btn sm ghost" data-source-row="${esc(sid)}" data-row="${esc(b.id)}">位置へ</button></div>`).join('');
@@ -1728,7 +1767,7 @@ async function editorScreen(el, params, revision) {
             `<button type="button" class="link small warn-text" data-ja-edit="${esc(b.id)}">訳を要確認</button>` :
             '<span class="small warn-text">訳を要確認</span>') : ''}</span>
         ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `${!b.segments.length && b.text.trim() && !isSymbolRow(b) ? `<button type="button" class="btn xs ghost" data-rescue="${b.id}">音声を割当</button>` : ''}${(b.sync === 'estimated' || b.unconfirmed) && b.segments.length ? `<button type="button" class="btn xs ghost" data-confirm-row="${b.id}" title="試聴した時刻のまま確定">確定</button>` : ''}${b.sync === 'estimated' && b.segments.length && !b.unconfirmed ? `<button type="button" class="btn xs ghost" data-reestimate="${b.id}">前後から再推定</button>` : ''}<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
-    })()).join('') + (folds.has('__end') ? foldHTML(folds.get('__end')) : '') || `<p class="empty">${filtering ? (view === 'done' ? '照合済みの行はまだありません' : view === 'rest' ? '残っている文字起こしはありません' : '未照合の行はありません（すべて照合済み）') : '項目がありません'}</p>`;
+    })()).join('') + (folds.has('__end') ? foldHTML(folds.get('__end')) : '') + (windowed && listFrom + WIN < shown.length ? winBar(1, shown.length - listFrom - WIN) : '') || `<p class="empty">${filtering ? (view === 'done' ? '照合済みの行はまだありません' : view === 'rest' ? '残っている文字起こしはありません' : '未照合の行はありません（すべて照合済み）') : '項目がありません'}</p>`;
     if (filtering && view === 'rest' && shown.length) {
       list.insertAdjacentHTML('afterbegin', `<div class="notice row small"><span class="grow">スクリプトと照合できなかった文字起こし・文字にできなかった部分：${shown.length}行</span><button class="btn sm" id="restRedo">起こし直す→照合</button><button class="btn sm danger" id="restDel">すべて削除</button></div>`);
       $('#restRedo', list).onclick = () => redoAsr(shown, { thenAlign: true });
@@ -1744,6 +1783,7 @@ async function editorScreen(el, params, revision) {
     $$('[data-confirm-row]', list).forEach(x => x.onclick = (e) => { e.stopPropagation(); confirmRow(x.dataset.confirmRow); });
     $$('[data-source-row]', list).forEach(x=>x.onclick=()=>{const b=byId[x.dataset.row];jumpToSource(x.dataset.sourceRow,b?.segments.find(g=>g.sourceId===x.dataset.sourceRow)?.start||0,b?.id);});
     $$('[data-unfold]', list).forEach((x) => (x.onclick = () => { const id = x.dataset.oid; setView('all'); goNear(id); }));
+    $$('[data-win]', list).forEach((x) => (x.onclick = () => { const an = viewAnchor(); listFrom += Number(x.dataset.win) * (WIN / 2); drawList(); restoreViewAnchor(an, viewSwitchSerial); }));
     $('#undoB', el).disabled = !(set.undo || []).length; $('#redoB', el).disabled = !(set.redo || []).length;
     const nScript = scriptLines().length, nAudio = blocks.filter((b) => b.segments.length && !b.aligned).length;
     $('#alignNote', el).innerHTML = nScript && nAudio && !selectMode && !arrange ? `<div class="notice row small"><span class="grow">音声の付いていないスクリプトが${nScript}行あります。</span><button class="btn sm primary" id="alignGo">文字起こし→照合</button></div>` : '';
@@ -1799,7 +1839,7 @@ async function editorScreen(el, params, revision) {
         <button class="btn sm" data-a="done">完了</button></div>`;
     $('#rAdd', bar).onclick = () => { rangeMode = rangeMode === 'add' ? null : 'add'; anchor = null; drawBar(); };
     $('#rRem', bar).onclick = () => { rangeMode = rangeMode === 'remove' ? null : 'remove'; anchor = null; drawBar(); };
-    $('#sAll', bar).onclick = () => { list.querySelectorAll('.st-row[data-id]').forEach((row) => sel.add(row.dataset.id)); drawList(); };
+    $('#sAll', bar).onclick = () => { (lastShown.length ? lastShown.map((b) => b.id) : [...list.querySelectorAll('.st-row[data-id]')].map((row) => row.dataset.id)).forEach((id) => sel.add(id)); drawList(); };
     $('#sNone', bar).onclick = () => { sel.clear(); onlySel = false; drawList(); };
     $('#sOnly', bar).onclick = () => { onlySel = !onlySel; drawList(); };
     $$('[data-a]', bar).forEach((b) => (b.onclick = () => action(b.dataset.a)));
@@ -2212,6 +2252,17 @@ async function editorScreen(el, params, revision) {
     const evidence = ordered.filter(b => b.asr && !b.aligned && b.sync !== 'manual' && b.segments.length === 1)
       .map(b => ({...b.segments[0], text:b.text, rawId:b.id, rawRev:b.rev, estimated:b.sync === 'estimated' || b.asrBoundaryEstimated === true}));
     return {rows, occupied, evidence};
+  }
+
+  // 1.19.29: find which part of the folder's whole 金フレ script this audio holds, and keep only that part in the material
+  async function kfEditorRange() {
+    if (!set.folder) return toast('先にこの教材をフォルダに入れてください（全体スクリプトはフォルダごとに1つ登録します）', 5000);
+    const folder = await createStudioFolder(set.folder);
+    const all = (await sdb.all('sets')).filter((x) => x.folder === set.folder);
+    const members = folderMembers(all, folder);
+    const self = members.find((x) => x.id === set.id) || set;
+    await kfLocateFlow({ folderId: folder.id, folderName: folder.name, members: members.length ? members : [self], targets: [members.find((x) => x.id === set.id) || self],
+      registerFrom: set, onDone: async () => { await reload(); drawList(); drawSub(); } });
   }
 
   async function previewVocabAlignment(targets = null, local = null) {
@@ -4429,6 +4480,7 @@ async function editorScreen(el, params, revision) {
       <button class="btn" value="add">スクリプトを直接追加</button>
       <button class="btn" value="addMedia">音声・動画を追加</button>
       <button class="btn" value="align">スクリプトと照合</button>
+      <button class="btn" value="kfRange">金フレ型：スクリプトの範囲を特定（全体スクリプトから）</button>
       <button class="btn" value="alignVocab">金フレ型：既存ASRと照合</button>
       <button class="btn" value="alignProse">朗読・会話向け：緩めのスクリプト照合（試験版）</button>
       <button class="btn" value="maBoundary">MA型の音声境界を検査</button>
@@ -4492,6 +4544,7 @@ async function editorScreen(el, params, revision) {
       if (v === 'add') nav(`import?to=${set.id}&script=1`);
       if (v === 'addMedia') nav(`import?to=${set.id}`);
       if (v === 'align') runAlign();
+      if (v === 'kfRange') kfEditorRange();
       if (v === 'alignVocab') previewVocabAlignment();
       if (v === 'alignProse') runAlign({ mode: 'prose' });
       if (v === 'maBoundary') inspectMaBoundaries();
@@ -4543,6 +4596,11 @@ async function wordsScreen(el, params) {
   const items = blocks.map((b) => ({ text: b.text, ja: b.ja }));
   let mode = localStorage.getItem('st-wmode') || 'phrase', hideBasic = true, showCommon = false, sort = 'order';
   const chosen = new Set();
+  // 1.19.29: does each word / example already have its original sound? (the Lab plays it by the same text)
+  const nk = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const lineOf = new Map(); for (const b of blocks) if (b.text && !b.asr) { const k = nk(b.text); if (k && (!lineOf.has(k) || (b.segments.length && !lineOf.get(k).segments.length))) lineOf.set(k, b); }
+  const soundOf = (text) => { const b = lineOf.get(nk(text)); return !b ? '？' : !b.segments.length ? '未割当' : (b.sync === 'estimated' || b.unconfirmed) ? '区間未確定' : '元音声あり'; };
+  const soundNote = (x) => { const h = soundOf(x.head), e = x.ex && x.ex !== x.head ? soundOf(x.ex) : null, bad = (v) => v !== '元音声あり'; return `<small class="${bad(h) || (e && bad(e)) ? 'warn-text' : 'muted'}">${h === '？' && (!e || e === '？') ? '' : `見出し：${h}${e ? `／例文：${e}` : ''}`}</small>`; };
   const draw = () => {
     let list;
     if (mode === 'phrase') {
@@ -4566,7 +4624,7 @@ async function wordsScreen(el, params) {
       <p class="hint">人名・地名（文の途中の大文字）、短縮形（I'm など）、数字は外しています。変化形（-s / -ed / -ing）は1つにまとめています。</p>` :
       '<p class="hint">「Refer to. Please refer to the map.」のように、短い見出しのすぐ後にその語を使った例文がある所を熟語として取り出します。見出しのない会話文は対象外です。</p>'}
       <div class="row"><button class="btn sm" id="wAll">表示中をすべて選ぶ</button><button class="btn sm" id="wNone">選択を解除</button></div>
-      <div class="card list">${list.map((x) => `<label class="st-wrow"><input type="checkbox" data-w="${esc(x.key)}" ${chosen.has(x.key) ? 'checked' : ''}><span class="grow"><b>${esc(x.head)}</b><br><small class="muted">${esc(x.sub || '')}</small></span></label>`).join('') || `<p class="empty">${blocks.some((b) => b.text) ? (mode === 'phrase' ? '熟語の見出しが見つかりませんでした。「単語」に切り替えてください。' : '該当する語がありません') : '英文がありません。先に文字起こしか字幕の取り込みをしてください。'}</p>`}</div>
+      <div class="card list">${list.map((x) => `<label class="st-wrow"><input type="checkbox" data-w="${esc(x.key)}" ${chosen.has(x.key) ? 'checked' : ''}><span class="grow"><b>${esc(x.head)}</b><br><small class="muted">${esc(x.sub || '')}</small><br>${soundNote(x)}</span></label>`).join('') || `<p class="empty">${blocks.some((b) => b.text) ? (mode === 'phrase' ? '熟語の見出しが見つかりませんでした。「単語」に切り替えてください。' : '該当する語がありません') : '英文がありません。先に文字起こしか字幕の取り込みをしてください。'}</p>`}</div>
       <div class="st-bar"><div class="row">
         <button class="btn sm grow" id="csv">CSVで書き出す</button>
         <button class="btn sm grow" id="cl">Claude用にコピー</button></div>
@@ -4879,7 +4937,7 @@ const CONTENTS = { both: '音声＋英日字幕（英語・日本語訳）', scr
 const contentsPref = () => { try { const v = localStorage.getItem('st-contents'); return CONTENTS[v] ? v : 'both'; } catch { return 'both'; } };
 const contentsHTML = (v = contentsPref()) => `<div class="stack small"><b>含める内容</b>${Object.entries(CONTENTS).map(([k, t]) => `<label class="chk"><input type="radio" name="stContents" value="${k}" ${k === v ? 'checked' : ''}> ${t}</label>`).join('')}</div>`;
 const readContents = () => { const v = document.querySelector('#dialog input[name=stContents]:checked')?.value || contentsPref(); try { localStorage.setItem('st-contents', v); } catch {} return v; };
-async function buildMaterial(set, { contents = 'both' } = {}) {
+export async function buildMaterial(set, { contents = 'both' } = {}) {
   const blocks = await liveBlocks(set);
   const media = [];
   for (const id of new Set(blocks.filter(b => b.text || b.ja || (contents === 'audio' && b.segments.length)).flatMap(b => b.segments.map(s => s.sourceId)))) {

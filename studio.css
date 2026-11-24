@@ -73,9 +73,7 @@ body.studio main { padding-bottom: 20px; }
 .st-wd { border: 1px solid var(--line); background: transparent; color: inherit; border-radius: 8px; padding: 6px 8px; font-size: 16px; }
 .st-wd.cut { background: var(--accent, #4a7bd0); color: #fff; box-shadow: -4px 0 0 #e5534b; }
 .st-wd:disabled { opacity: 0.5; }
-.st-folderrow { display: flex; align-items: center; gap: 8px; }
-.st-folderlink { display: block; min-width: 0; padding: 4px 0; color: inherit; text-decoration: none; -webkit-touch-callout: none; user-select: none; overflow-wrap: anywhere; }
-.st-foldermenu { flex: 0 0 auto; }
+.st-folderrow { display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; }
 .st-folderrow small { display: block; margin-top: 3px; }
 .arranging, .arranging * { -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none; }   /* 結合・移動: no text selection */
 
@@ -161,13 +159,3 @@ body:has(#main .st-band) .st-log {
 .st-row .st-txt > small.muted::-webkit-scrollbar { display: none; }
 .st-row .st-txt > small.muted .tagp { flex: none; font-size: 10px; padding: 0 5px; line-height: 1.55; margin: 0; }
 .st-edextra { border-top: 1px solid rgba(255,255,255,.08); padding-top: 8px; gap: 6px; }
-
-/* Studio home and action menus: avoid shrinking Japanese labels on phones. */
-.st-home-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; align-items:stretch; }
-.st-home-actions > .btn { min-width:0; width:100%; height:auto; white-space:normal; text-align:center; overflow-wrap:break-word; }
-.st-home-actions > .btn:first-child { grid-column:1/-1; }
-.st-action-dialog { min-width:0; max-width:100%; overflow-wrap:break-word; }
-.st-dialog-actions { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }
-.st-dialog-actions > .btn { width:100%; min-width:0; height:auto; white-space:normal; text-align:center; }
-.st-action-dialog:has(.st-dialog-actions > button[value="close"], .st-dialog-actions > button[value="cancel"]) > .dlg-global-close { display:none; }
-@media (max-width:350px) { .st-home-actions { grid-template-columns:minmax(0,1fr); } }

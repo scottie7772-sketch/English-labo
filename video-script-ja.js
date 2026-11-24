@@ -1,5 +1,5 @@
 // Match only complete consecutive spans. The output contains cue IDs and Japanese text.
-export const normalizeScriptJa = text => text.normalize('NFKC').toLowerCase()
+const normalize = text => text.normalize('NFKC').toLowerCase()
   .replace(/[’‘ʼ]/g, "'").match(/[\p{L}\p{N}]+(?:'[\p{L}\p{N}]+)*/gu)?.join(' ') || '';
 const chapterKey = value => {
   const label = String(value ?? '').normalize('NFKC').trim();
@@ -35,7 +35,7 @@ const materialRows = (items, initialChapter) => {
   return items.map(item => {
     const isHeading = heading(item.en || '');
     if (item.chapter || isHeading) chapter = item.chapter || chapterKey((item.en || '').trim().replace(/[.!:]$/, ''));
-    return { ...item, chapter, key: normalizeScriptJa(item.en || ''), isHeading };
+    return { ...item, chapter, key: normalize(item.en || ''), isHeading };
   });
 };
 

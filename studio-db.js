@@ -200,23 +200,30 @@ export async function linkToLab(src) {
   if (!src || src.labRef || !src.stored || src.kind !== 'audio' || !src.blob) return false;
   const vids = (await labDb.all('videos')).filter((v) => v.from?.media === src.id).sort((a, b) => (b.from?.updatedAt || b.createdAt || 0) - (a.from?.updatedAt || a.createdAt || 0));
   for (const v of vids) {
-    const r = await labDb.get('vblobs', v.id);
+    const key = v.mediaRef || v.id;
+    const r = await labDb.get('vblobs', key);
     if (!r?.blob || r.blob.size !== src.blob.size) continue;
     try { if (!(await sameEnds(r.blob, src.blob))) continue; } catch { continue; }
     const { blob, ...rest } = src;
-    await sdb.put('sources', { ...rest, labRef: { videoId: v.id, at: Date.now() }, size: r.blob.size });   // saved without the studio's copy
-    src.labRef = { videoId: v.id }; src.blob = r.blob; fromLab.add(r.blob);
+    await sdb.put('sources', { ...rest, labRef: { videoId: key, at: Date.now() }, size: r.blob.size });   // saved without the studio's copy
+    src.labRef = { videoId: key }; src.blob = r.blob; fromLab.add(r.blob);
     return true;
   }
   return false;
 }
 // before the learning app deletes sounds: studio sources that point at them get their own copy back (nothing is lost)
 export async function releaseLabRefs(videoIds = null) {
-  const all = await sdb.all('sources'); let n = 0;
+  const all = await sdb.tx(['sources'], 'readonly', t => new Promise((resolve, reject) => {
+    const r = t.objectStore('sources').getAll();
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  }));
+  let n = 0;
   for (const src of all) {
     if (!src.labRef || (videoIds && !videoIds.includes(src.labRef.videoId))) continue;
+    await hydrate(src);
     const { labRef, labMissing, ...rest } = src;
-    if (src.blob) rest.blob = new File([await src.blob.arrayBuffer()], src.name || 'audio', { type: src.mime || src.blob.type || 'audio/mp4' });
+    if (src.blob) rest.blob = new File([src.blob], src.name || 'audio', { type: src.mime || src.blob.type || 'audio/mp4' });
     else rest.stored = false;
     await sdb.put('sources', rest); n++;
   }

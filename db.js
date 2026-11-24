@@ -80,6 +80,7 @@ async function tx(stores, mode, fn) {
 
 export const db = {
   get: (store, key) => tx([store], 'readonly', (t) => wrap(t.objectStore(store).get(key))),
+  keys: (store) => tx([store], 'readonly', t => wrap(t.objectStore(store).getAllKeys())),
   all: (store) => tx([store], 'readonly', (t) => wrap(t.objectStore(store).getAll())),
   count: (store) => tx([store], 'readonly', (t) => wrap(t.objectStore(store).count())),
   byIndex: (store, index, query) => tx([store], 'readonly', (t) => wrap(t.objectStore(store).index(index).getAll(query))),

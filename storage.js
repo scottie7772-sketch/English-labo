@@ -1,3 +1,4 @@
+import { releaseVideoMedia } from './video-media-ref.js';
 import { removeVideoJaInTx } from './video-ja.js';
 // 容量の整理: what takes space on this iPhone and ways to free it (English Labo)
 import { db } from './db.js';
@@ -19,7 +20,7 @@ export async function storageScreen(el) {
   const est = await navigator.storage?.estimate?.().catch(() => null);
   const persisted = await navigator.storage?.persisted?.().catch(() => false);
   const files = Object.fromEntries((await db.all('vblobs').catch(() => [])).map((x) => [x.id, x.size || x.blob?.size || 0]));
-  const vids = (await db.all('videos')).map((v) => (files[v.id] != null ? { ...v, fileSize: files[v.id] } : v));
+  const vids = (await db.all('videos')).map((v) => ((files[v.id] ?? files[v.mediaRef]) != null ? { ...v, fileSize: files[v.id] ?? files[v.mediaRef] } : v));
   const cueN = await db.countEach('cues', 'videoId', vids.map((v) => v.id));
   const names = (await caches.keys().catch(() => [])) || [];
   const cs = await Promise.all(names.map(async (n) => ({ name: n, ...(await cacheSize(n)) })));
@@ -28,7 +29,7 @@ export async function storageScreen(el) {
   // 1.16: the studio's own files (sounds shared with this app are counted once, here)
   let stTotal = 0, stN = 0, stShared = 0;
   try { const { sdb } = await import('./studio-db.js'); for (const x of await sdb.all('sources')) { if (x.labRef) stShared++; else if (x.stored && x.blob) { stTotal += x.blob.size; stN++; } } } catch {}
-  const vTotal = vids.reduce((a, v) => a + vSize(v), 0), mTotal = model.reduce((a, c) => a + c.total, 0), aTotal = app.reduce((a, c) => a + c.total, 0);
+  const vTotal = Object.values(files).reduce((a, b) => a + b, 0) + vids.reduce((a,v) => a + (v.blob?.size || 0) + (v.audioBlob?.size || 0), 0), mTotal = model.reduce((a, c) => a + c.total, 0), aTotal = app.reduce((a, c) => a + c.total, 0);
   el.innerHTML = `<header class="top"><a href="#settings" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>容量の整理</h1></header>
     <div class="card stack">
       <b>このアプリが使っている容量：${fmtSize(est?.usage || 0)}${est?.quota ? `<span class="small muted">（上限の目安 ${fmtSize(est.quota)}）</span>` : ''}</b>
@@ -59,18 +60,22 @@ export async function storageScreen(el) {
   $$('[data-dropfile]', el).forEach((b) => (b.onclick = async () => {
     const v = await db.get('videos', b.dataset.dropfile); const fs = (await db.get('vblobs', v.id))?.size; if (fs != null) v.fileSize = fs;
     if (!(await confirmDialog({ title: '動画ファイルだけ削除', body: `<p>「${esc(v.name)}」の動画（${fmtSize(vSize(v))}）を消します。字幕・穴埋め・学習記録は残ります。</p>`, okLabel: '削除' }))) return;
-    const kept = await (await import('./studio-db.js')).releaseLabRefs([v.id]).catch(() => 0);   // the studio's sets that use these sounds keep their own copy
-    delete v.blob; delete v.audioBlob; delete v.fileSize; await db.delete('vblobs', v.id); await db.put('videos', v); toast('削除しました'); storageScreen(el);
+    const mediaKeys = await releaseVideoMedia([v.id]);   // the studio's sets that use these sounds keep their own copy
+    delete v.blob; delete v.audioBlob; delete v.fileSize; delete v.mediaRef;
+    await db.tx(['vblobs','videos'], 'readwrite', tx => {
+      for (const key of mediaKeys) tx.objectStore('vblobs').delete(key);
+      tx.objectStore('videos').put(v);
+    }); toast('削除しました'); storageScreen(el);
   }));
   $$('[data-del]', el).forEach((b) => (b.onclick = async () => {
     const v = await db.get('videos', b.dataset.del);
     if (!(await confirmDialog({ title: '動画を全部削除', body: `<p>「${esc(v.name)}」の動画・字幕・穴埋めを消します（元に戻せません）。</p>`, okLabel: '削除', danger: true }))) return;
     const cs2 = await db.byIndex('cues', 'videoId', v.id);
-    const kept = await (await import('./studio-db.js')).releaseLabRefs([v.id]).catch(() => 0);   // the studio's sets that use these sounds keep their own copy
+    const mediaKeys = await releaseVideoMedia([v.id]);   // the studio's sets that use these sounds keep their own copy
     await db.tx(['videos', 'vblobs', 'cues', 'videoJa'], 'readwrite', tx => {
       removeVideoJaInTx(tx, v.id);
       tx.objectStore('videos').delete(v.id);
-      tx.objectStore('vblobs').delete(v.id);
+      for (const key of mediaKeys) tx.objectStore('vblobs').delete(key);
       for (const cue of cs2) tx.objectStore('cues').delete(cue.id);
     });
     toast('削除しました'); storageScreen(el);

@@ -74,7 +74,7 @@ export function parseJaPatch(text, materialId) {
   return patch;
 }
 
-export function planJaWrites(materialId, cues, records, patch, expected, { clear = false } = {}) {
+export function planJaWrites(materialId, cues, records, patch, expected, { clear = false, fromStudio = false, replaceStudio = false } = {}) {
   const current = new Map(cues.map(c => [c.id, c]));
   const links = new Map(records.filter(r => r.cueId).map(r => [r.cueId, r]));
   const texts = new Map(records.filter(r => typeof r.ja === 'string').map(r => [r.ja, r]));
@@ -86,6 +86,10 @@ export function planJaWrites(materialId, cues, records, patch, expected, { clear
     patch = new Map([...links.keys()].map(id => [id, []]));
     for (const cue of cues) if (cue.ja) patch.set(cue.id, []);
   }
+  if (replaceStudio) {
+    patch = new Map(patch);
+    for (const [id, link] of links) if (link.studio && !patch.has(id) && current.has(id)) patch.set(id, []);
+  }
   const eligible = new Set();
   for (const [id, stamp] of expected) if (current.has(id) && stamp === digest(current.get(id))) eligible.add(id);
   const groupCache = new WeakMap();
@@ -96,6 +100,7 @@ export function planJaWrites(materialId, cues, records, patch, expected, { clear
       else needsReview.push(cueId);
       continue;
     }
+    if (fromStudio && (cue.jaEdited || (old && !old.studio))) continue;
     const entries = values.map(value => typeof value === 'string' ? { ja: value, cueIds: [cueId] } : value);
     if (!clear && entries.some(entry => {
       if (!groupCache.has(entry)) groupCache.set(entry, { valid: entry.cueIds.every(id => eligible.has(id)) });
@@ -122,13 +127,14 @@ export function planJaWrites(materialId, cues, records, patch, expected, { clear
       return id;
     }))];
     const id = linkId(materialId, cueId), revision = digest(cue);
-    if (!refs.length && !cue.ja) {
+    const keepRemoval = !fromStudio && (old?.studio || old?.refs.length === 0);
+    if (!refs.length && !keepRemoval && (fromStudio || !cue.ja)) {
       if (old) deletes.add(old.id);
       links.delete(cueId);
       continue;
     }
-    const row = { id, materialId, cueId, revision, refs };
-    if (!old || old.revision !== revision || JSON.stringify(old.refs) !== JSON.stringify(refs)) puts.set(id, row);
+    const row = { id, materialId, cueId, revision, refs, ...(fromStudio ? { studio: true } : {}) };
+    if (!old || old.revision !== revision || Boolean(old.studio) !== fromStudio || JSON.stringify(old.refs) !== JSON.stringify(refs)) puts.set(id, row);
     links.set(cueId, row);
   }
   for (const link of links.values()) for (const id of link.refs) used.add(id);
@@ -141,7 +147,7 @@ export function planJaWrites(materialId, cues, records, patch, expected, { clear
   return { puts, deletes, needsReview };
 }
 
-export const compareVideoCues = (a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+export const compareVideoCues = (a, b) => a.start - b.start || (a.studioOrder ?? Infinity) - (b.studioOrder ?? Infinity) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 export const videoJaSource = (materialId, cues) => ({
   materialId,
@@ -180,4 +186,16 @@ export function removeVideoJaInTx(tx, materialId) {
     const row = cursor.result;
     if (row) { row.delete(); row.continue(); }
   };
+}
+
+export function studioJaPatch(cues, spans) {
+  const ids = new Map(cues.filter(cue => cue.itemId).map(cue => [cue.itemId, cue.id]));
+  const patch = new Map();
+  for (const span of spans || []) {
+    if (!Array.isArray(span?.ids) || !Array.isArray(span.texts)) continue;
+    const cueIds = [...new Set(span.ids.map(id => ids.get(id)).filter(Boolean))].sort();
+    const entries = span.texts.filter(ja => typeof ja === 'string' && ja.trim()).map(ja => ({ ja, cueIds }));
+    if (entries.length) for (const id of cueIds) patch.set(id, entries);
+  }
+  return patch;
 }

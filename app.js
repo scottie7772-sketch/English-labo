@@ -196,7 +196,7 @@ screens.studio = async (el) => {
   if (!document.querySelector('link[data-studio]')) { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = 'studio.css'; l.dataset.studio = '1'; document.head.appendChild(l); }
   studioMod ||= await import('./studio-main.js');
   const { importMaterial } = await import('./video.js');
-  studioMod.mount(el, { base: 'studio/', host: { exitHref: '#home', sendToLab: (manifest, mat, getFile) => importMaterial(manifest, mat, getFile, { askUpdate: false }).then((v) => v?.id),
+  studioMod.mount(el, { base: 'studio/', host: { exitHref: '#home', sendToLab: (manifest, mat, getFile, options) => importMaterial(manifest, mat, getFile, { askUpdate: false, direct: true, ...options }),
     addWordsCsv: (text, deck, note) => { try { sessionStorage.setItem('ell-pending-csv', JSON.stringify({ text, deck, note })); } catch {} location.hash = '#vocab-csv'; } } });
 };
 async function render() {

@@ -39,7 +39,7 @@ const materialRows = (items, initialChapter) => {
   });
 };
 
-export function planScriptJa(cues, input) {
+export function planScriptJa(cues, input, { allowUnknownChapters = false } = {}) {
   const source = materialRows(input.rows, input.sourceChapter);
   const target = materialRows(cues, input.targetChapter);
   const starts = new Map();
@@ -58,11 +58,11 @@ export function planScriptJa(cues, input) {
   const sourceFrequency = frequency(source), targetFrequency = frequency(target);
   const matches = [], byRow = source.map(() => []), byCue = target.map(() => []);
   const canJoin = (rows, first, last) => last < rows.length && last - first < 8 &&
-    !rows[first].isHeading && !rows[last].isHeading && rows[first].chapter === rows[last].chapter && Boolean(rows[last].key);
+    !rows[first].isHeading && !rows[last].isHeading && rows[first].chapter === rows[last].chapter && rows[first].section === rows[last].section && Boolean(rows[last].key);
   for (const [s, row] of source.entries()) {
     if (!row.key || sourceFrequency.get(row.key) > 64 || targetFrequency.get(row.key) > 64) continue;
     for (const c of starts.get(row.key.split(' ')[0]) || []) {
-      if ((row.chapter && hasTargetChapters && row.chapter !== target[c].chapter) || !compatible(row.chapter, target[c].chapter) || row.isHeading !== target[c].isHeading) continue;
+      if ((row.chapter && hasTargetChapters && (!allowUnknownChapters || target[c].chapter) && row.chapter !== target[c].chapter) || !compatible(row.chapter, target[c].chapter) || row.isHeading !== target[c].isHeading) continue;
       let a = s, b = c, left = row.key, right = target[c].key;
       while (left !== right) {
         if (right.startsWith(left + ' ') && canJoin(source, s, a + 1)) left += ' ' + source[++a].key;
@@ -98,6 +98,7 @@ export function planScriptJa(cues, input) {
         const choices = byRow[s].filter(m => m.s === s && m.c === c && m.a < next.s && m.b < next.c &&
           !source[m.s].isHeading && !target[m.c].isHeading &&
           source[m.s].chapter === source[previous.a].chapter && source[m.a].chapter === source[next.s].chapter &&
+          source[m.s].section === source[previous.a].section && source[m.a].section === source[next.s].section &&
           target[m.c].chapter === target[previous.b].chapter && target[m.b].chapter === target[next.c].chapter);
         if (choices.length !== 1) break;
         const m = choices[0]; path.push(m); s = m.a + 1; c = m.b + 1;
@@ -110,6 +111,7 @@ export function planScriptJa(cues, input) {
       const possibilities = byRow[j].filter(m => m.s === j && m.a < next.s &&
         m.c > previous.b && m.b < next.c &&
         source[m.s].chapter === source[previous.a].chapter && source[m.a].chapter === source[next.s].chapter &&
+          source[m.s].section === source[previous.a].section && source[m.a].section === source[next.s].section &&
         target[m.c].chapter === target[previous.b].chapter && target[m.b].chapter === target[next.c].chapter);
       if (possibilities.length !== 1) continue;
       const m = possibilities[0];
@@ -130,7 +132,8 @@ export function planScriptJa(cues, input) {
     for (const id of cueIds) patch.set(id, group);
     for (let i = m.s; i <= m.a; i++) covered.add(i);
   }
-  return { patch, review: source.flatMap((row, i) => covered.has(i) ? [] : [{
+  const reviewCueIds = new Set(target.filter((row, i) => byCue[i].length && !patch.has(row.id)).map(row => row.id));
+  return { patch, reviewCueIds, review: source.flatMap((row, i) => covered.has(i) ? [] : [{
     number: i + 1, en: row.en, ja: row.ja, reason: byRow[i].length ? '複数候補・順序の矛盾・削除範囲の混在' : '一致する字幕が見つかりません',
   }]) };
 }

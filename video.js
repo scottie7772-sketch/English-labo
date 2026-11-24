@@ -1,3 +1,4 @@
+import { releaseVideoMedia } from './video-media-ref.js';
 import { readScriptJa, planScriptJa } from './video-script-ja.js';
 // Phase 6: Video Lab (local videos + SRT/VTT subtitles + word registration linked to video position)
 import { db, uid, getSetting, setSetting } from './db.js';
@@ -8,7 +9,8 @@ import { pickWordsDialog } from './pick.js';
 import { headKey, wordsByHead, findDuplicate, newWord, newSense, saveWord, splitList } from './words.js';
 import { clozeHTML, toggleToken, candidates } from './cloze.js';
 import { translationRows, planTranslations } from './video-translations.js';
-import { readVideoJa, videoJaView, videoJaSource, compareVideoCues, parseJaPatch, cueStamps, saveVideoJa, removeVideoJaInTx } from './video-ja.js';
+import { readVideoJa, videoJaView, videoJaSource, compareVideoCues, parseJaPatch, cueStamps, saveVideoJa, removeVideoJaInTx, studioJaPatch } from './video-ja.js';
+import { fingerprint } from './common-pack.js';
 import { recordAnswer } from './judge.js';
 
 // ---------- subtitles ----------
@@ -40,7 +42,10 @@ export function toSRT(cues, field) {
 const fmtT = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
 const parseT = (v) => { v = String(v).trim(); if (!v) return NaN; if (v.includes(':')) { const [m, s] = v.split(':'); return +m * 60 + +s; } return +v; };
 const fmtSize = (n) => (n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB');
-async function cuesOf(videoId) { return (await db.byIndex('cues', 'videoId', videoId)).sort(compareVideoCues); }
+async function cuesOf(videoId) {
+  const cues = await db.byIndex('cues', 'videoId', videoId);
+  return cues.sort(compareVideoCues);
+}
 async function replaceCues(videoId, cues) {
   const old = await db.byIndex('cues', 'videoId', videoId);
   await db.tx(['cues'], 'readwrite', (t) => { const os = t.objectStore('cues'); old.forEach((c) => os.delete(c.id)); cues.forEach((c) => os.put(c)); });
@@ -50,7 +55,7 @@ function studioCue(it, start, offset = 0) {
     .map(segment => ({ start: offset + segment.start, end: offset + segment.end }));
   return {
     itemId: it.id, start, end: it.role === 'example' ? segments[0].end : segments.at(-1).end, en: it.text || '', ja: it.ja || '',
-    segments, sourceSegments: it.segments, studySet: it.studySet, role: it.role, sync: it.sync,
+    segments, sourceSegments: it.segments, studySet: it.studySet, role: it.role, sync: it.sync, ...(it.jaRemoved ? { jaRemoved: true } : {}),
     ...(it.holes?.length ? { holes: it.holes } : {}),
   };
 }
@@ -59,7 +64,7 @@ function preserveCueEdits(c, old) {
   c.translationRevision = old.translationRevision;
   if (old.dict) c.dict = old.dict;
   if (old.enEdited) Object.assign(c, { en: old.en, enEdited: true, holes: old.holes || [] });
-  if (old.jaEdited || (!c.ja && old.ja)) Object.assign(c, { ja: old.ja, jaEdited: old.jaEdited });
+  if (old.jaEdited || (!c.ja && old.ja && !c.jaRemoved)) Object.assign(c, { ja: old.ja, jaEdited: old.jaEdited });
   if (old.timeEdited) Object.assign(c, { start: old.start, end: old.end, segments: old.segments, timeEdited: true });
   if (old.en === c.en && old.holes?.length) c.holes = old.holes;
   if (cueStamps([old]).get(old.id) !== cueStamps([c]).get(c.id)) {
@@ -70,7 +75,7 @@ function preserveCueEdits(c, old) {
 
 // a studio material (from a pack file, or sent directly by the studio inside this app) → video lab.
 // The same material again: subtitles are replaced in place, learning records kept. getFile(m) → Blob of a media file or null.
-export async function importMaterial(manifest, mat, getFile, { askUpdate = true } = {}) {
+export async function importMaterial(manifest, mat, getFile, { askUpdate = true, direct = false, update: updateExisting = true } = {}) {
   const { copyBlob } = await import('./media-audio.js');
   // same material imported before (same studio set): update it in place, keeping the learning records
   const all = (await db.all('videos')).map(({ blob, ...x }) => x);
@@ -79,6 +84,43 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true 
   const findOld = (m) => mine.find((x) => x.from.media === m.id) || mine.find((x) => !x.from.media && (x.name === manifest.title || x.name === `${manifest.title}（${m.name}）`));
   const withText = (m) => mat.items.some(it => (it.text || it.ja) && it.segments?.some(g => g.media === m.id));
   const plan = mat.media.filter(withText).map((m) => ({ m, old: findOld(m) }));
+  const existingComplete = mine.some(v => v.from?.importComplete) ||
+    (mine.length && mine.every(v => v.from?.importComplete == null) && plan.length > 0 && plan.every(p => p.old) && (plan.length === 1 || oldParent));
+  if (direct && !updateExisting && existingComplete) return { skipped: true, reason: '登録済み' };
+  const mediaById = new Map(plan.map(({ m }) => [m.id, m]));
+  const mediaOrder = [...new Set(mat.items.flatMap(it => (it.segments || []).map(g => g.media)).filter(id => mediaById.has(id)))];
+  if (direct && existingComplete && (mine.length !== plan.length || plan.some(p => !p.old))) {
+    throw Object.assign(Error('音声ファイルの構成が変わっています。既存の再生位置を保護するため更新を保留しました'), { skip: true });
+  }
+  const layoutMatches = oldParent?.parts?.length === mediaOrder.length && oldParent.parts.every((part, i) => {
+    const duration = mediaById.get(part.media)?.duration;
+    return part.media === mediaOrder[i] && (!duration || Math.abs(duration - part.dur) < .01);
+  });
+  if (direct && existingComplete && oldParent && !layoutMatches) {
+    throw Object.assign(Error('音声ファイルの順序または長さが変わっています。既存の再生位置を保護するため更新を保留しました'), { skip: true });
+  }
+  const protectedCues = async (video, previous, used, fresh) => {
+    if (!direct && !Array.isArray(mat.jaSpans)) return;
+    const translations = await readVideoJa(video.id);
+    const edited = new Set(translations.filter(link => link.cueId && !link.studio).map(link => link.cueId));
+    for (const cue of previous) {
+      if (!used.has(cue.id) && (cue.enEdited || cue.timeEdited || cue.jaEdited || edited.has(cue.id))) fresh.push(cue);
+    }
+  };
+  const transferJa = async (v, cues) => {
+    if (!Array.isArray(mat.jaSpans)) return;
+    const text = new Map(mat.items.map(item => [item.id, item.text]));
+    const patch = studioJaPatch(cues.filter(cue => cue.en === text.get(cue.itemId)), mat.jaSpans);
+    if (patch.size || v.from?.hadStudioJa) await saveVideoJa(v.id, patch, cueStamps(cues), { fromStudio: true, replaceStudio: true });
+    v.from.hadStudioJa = true;
+  };
+  if (direct) for (const { m, old } of plan) {
+    if (old && m.size && old.from?.mediaSize && m.size !== old.from.mediaSize) {
+      throw Object.assign(Error(`元の音声が変更されています。手動調整を保護するため確認してください（${m.name}）`), { skip: true });
+    }
+    if (m.included || (old && await videoBlob(old))) continue;
+    throw Object.assign(Error(`音声ファイルを選び直してください（${m.name}）`), { skip: true });
+  }
   let update = false;
   if (plan.some((p) => p.old)) {
     update = !askUpdate || await confirmDialog({ title: 'すでにある教材です', body: `<p>「${esc(manifest.title)}」は前に取り込んでいます。字幕を新しい内容に入れ替えますか？</p><p class="hint">入れ替えても、単語帳の「元の動画」へのリンク・再生位置・固有名詞・変わっていない行のディクテーション記録は残ります。</p>`, okLabel: '入れ替える', cancelLabel: '別の教材として追加' });
@@ -91,24 +133,54 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true 
     if (!old && !m.included) continue;
     toast('取り込み中…', 10000);
     let v, freshBlob = null;
+    const openSource = async () => {
+      const raw = await getFile(m);
+      if (!raw) throw Error(`音声ファイルを開けません（${m.name}）`);
+      return raw;
+    };
     if (old) {
       v = await db.get('videos', old.id);
-      if (m.included && m.size && v.from?.mediaSize && m.size !== v.from.mediaSize) {   // the sound itself changed in the studio: replace it
-        const raw = await getFile(m); const { saveVideoCopy } = await import('./media-audio.js');
+      if (m.included && !direct && m.size && v.from?.mediaSize && m.size !== v.from.mediaSize) {   // the sound itself changed in the studio: replace it
+        const raw = await openSource(); const { saveVideoCopy } = await import('./media-audio.js');
         const sv = m.kind === 'video' ? await saveVideoCopy(new File([raw], m.name, { type: m.mime || 'video/mp4' }), { onStep: (x) => toast(x, 10000) }) : { blob: await copyBlob(raw, () => {}, { name: m.name, type: m.mime || 'audio/mp4' }) };
         freshBlob = sv.blob; Object.assign(v, { size: sv.blob.size, mime: m.mime || v.mime, duration: m.duration || v.duration, audioChecked: true, audioFixed: true }); if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
       }
       v.from = { ...v.from, pack: manifest.packId, media: m.id, mediaSize: m.size || v.from?.mediaSize, updatedAt: Date.now() };
       nUpd++;
     } else {
-      const raw = await getFile(m);
-      const { saveVideoCopy } = await import('./media-audio.js');
-      const sv = m.kind === 'video' ? await saveVideoCopy(new File([raw], m.name, { type: m.mime || 'video/mp4' }), { onStep: (x) => toast(x, 10000) }) : { blob: await copyBlob(raw, (r) => toast(`取り込み中… ${Math.round(r * 100)}%`, 10000), { name: m.name, type: m.mime || 'audio/mp4' }) };
-      const blob = sv.blob; freshBlob = blob;
-      v = { id: uid('v_'), lang: manifest.lang || curLang(), name: mat.media.filter(withText).length > 1 ? `${manifest.title}（${m.name}）` : manifest.title, mime: m.mime || 'video/mp4', size: blob.size, duration: m.duration || 0, lastTime: 0, createdAt: Date.now(), from: { pack: manifest.packId, material: manifest.materialId, media: m.id, mediaSize: m.size } };
-      Object.assign(v, { audioChecked: true, audioFixed: true }); if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
+      v = { id: uid('v_'), lang: manifest.lang || curLang(), name: plan.length > 1 ? `${manifest.title}（${m.name}）` : manifest.title,
+        mime: m.mime || 'video/mp4', size: m.size || 0, duration: m.duration || 0, lastTime: 0, createdAt: Date.now(),
+        from: { pack: manifest.packId, material: manifest.materialId, media: m.id, mediaSize: m.size } };
+      if (!direct) {
+        const raw = await openSource(), { saveVideoCopy } = await import('./media-audio.js');
+        const sv = m.kind === 'video' ? await saveVideoCopy(new File([raw], m.name, { type: m.mime || 'video/mp4' }), { onStep: x => toast(x, 10000) }) :
+          { blob: await copyBlob(raw, r => toast(`取り込み中… ${Math.round(r * 100)}%`, 10000), { name: m.name, type: m.mime || 'audio/mp4' }) };
+        freshBlob = sv.blob; v.size = sv.blob.size;
+        if (sv.info) v.audioInfo = sv.info;
+        if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
+        v.audioChecked = true; v.audioFixed = true;
+      }
       nNew++;
     }
+    if (direct) {
+      v.from.importComplete = false;
+      if (!old || !await videoBlob(v)) {
+        const raw = await openSource();
+        let key = m.existingMediaKey;
+        if (!key || !(await db.get('vblobs', key))?.blob) {
+          const fp = await fingerprint(raw);
+          key = `studio-media:${m.id}:${fp.head}:${fp.tail}:${fp.size}`;
+          if (!await db.get('vblobs', key)) await putVideoBlob(key, new File([raw], m.name, { type: m.mime || raw.type }));
+        }
+        v.mediaRef = key;
+        v.size = raw.size;
+        v.duration = m.duration || v.duration;
+        v.audioChecked = true;
+        v.audioFixed = true;
+        if (m.trackIndex != null) v.audioTrack = m.trackIndex;
+      }
+    }
+    if (mat.set?.folder != null || direct) v.folder = mat.set?.folder || '';
     // the studio's cut (start/end) = the range covered by the items: playback stays inside it
     const segs = mat.items.flatMap((it) => (it.segments || []).filter((g) => g.media === m.id));
     delete v.trim;
@@ -123,8 +195,8 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true 
     v.materialType = mat.set?.materialType || v.materialType;
     if (freshBlob) await putVideoBlob(v.id, freshBlob);
     await saveVideoMeta(v);
-    const fresh = mat.items.filter((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja))
-      .map(it => ({ id: uid('c_'), videoId: v.id, ...studioCue(it, it.segments[0].start) }))
+    const fresh = mat.items.filter((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja) && !v.removedStudioItems?.includes(it.id))
+      .map((it, order) => ({ id: uid('c_'), videoId: v.id, ...(direct || mat.jaSpans ? { studioOrder: order } : {}), ...studioCue(it, it.segments[0].start) }))
       .sort((a, b) => a.start - b.start);
     if (old) {   // keep cue ids (word links) and records of lines that still exist
       const prev = await db.byIndex('cues', 'videoId', v.id); const used = new Set();
@@ -133,34 +205,51 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true 
         if (!o) continue; used.add(o.id);
         preserveCueEdits(c, o);
       }
+      await protectedCues(v, prev, used, fresh);
+    }
+    if (v.trim) for (const cue of fresh) if (cue.timeEdited) {
+      v.trim.start = Math.min(v.trim.start, cue.start);
+      v.trim.end = Math.max(v.trim.end, cue.end);
     }
     await replaceCues(v.id, fresh);
+    await transferJa(v, fresh);
+    if (!direct && Array.isArray(mat.jaSpans)) await saveVideoMeta(v);
     first ||= v; made.push({ m, v });
   }
   // several sound files in one material (a script with its audio pieces): also one entry that plays them as one timeline, in script order
   const medias = mat.media.filter(withText);
   if (medias.length > 1 && made.length === medias.length) {
-    const allowed = new Set(medias.map(m => m.id));
-    const order = [...new Set(mat.items.flatMap(it => (it.segments || []).map(g => g.media)).filter(id => allowed.has(id)))];
-    let off = 0; const parts = order.map((mid) => { const x = made.find((y) => y.m.id === mid); const dur = x.m.duration || x.v.duration || 0; const p = { videoId: x.v.id, media: mid, offset: +off.toFixed(3), dur }; off += dur; return p; });
+    let off = 0; const parts = mediaOrder.map((mid) => { const x = made.find((y) => y.m.id === mid); const dur = x.m.duration || x.v.duration || 0; const p = { videoId: x.v.id, media: mid, offset: +off.toFixed(3), dur }; off += dur; return p; });
     const P = (update && oldParent) ? { ...(await db.get('videos', oldParent.id)) } : { id: uid('v_'), lang: manifest.lang || curLang(), lastTime: 0, createdAt: Date.now() };
-    Object.assign(P, { kind: 'multi', name: manifest.title, parts, duration: off, size: 0, mime: 'audio/mp4', audioChecked: true, audioFixed: true, from: { material: manifest.materialId, multi: true, pack: manifest.packId, updatedAt: Date.now() } });
+    Object.assign(P, { kind: 'multi', name: manifest.title, parts, duration: off, size: 0, mime: 'audio/mp4', audioChecked: true, audioFixed: true, from: { ...P.from, material: manifest.materialId, multi: true, pack: manifest.packId, updatedAt: Date.now() } });
+    if (direct) P.from.importComplete = false;
+    if (mat.set?.folder != null || direct) P.folder = mat.set?.folder || '';
     delete P.blob; delete P.trim; P.materialType = mat.set?.materialType || P.materialType;
     await db.put('videos', P);
     const partOf = Object.fromEntries(parts.map((p) => [p.media, p]));
-    const fresh = mat.items.filter((it) => partOf[it.segments?.[0]?.media] && (it.text || it.ja)).map((it) => {
+    const fresh = mat.items.filter((it) => partOf[it.segments?.[0]?.media] && (it.text || it.ja) && !P.removedStudioItems?.includes(it.id)).map((it, order) => {
       const p = partOf[it.segments[0].media];
       const cue = studioCue(it, p.offset + it.segments[0].start, p.offset);
       if (it.role === 'example') cue.segments = it.segments.filter(g => partOf[g.media])
         .map(g => ({ start: partOf[g.media].offset + g.start, end: partOf[g.media].offset + g.end }));
-      return { id: uid('c_'), videoId: P.id, part: p.videoId, ...cue };
+      return { id: uid('c_'), videoId: P.id, part: p.videoId, ...(direct || mat.jaSpans ? { studioOrder: order } : {}), ...cue };
     });   // script order = timeline order
     if (update && oldParent) {
       const prev = await db.byIndex('cues', 'videoId', P.id); const used = new Set();
       for (const c of fresh) { const o = prev.find((x) => !used.has(x.id) && x.itemId === c.itemId); if (!o) continue; used.add(o.id); preserveCueEdits(c, o); }
+      await protectedCues(P, prev, used, fresh);
     }
     await replaceCues(P.id, fresh);
+    await transferJa(P, fresh);
+    if (!direct && Array.isArray(mat.jaSpans)) await db.put('videos', P);
     first = P;
+  }
+  if (direct && first) {
+    const completed = new Map(made.map(({ v }) => [v.id, v]));
+    completed.set(first.id, first);
+    await db.tx(['videos'], 'readwrite', tx => {
+      for (const video of completed.values()) tx.objectStore('videos').put({ ...video, from: { ...video.from, importComplete: true } });
+    });
   }
   if (missing.length) toast(`音声が入っていない部分（${missing.length}件）は取り込めませんでした。スタジオで音声を含めて書き出してください`, 5000);
   if (!missing.length) toast(`${nUpd ? `更新しました` : '取り込みました'}（字幕 ${mat.items.filter((it) => it.segments?.length && (it.text || it.ja)).length}行）`);
@@ -198,7 +287,7 @@ export async function compressVideoAudio(id) {
 
 // ---- media files live in their own store ('vblobs') and are written once ----
 // (iPhone: putting a file that was read from the database back into it — e.g. with the play position — made it unreadable after reopening)
-export async function videoBlob(v) { if (!v) return null; return (await db.get('vblobs', v.id))?.blob || v.blob || null; }
+export async function videoBlob(v) { if (!v) return null; return (await db.get('vblobs', v.id))?.blob || (v.mediaRef ? (await db.get('vblobs', v.mediaRef))?.blob : null) || v.blob || null; }
 async function putVideoBlob(id, blob) { await db.put('vblobs', { id, blob, size: blob.size, at: Date.now() }); }
 // save the video record without its file (never puts a file read from the database back)
 async function saveVideoMeta(rec) {
@@ -218,8 +307,10 @@ async function migrateBlob(v) {
 }
 // lightweight video list without loading blobs into the page
 async function videoMetas() {
-  const files = new Set((await db.all('vblobs')).map((x) => x.id));
-  return (await db.all('videos')).map(({ blob, ...m }) => ({ ...m, hasBlob: m.kind === 'multi' ? (m.parts || []).every((p) => files.has(p.videoId)) : !!blob || files.has(m.id) })).sort((a, b) => b.createdAt - a.createdAt);
+  const files = new Set(await db.keys('vblobs'));
+  const videos = await db.all('videos');
+  const locations = new Map(videos.map(v => [v.id, v.mediaRef]));
+  return videos.map(({ blob, ...m }) => ({ ...m, hasBlob: m.kind === 'multi' ? (m.parts || []).every((p) => (files.has(p.videoId) || files.has(locations.get(p.videoId)))) : !!blob || files.has(m.id) || files.has(m.mediaRef) })).sort((a, b) => b.createdAt - a.createdAt);
 }
 export async function videoNames() { return Object.fromEntries((await videoMetas()).map((v) => [v.id, v])); }
 
@@ -245,16 +336,25 @@ export async function videoList(el) {
         <span class="grow vtxt"><b>${esc(displayName(v.name))}</b><span class="vmeta">${[v.kind === 'multi' ? `音声${(v.parts || []).length}本` : '', T(v.duration), `字幕${cueCount[v.id] || 0}行`, esc(L(v.lang || 'en').short)].filter(Boolean).join(' · ')}${v.hasBlob ? '' : ' · <span class="danger-text">ファイルなし</span>'}</span></span>
         <span class="muted">›</span>
       </a>`;
+  const renderMaterial = v => {
+    const kids = v.kind === 'multi' ? (v.parts || []).map(p => vids.find(x => x.id === p.videoId)).filter(Boolean) : [];
+    return rowHTML(v) + (kids.length ? `<details class="vkids"><summary>音声ごと（${kids.length}）</summary>${kids.map(k => rowHTML(k, true)).join('')}</details>` : '');
+  };
+  const folders = new Map();
+  for (const video of tops) {
+    const key = video.folder || '';
+    if (!folders.has(key)) folders.set(key, []);
+    folders.get(key).push(video);
+  }
   el.innerHTML = `
     <header class="top"><a href="#home" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>Video Lab</h1><span class="grow"></span><button class="icon-btn" id="vlMenu" aria-label="メニュー">⋯</button></header>
     ${resume ? `<a class="card vresume" href="#video-play?id=${resume.id}"><span class="grow"><span class="vmeta">続きから</span><b>${esc(displayName(resume.name))}</b><span class="vmeta">${T(resume.lastTime)} / ${T(resume.duration)}</span></span><span class="vresume-play">▶︎</span></a>` : ''}
     <div class="row vacts"><a class="btn sm primary grow" href="#studio/sets">🛠 教材を作る</a><label class="btn sm grow" for="vpack">📦 パックを読み込む</label></div>
     <input type="file" id="vpack" hidden><input type="file" id="vfile" accept="video/*" hidden>
     <div id="vlbar"></div>
-    <div id="vl">${tops.map((v) => {
-      const kids = v.kind === 'multi' ? (v.parts || []).map((p) => vids.find((x) => x.id === p.videoId)).filter(Boolean) : [];
-      return rowHTML(v) + (kids.length ? `<details class="vkids"><summary>音声ごと（${kids.length}）</summary>${kids.map((k) => rowHTML(k, true)).join('')}</details>` : '');
-    }).join('') || '<div class="card center muted">まだ教材がありません。「教材を作る」から作れます。</div>'}</div>`;
+    <div id="vl">${[...folders].map(([folder, materials]) => folder ?
+      `<details class="card" open><summary>📁 ${esc(folder)}（${materials.length}）</summary>${materials.map(renderMaterial).join('')}</details>` :
+      materials.map(renderMaterial).join('')).join('') || '<div class="card center muted">まだ教材がありません。「教材を作る」から作れます。</div>'}</div>`;
   // ⋯: less used things and the explanations
   $('#vlMenu', el).onclick = async () => {
     const dlg = $('#dialog');
@@ -307,8 +407,8 @@ export async function videoList(el) {
     const names = vids.filter((v) => ids.includes(v.id)).map((v) => v.name);
     if (!(await confirmDialog({ title: `${ids.length}件を削除`, body: `<p>${names.slice(0, 8).map(esc).join('<br>')}${names.length > 8 ? `<br>ほか${names.length - 8}件` : ''}</p><p class="hint">動画・音声と字幕・穴埋めを消します（元に戻せません）。この動画から登録した単語は残ります。</p>`, okLabel: '削除', danger: true }))) return false;
     const cues = (await Promise.all(ids.map((id) => db.byIndex('cues', 'videoId', id)))).flat();
-    const kept = await (await import('./studio-db.js')).releaseLabRefs(ids).catch(() => 0);   // the studio's sets that use these sounds keep their own copy
-    await db.tx(['videos', 'vblobs', 'cues', 'videoJa'], 'readwrite', (t) => { for (const id of ids) { removeVideoJaInTx(t, id); t.objectStore('videos').delete(id); t.objectStore('vblobs').delete(id); } cues.forEach((c) => t.objectStore('cues').delete(c.id)); });
+    const mediaKeys = await releaseVideoMedia(ids);   // the studio's sets that use these sounds keep their own copy
+    await db.tx(['videos', 'vblobs', 'cues', 'videoJa'], 'readwrite', (t) => { for (const id of ids) { removeVideoJaInTx(t, id); t.objectStore('videos').delete(id); } for (const key of mediaKeys) t.objectStore('vblobs').delete(key); cues.forEach((c) => t.objectStore('cues').delete(c.id)); });
     toast(`${ids.length}件を削除しました`); return true;
   }
   $('#vl', el).addEventListener('click', (e) => {
@@ -394,6 +494,7 @@ function multiMedia(el, parts) {
     get readyState() { return el.readyState; },
     get videoWidth() { return el.videoWidth; },
     get audioTracks() { return el.audioTracks; },
+    get audioTrack() { return parts[cur].audioTrack; },
     get playbackRate() { return rate; },
     set playbackRate(r) { rate = r; el.playbackRate = r; },
     play() { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {} return el.play(); },
@@ -412,7 +513,11 @@ export async function videoPlay(el, params) {
   let parts = null, missingPart = false;
   if (v?.kind === 'multi') {
     parts = [];
-    for (const p of v.parts || []) { const b = await videoBlob(await db.get('videos', p.videoId)); if (!b) { missingPart = true; continue; } parts.push({ ...p, url: URL.createObjectURL(b), blob: b }); }
+    for (const p of v.parts || []) {
+      const child = await db.get('videos', p.videoId), b = await videoBlob(child);
+      if (!b) { missingPart = true; continue; }
+      parts.push({ ...p, url: URL.createObjectURL(b), blob: b, audioTrack: child.audioTrack });
+    }
   }
   const fileBlob = parts ? parts[0]?.blob || null : await videoBlob(v);
   if (!v) { el.innerHTML = `<header class="top"><a href="#video" class="back" aria-label="戻る">${icon('back', 24)}</a><h1>動画が見つかりません</h1></header><div class="card muted">削除された可能性があります。</div>`; return; }
@@ -428,6 +533,8 @@ export async function videoPlay(el, params) {
     $('#clearJa', el).hidden = !jaRecords.some(row => row.refs?.length) && !cues.some(c => jaFor(c) || jaView.needsReview(c));
     drawList(); drawSub();
   };
+  const scriptOrder = () => cues.some(c => c.studioOrder != null) ? cues.slice().sort(
+    (a, b) => (a.studioOrder ?? Infinity) - (b.studioOrder ?? Infinity) || compareVideoCues(a,b)) : cues;
   const view = await loadView();
   const saveView = () => setSetting('video.view', view);
   let singleSegment = null, loop = null, ab = null, curId = null, rafId = 0, saveT = 0, seekT = 0, loopN = 0, stepCue = null, revealedCue = null, editing = false;
@@ -594,7 +701,11 @@ export async function videoPlay(el, params) {
     });
   }
   // ---- trimming (non-destructive): playback and transcription stay inside [trim.start, trim.end] ----
-  function enableTrack() { const at = vid?.audioTracks; if (!at || at.length < 2 || v.audioTrack == null) return; for (let i = 0; i < at.length; i++) at[i].enabled = i === v.audioTrack; }
+  function enableTrack() {
+    const at = vid?.audioTracks, track = parts ? vid.audioTrack : v.audioTrack;
+    if (!at || at.length < 2 || track == null) return;
+    for (let i = 0; i < at.length; i++) at[i].enabled = i === track;
+  }
   {   // speech recognition quality (tap to choose)
     const QT = { fast: '速さ：約40MB・速いが聞き間違いが多い', acc: '標準：約80MB・おすすめ', best: '最高：約250MB・2〜3倍遅い・試験的（iPhoneのメモリによっては止まる）' };
     const drawQ = (q) => { $$('#asrQ button', el).forEach((b) => b.classList.toggle('on', b.dataset.v === q)); $('#asrQtxt', el).textContent = QT[q]; };
@@ -651,7 +762,7 @@ export async function videoPlay(el, params) {
   }
   function drawList() {
     if (!cues.length) { cl.innerHTML = `<div class="card stack"><p class="small muted">字幕がまだありません。上の「字幕を作る・読み込む」から作成・読み込みできます。</p></div>`; return; }
-    cl.innerHTML = cues.map((c) => `
+    cl.innerHTML = scriptOrder().map((c) => `
       <div class="cue ${c.id === curId ? 'cur' : ''}" data-id="${c.id}">
         <span class="ct">${fmtT(c.start)}</span>
         <span class="grow ctext ${view.test && !rangeMode ? 'veil' : ''}">${rangeMode && c.en ? `<div class="sen" ${langAttr(vlang)}>${toks(c).map((k, i) => `<span class="rk" data-rk="${c.id}:${i}">${esc(k.w)}</span>`).join(' ')}</div>` : textHTML(c, 'list') || '<span class="muted small">（非表示）</span>'}</span>
@@ -1093,7 +1204,7 @@ export async function videoPlay(el, params) {
     inp.click();
   }
   function jaSource() {
-    return JSON.stringify(videoJaSource(v.id, cues), null, 2);
+    return JSON.stringify(videoJaSource(v.id, scriptOrder()), null, 2);
   }
   function exportJaSource() {
     const url = URL.createObjectURL(new Blob([jaSource()], { type: 'application/json' }));
@@ -1150,7 +1261,7 @@ export async function videoPlay(el, params) {
     videoPlay(el, params);
   }
   async function importTranslations(text, timed) {
-    const base = cues.filter(c => c.en);
+    const base = scriptOrder().filter(c => c.en);
     if (!base.length) return toast('先に英語字幕を追加してください');
     try {
       const expected = cueStamps(base);
@@ -1229,7 +1340,15 @@ export async function videoPlay(el, params) {
     dlg.onclose = async () => {
       if (dlg.returnValue === 'del') {
         if (!(await confirmDialog({ title: 'この字幕を削除', okLabel: '削除', danger: true }))) return;
-        await db.delete('cues', c.id); cues = cues.filter((x) => x.id !== c.id); await refreshJa(); return;
+        if (c.itemId && v.from?.material) {
+          const current = await db.get('videos', v.id);
+          const removedStudioItems = [...new Set([...(current.removedStudioItems || []), c.itemId])];
+          await db.tx(['videos','cues'], 'readwrite', tx => {
+            tx.objectStore('videos').put({ ...current, removedStudioItems });
+            tx.objectStore('cues').delete(c.id);
+          });
+        } else await db.delete('cues', c.id);
+        cues = cues.filter((x) => x.id !== c.id); await refreshJa(); return;
       }
       if (dlg.returnValue !== 'ok') return;
       const s = parseT($('#es', dlg).value), e = parseT($('#ee', dlg).value);
@@ -1324,8 +1443,8 @@ export async function videoPlay(el, params) {
       } else if (r === 'del') {
         if (!(await confirmDialog({ title: '動画を削除', body: '<p>動画と字幕を削除します。この動画から登録した単語は残りますが、動画へのリンクは使えなくなります。</p>', okLabel: '削除', danger: true }))) return;
         const old = await db.byIndex('cues', 'videoId', v.id);
-        const kept = await (await import('./studio-db.js')).releaseLabRefs([v.id]).catch(() => 0);   // the studio's sets that use these sounds keep their own copy
-        await db.tx(['videos', 'cues', 'vblobs', 'videoJa'], 'readwrite', (t) => { removeVideoJaInTx(t, v.id); t.objectStore('videos').delete(v.id); t.objectStore('vblobs').delete(v.id); old.forEach((c) => t.objectStore('cues').delete(c.id)); });
+        const mediaKeys = await releaseVideoMedia([v.id]);   // the studio's sets that use these sounds keep their own copy
+        await db.tx(['videos', 'cues', 'vblobs', 'videoJa'], 'readwrite', (t) => { removeVideoJaInTx(t, v.id); t.objectStore('videos').delete(v.id); for (const key of mediaKeys) t.objectStore('vblobs').delete(key); old.forEach((c) => t.objectStore('cues').delete(c.id)); });
         toast('削除しました'); go('#video');
       }
     };

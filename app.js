@@ -43,9 +43,10 @@ screens.log = reviewScreen;
 screens.grammar = grammarScreen;
 screens.toeic = grammarScreen;
 screens.import = comingSoon('Import', 'import', '画像やスクリーンショットから英語を取り込む機能は、まだ実装していません。今は単語帳の「まとめて追加」「CSV」「英文から選ぶ」が使えます。');
-const TAB_OF = { storage: 'settings', course: 'home', 'course-unit': 'home', 'course-puzzle': 'home', datacheck: 'settings', 'listening-run': 'home', 'speaking-run': 'home', lesson: 'home', 'lesson-run': 'home', games: 'home', game: 'home', log: 'review', grammar: 'home', toeic: 'home', listening: 'home', speaking: 'home', import: 'home', quick: 'study', 'quick-run': 'study', 'quick-result': 'study', video: 'home', 'video-play': 'home', session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', decks: 'vocab' };
+const TAB_OF = { storage: 'settings', course: 'home', 'course-unit': 'home', 'course-puzzle': 'home', datacheck: 'settings', 'listening-run': 'home', 'speaking-run': 'home', lesson: 'home', 'lesson-run': 'home', games: 'home', game: 'home', log: 'review', grammar: 'home', toeic: 'home', listening: 'home', speaking: 'home', import: 'home', quick: 'study', 'quick-run': 'study', 'quick-result': 'study', video: 'home', 'video-play': 'home', session: 'study', result: 'study', word: 'vocab', 'vocab-bulk': 'vocab', 'vocab-csv': 'vocab', 'vocab-paste': 'vocab', 'ma-phrases': 'vocab', decks: 'vocab' };
 // the other screens: their code is loaded the first time they are opened (then kept by the browser)
 const LAZY = {
+  './ma-phrases-ui.js': { 'ma-phrases': 'maImportScreen' },
   './vocab.js': { vocab: 'vocabList', word: 'wordDetail', 'vocab-bulk': 'vocabBulk', 'vocab-csv': 'vocabCSV', 'vocab-paste': 'vocabPaste', decks: 'decksScreen' },
   './study.js': { study: 'studySetup', session: 'sessionScreen', result: 'resultScreen' },
   './quick.js': { quick: 'quickSetup', 'quick-run': 'quickRun', 'quick-result': 'quickResult' },

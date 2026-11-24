@@ -1,3 +1,4 @@
+import { playMA, maLinks } from './ma-phrases.js';
 import { wordAudio, sameText } from './audio-refs.js';
 // Shared 3-direction swipe card (left / up / right) with tap-to-flip.
 // iPhone Safari + home-screen PWA: Touch Events (preventDefault) + touch-action:none; Pointer Events for mouse.
@@ -274,6 +275,17 @@ export function fc2Voice(root, speakFn) {
     if (!text) { onEnd?.(); return; }
     const my = ++seq;
     try { speechSynthesis.cancel(); } catch {}
+    if (w?.ma) {
+      const kind = text === w.headword ? 'word' : 'example';
+      const link = kind === 'example' ? maLinks(w).find(l => sameText(l.ref.origin.text, text)) : null;
+      if (kind === 'example' && !link) { tell('使用例の元音声がありません'); onEnd?.(); return; }
+      playMA(w, kind, { link, onEnd, active: () => my === seq }).then(ok => {
+        if (my !== seq) return;
+        if (ok) { unlocked = true; pending = null; }
+        else tell(kind === 'word' ? 'フレーズ音声は未確定、または参照切れです' : '使用例の元音声を再生できません');
+      });
+      return;
+    }
     const ref = refOf(w, text);
     if (ref) {
       const run = (m) => m.playRef(ref, { onEnd }).then((ok) => { if (ok) { unlocked = true; pending = null; } else if (my === seq) { tell(wa?.STATE_LABEL?.broken + '：合成音声で読み上げます'); tts(text, onEnd); } else onEnd?.(); });
@@ -288,6 +300,7 @@ export function fc2Voice(root, speakFn) {
   };
   // word, then the example (both from the registered sounds; the example only when it has its own sound)
   const both = (w, onEnd) => {
+    if (w.ma) return say(w.headword, { w, onEnd });
     const a = refOf(w, w.headword), b = wordAudio(w, 'example');
     if (a && b) {
       const my = ++seq; try { speechSynthesis.cancel(); } catch {}
@@ -309,7 +322,7 @@ export function fc2Voice(root, speakFn) {
     },
     tap(text, w = null) { pending = null; return ended((resolve) => say(text, { w, onEnd: () => resolve(true) })); },
     both(w) { pending = null; return ended((resolve) => both(w, () => resolve(true))); },
-    example(w) { const ex = wordAudio(w, 'example') || null; const text = ex?.origin?.text || (w.senses || []).flatMap((x) => x.examples || []).find((x) => x.en)?.en; pending = null; return ended((resolve) => say(text, { w, onEnd: () => resolve(true) })); },
+    example(w) { const ex = (w.ma ? maLinks(w)[0]?.ref : wordAudio(w, 'example')) || null; const text = ex?.origin?.text || (w.senses || []).flatMap((x) => x.examples || []).find((x) => x.en)?.en; pending = null; return ended((resolve) => say(text, { w, onEnd: () => resolve(true) })); },
     stop() { pending = null; seq++; wa?.stop(); try { speechSynthesis.cancel(); } catch {} },
   };
 }

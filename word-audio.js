@@ -157,6 +157,10 @@ export async function playRefs(refs, { gap = 0.35, onEnd = null } = {}) {
 }
 // a word's registered sound (word.audio). Resolves false when it has none (the caller keeps its old voice).
 export async function playWord(w, kind = 'word', opts = {}) {
+  if (w?.ma) {
+    unlock();
+    return (await import('./ma-phrases.js')).playMA(w, kind, opts);
+  }
   const { wordAudio } = await import('./audio-refs.js');
   const ref = wordAudio(w, kind);
   return ref ? playRef(ref, opts) : false;

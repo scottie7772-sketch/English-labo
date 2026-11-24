@@ -1,4 +1,7 @@
 // Phase 2: Vocabulary Manager screens
+import { maStatus, mountMAAudio, showMAPhrase } from './ma-phrases-ui.js';
+import { maLinks, playMA } from './ma-phrases.js';
+import { unlock } from './word-audio.js';
 import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, speak, fmtDate } from './ui.js';
 import { SKILLS, SKILL_LABELS, LEVEL_LABELS, effLevel, status, source, overall, filterLevel, levelText, loadAllMastery, loadWordMastery, setManual, setLock, resetToAuto } from './mastery.js';
@@ -12,7 +15,7 @@ import { newWord, newSense, saveWord, toggleBookmark, deleteWord, headKey, split
 const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', preposition: '前置詞', conjunction: '接続詞', pronoun: '代名詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語' };
 const POS_OPTIONS = ['', 'noun', 'verb', 'adjective', 'adverb', 'phrasal verb', 'idiom', 'phrase', 'preposition', 'conjunction'];
 const posJa = (p) => POS_JA[p] || p || '';
-const SOURCE_JA = { manual: '手動', bulk: '一括登録', csv: 'CSV', ocr: 'OCR', video: '動画字幕', mistake: '学習中の誤答', paste: '英文から選択', seed: '初期データ' };
+const SOURCE_JA = { manual: '手動', ma: 'MAフレーズ', bulk: '一括登録', csv: 'CSV', ocr: 'OCR', video: '動画字幕', mistake: '学習中の誤答', paste: '英文から選択', seed: '初期データ' };
 
 // 1.18.5: the speaker buttons play the original recording when the word is in a matched material (setting on), else TTS
 async function sayOrig(text, tts = () => speak(text)) {
@@ -86,7 +89,7 @@ export async function vocabList(el) {
       if (f.deck && !(w.deckIds || []).includes(f.deck)) return false;
       if (f.levels.length && !f.levels.includes(filterLevel(lvOf(mastery[w.id], f.skill)))) return false;
       if (f.src && srcKey(w) !== f.src) return false;
-      const hasA = Boolean(w.audio?.word?.state === 'confirmed') || wa?.has(w.headword);   // 1.19.31: a registered sound counts too
+      const hasA = (w.ma ? maLinks(w).length > 0 : Boolean(w.audio?.word?.state === 'confirmed') || wa?.has(w.headword));   // 1.19.31: a registered sound counts too
       if (f.au === 'yes' && !hasA) return false;
       if (f.au === 'no' && hasA) return false;
       if (f.au === 'bad' && !['broken', 'unsure'].includes(wa?.status?.(w.headword, w))) return false;   // 1.19.36
@@ -116,9 +119,9 @@ export async function vocabList(el) {
       return `
       <div class="wcard ${sel?.has(w.id) ? 'picked' : ''}" data-id="${w.id}">
         ${sel ? `<input type="checkbox" class="wsel" data-sel="${w.id}" ${sel.has(w.id) ? 'checked' : ''} aria-label="選ぶ">` : ''}
-        <a class="wmain" href="#word?id=${w.id}">
+        <a class="wmain" href="#word?id=${encodeURIComponent(w.id)}">
           <b class="tl">${esc(w.headword)}</b>${w.ipa && isZh(langOf(w)) ? `<span class="small muted"> ${esc(numToMarks(w.ipa))}</span>` : ''}${w.review === 'unverified' ? '<span class="tagp ai">未検証</span>' : ''}${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}${headCount[headKey(w.headword)] > 1 ? '<span class="tagp">多義</span>' : ''}${w.slim ? '<span class="tagp slim">軽量</span>' : ''}
-          <span class="mean">${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>${f.sort === 'src' || f.src || f.au !== 'all' ? `<small class="muted wsrc">${w.audio?.word?.state === 'confirmed' || wa?.has(w.headword) ? '🔊 ' : ''}${['broken', 'unsure'].includes(wa?.status?.(w.headword, w)) ? `⚠${wa.STATE_LABEL[wa.status(w.headword, w)]} ` : ''}${esc(srcText(srcKey(w)))}</small>` : ''}
+          <span class="mean">${w.ma ? `<small>優先度 ${w.ma.priority}・${maStatus(w)}</small><br>` : ''}${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>${f.sort === 'src' || f.src || f.au !== 'all' ? `<small class="muted wsrc">${w.audio?.word?.state === 'confirmed' || wa?.has(w.headword) ? '🔊 ' : ''}${['broken', 'unsure'].includes(wa?.status?.(w.headword, w)) ? `⚠${wa.STATE_LABEL[wa.status(w.headword, w)]} ` : ''}${esc(srcText(srcKey(w)))}</small>` : ''}
         </a>
         <div class="wact">
           <button class="icon-btn spk" data-say="${esc(w.headword)}" aria-label="発音">${icon('speaker', 22)}</button>
@@ -203,7 +206,12 @@ export async function vocabList(el) {
       return;
     }
     const spk = e.target.closest('[data-say]');
-    if (spk) sayOrig(spk.dataset.say);
+    if (!spk) return;
+    const w = words.find(x => x.id === spk.closest('.wcard').dataset.id);
+    if (w?.ma) {
+      unlock();
+      if (!(await playMA(w))) await showMAPhrase(w.id);
+    } else sayOrig(spk.dataset.say);
   });
   listEl.addEventListener('change', async (e) => {
     const s = e.target.closest('select[data-lv]'); if (!s) return;
@@ -268,6 +276,7 @@ async function addMenu() {
       <a class="btn" href="#vocab-bulk">まとめて追加（1行1語）</a>
       <a class="btn" href="#vocab-paste">英文を貼り付けて選ぶ</a>
       <a class="btn" href="#vocab-csv">CSVファイルから</a>
+      <a class="btn" href="#ma-phrases">MAフレーズを登録</a>
       <button class="btn ghost" value="cancel">閉じる</button>
     </form>`;
   dlg.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => dlg.close()));
@@ -346,6 +355,7 @@ export async function wordDetail(el, params) {
       <div class="kv"><span>登録元</span><b>${esc(SOURCE_JA[w.source?.type] || w.source?.type || '—')}${w.source?.note ? '（' + esc(w.source.note) + '）' : ''}</b></div>
     </div>
 
+    ${w.ma ? '<div class="card" id="maAudio"></div>' : ''}
     <div id="waBox">${isNew ? '' : (await import('./audio-words-ui.js')).wordAudioHTML(w)}</div>
     ${vrefs.length ? `<h2 class="sec">元の動画</h2><div class="card stack">${vrefs.map((r) => vnames[r.videoId]
       ? `<a class="vref" href="#video-play?id=${r.videoId}&t=${r.time}">${icon('play', 14)} <b>${esc(vnames[r.videoId].name)}</b> <span class="muted small">${Math.floor(r.time / 60)}:${String(Math.floor(r.time % 60)).padStart(2, '0')}</span>${r.text ? `<span class="small block">${esc(r.text)}</span>` : ''}</a>`
@@ -389,7 +399,14 @@ export async function wordDetail(el, params) {
   drawSenses();
   $('#split', el)?.addEventListener('click', () => splitDialog(w, el, params));
   sensesEl.addEventListener('click', (e) => { const i = e.target.dataset.rm; if (i != null) { readSenses(); senses.splice(+i, 1); drawSenses(); } });
-  $('#say', el).onclick = async () => { if (!isNew) { try { const m = await import('./word-audio.js'); if (await m.playWord(await db.get('words', w.id) || w)) return; } catch {} } sayOrig($('[name=headword]', el).value, () => speak($('[name=headword]', el).value, 0.95, wl)); };
+  if (w.ma) mountMAAudio($('#maAudio', el), w).catch(err => toast(err.message));
+  $('#say', el).onclick = async () => {
+    if (w.ma) {
+      unlock();
+      if (!await playMA(w)) toast('フレーズ音声は未確定、または参照切れです。MA原音声欄を確認してください');
+      return;
+    }
+    if (!isNew) { try { const m = await import('./word-audio.js'); if (await m.playWord(await db.get('words', w.id) || w)) return; } catch {} } sayOrig($('[name=headword]', el).value, () => speak($('[name=headword]', el).value, 0.95, wl)); };
 
   // 1.19.31: the word's sounds (references). Changes are saved at once; w.audio follows so 保存する keeps them.
   if (!isNew && $('#waBox', el)) {
@@ -414,6 +431,10 @@ export async function wordDetail(el, params) {
     w.senses = senses.filter((s, i) => s.meanings.length || s.examples.length || i === 0);
     w.tags = splitList(fd.get('tags'));
     w.deckIds = fd.getAll('deck');
+    if (w.ma) {
+      const current = await db.get('words', w.id);
+      if (current?.ma) w.ma = current.ma;
+    }
     await saveWord(w);
     toast(isNew ? '登録しました' : '保存しました');
     if (isNew) go(`#word?id=${w.id}`); else wordDetail(el, new URLSearchParams(`id=${w.id}`));

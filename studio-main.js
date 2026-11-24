@@ -26,7 +26,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.26';
+export const STUDIO_VERSION = '0.21.27';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -4924,7 +4924,14 @@ function materialMetadata(blocks, materialType) {
   const map = new Map();
   let studySet = '';
   for (const block of blocks) {
-    if (!block.text || block.asr) continue;
+    if (!block.text) continue;
+    if (materialType === 'prose') {
+      const confirmed = !block.unconfirmed && block.sync !== 'estimated' &&
+        (block.sync === 'manual' || (block.aligned && block.segments?.length === 1));
+      if (confirmed) map.set(block.id, { maAligned: true, wordTimings: block.wordTimings });
+      continue;
+    }
+    if (block.asr) continue;
     const word = isVocabHead(block);
     if (word) studySet = block.id;
     if (studySet && materialType === 'vocab') map.set(block.id, { studySet, role: word ? 'word' : 'example' });

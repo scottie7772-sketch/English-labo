@@ -1388,3 +1388,7 @@ dialog:has(.jp-form) { width: min(96vw, 560px); max-width: 96vw; overflow-x: hid
 .wa-tag.warn { color: var(--warn-text, #f3d48a); }
 .wa-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
 .wa-grid .btn { min-height: 36px; padding: 0 4px; font-size: 13px; white-space: normal; }
+
+.ma-mark { display: inline; padding: 0; border: 0; border-radius: .15em; background: #ffe099; color: #332304; font: inherit; cursor: pointer; }
+.ma-mark:focus-visible { outline: 2px solid currentColor; }
+[data-ma-edge] input { max-width: 8rem; }

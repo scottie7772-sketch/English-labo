@@ -6,7 +6,7 @@ import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
 import { makeSwipeCard, swipeCardHTML, answerStripHTML, swipeMap, isOneHand, swipeHint, oneHandPadHTML, fitStage, fc2FaceHTML, fc2CardHTML, fitBig, fc2Setup, fc2Fit, fc2Voice, listenRevealOn, showAfterAudio } from './swipecard.js';
 import { playWord } from './word-audio.js';
 // 1.19.31: a word's registered sound when it has one, else the synthetic voice (as before)
-const sayW = (w) => { if (!w) return; playWord(w).then((ok) => { if (!ok) speak(w.headword); }); };
+const sayW = (w) => { if (!w) return; playWord(w).then((ok) => { if (!ok && !w.ma) speak(w.headword); }); };
 import { icon } from './icons.js';
 import { L, curLang, langOf, compareAnswer, numToMarks, isZh } from './langs.js';
 

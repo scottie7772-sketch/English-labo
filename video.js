@@ -1,3 +1,5 @@
+import { maMaterial, chapterFor, indexChapter, phraseIndex, highlightRanges, priorities } from './ma-phrases.js';
+import { showMAPhrase } from './ma-phrases-ui.js';
 import { openJaPositionEditor } from './ja-position-ui.js';
 import { releaseVideoMedia } from './video-media-ref.js';
 import { readScriptJa, planScriptJa } from './video-script-ja.js';
@@ -58,12 +60,17 @@ function studioCue(it, start, offset = 0) {
     itemId: it.id, start, end: it.role === 'example' ? segments[0].end : segments.at(-1).end, en: it.text || '', ja: it.ja || '',
     segments, sourceSegments: it.segments, studySet: it.studySet, role: it.role, sync: it.sync, ...(it.jaRemoved ? { jaRemoved: true } : {}),
     ...(it.holes?.length ? { holes: it.holes } : {}),
+    ...(it.maAligned ? { maAligned: true } : {}),
+    ...(segments.length === 1 && Array.isArray(it.wordTimings) ? {
+      wordTimings: it.wordTimings.map(w => ({ text: w.text, start: w.start + offset, end: w.end + offset }))
+    } : {}),
   };
 }
 function preserveCueEdits(c, old) {
   c.id = old.id;
   c.translationRevision = old.translationRevision;
   if (old.dict) c.dict = old.dict;
+  if (old.enEdited || old.timeEdited) delete c.wordTimings;
   if (old.enEdited) Object.assign(c, { en: old.en, enEdited: true, holes: old.holes || [] });
   if (old.jaEdited || (!c.ja && old.ja && !c.jaRemoved)) Object.assign(c, { ja: old.ja, jaEdited: old.jaEdited });
   if (old.timeEdited) Object.assign(c, { start: old.start, end: old.end, segments: old.segments, timeEdited: true });
@@ -680,6 +687,14 @@ export async function videoPlay(el, params) {
   const scriptOrder = () => cues.some(c => c.studioOrder != null) ? cues.slice().sort(
     (a, b) => (a.studioOrder ?? Infinity) - (b.studioOrder ?? Infinity) || compareVideoCues(a,b)) : cues;
   const view = await loadView();
+  const prose = maMaterial(v);
+  let maChapter = prose ? await chapterFor(v) : null;
+  const maSettings = prose ? await getSetting('ma.highlight', { on: true, levels: priorities }) : null;
+  const maWords = prose ? (await db.all('words')).filter(w => w.ma) : [];
+  const maIndex = phraseIndex(maWords);
+  let maObserver = null, maOrdered = [], maPositions = new Map(), maCache = new Map();
+  const maVisible = () => maChapter != null && maSettings.on && maIndex.size > 0 &&
+    !view.cloze && !editing && !rangeMode && !view.test;
   const saveView = () => setSetting('video.view', view);
   let singleSegment = null, loop = null, ab = null, curId = null, rafId = 0, saveT = 0, seekT = 0, loopN = 0, stepCue = null, revealedCue = null, editing = false;
   const revealed = new Map();   // cueId -> Set(hole index)
@@ -721,6 +736,13 @@ export async function videoPlay(el, params) {
     <div id="dict" class="card stack dict" hidden></div>
     <div id="shadow" class="card stack" hidden></div>
     <div class="vsheet" id="shSet" hidden><div class="vsheet-in card stack"><div class="row between"><b>表示・学習の設定</b><button class="btn sm" data-shclose>閉じる</button></div><div class="vset stack" id="set">
+      ${prose ? `<fieldset class="stack" id="maSet"><legend>MAフレーズ</legend>
+        <label>出典章 <input id="maChapter" type="text" value="${esc(maChapter ?? '')}" placeholder="例 12"></label>
+        <button class="btn sm" id="maLink">この章をMA教材として照合</button>
+        <label class="chk"><input type="checkbox" id="maOn" ${maSettings.on ? 'checked' : ''}> 字幕ハイライト</label>
+        <div class="row wrap">${priorities.map(p => `<label class="chk"><input type="checkbox" data-ma-level="${p}" ${maSettings.levels.includes(p) ? 'checked' : ''}> 優先度 ${p}</label>`).join('')}</div>
+        <output id="maResult" aria-live="polite"></output>
+      </fieldset>` : ''}
       <div class="fgrp"><span>主字幕</span><div class="seg" id="primary"><button data-v="en">${esc(TL)}</button><button data-v="ja">日本語</button></div></div>
       <div class="fgrp"><span>2言語のとき</span><div class="seg" id="order"><button data-v="en">${esc(L(vlang).ch)}が上</button><button data-v="ja">日本語が上</button></div></div>
       <div class="fgrp"><span>${esc(TL)}の透明度</span><div class="seg" id="opEn">${OPS.map((o) => `<button data-v="${o}">${o * 100}%</button>`).join('')}</div></div>
@@ -884,10 +906,28 @@ export async function videoPlay(el, params) {
     $('#edit', el).classList.toggle('on', editing); $('#edit', el).textContent = editing ? '穴を選び終える' : '穴を選ぶ（語をタップ）';
     $('#autoGo', el).hidden = !view.clozeAuto;
     $('#modeTxt', el).textContent = [view.test ? '聞き取りテスト中：字幕はタップで表示' : '', view.cloze ? '穴埋め：_____ をタップで答え' : '', editing ? '穴を選ぶ：字幕の語をタップ' : '', view.step && !view.test ? '1文ごとに停止' : ''].filter(Boolean).join('・');
-    drawSub(); drawList();
+    drawList(); drawSub();
+  }
+  function markedEnglish(c) {
+    const position = maPositions.get(c.id);
+    if (position == null) return esc(c.en);
+    if (!maCache.has(c.id)) {
+      const batch = 12, from = Math.floor(position / batch) * batch;
+      const end = Math.min(from + batch, maOrdered.length);
+      // Calculate neighbouring cues together so overlaps spanning subtitle rows resolve consistently.
+      const ranges = highlightRanges(maOrdered, from, end, maIndex, maSettings.levels);
+      for (let i = from; i < end; i++) maCache.set(maOrdered[i].id, ranges.get(maOrdered[i].id) || []);
+    }
+    let cursor = 0;
+    const html = maCache.get(c.id).map(r => {
+      const prefix = esc(c.en.slice(cursor, r.start));
+      cursor = r.end;
+      return prefix + `<button type="button" class="ma-mark" data-ma-word="${esc(r.id)}">${esc(c.en.slice(r.start, r.end))}</button>`;
+    });
+    return html.join('') + esc(c.en.slice(cursor));
   }
   const textHTML = (c, where) => {
-    const en = c.en ? (view.cloze || editing ? clozeHTML(c.en, c.holes || [], { lang: vlang, revealed: revealed.get(c.id) || new Set(), editing, cueId: c.id }) : esc(c.en)) : '';
+    const en = c.en ? (view.cloze || editing ? clozeHTML(c.en, c.holes || [], { lang: vlang, revealed: revealed.get(c.id) || new Set(), editing, cueId: c.id }) : where === 'sub' && maVisible() ? markedEnglish(c) : esc(c.en)) : '';
     const veil = where === 'sub' && view.test && revealedCue !== c.id ? ' veil' : '';
     const parts = [];
     if (showEn() && c.en) parts.push(`<div class="sen${veil}" ${langAttr(vlang)}>${en}</div>`);
@@ -908,8 +948,13 @@ export async function videoPlay(el, params) {
     while (sub.scrollHeight > sub.clientHeight + 1 && f > 0.55) { f -= 0.07; sub.style.setProperty('--fit', f.toFixed(2)); }
   }
   function drawList() {
+    maObserver?.disconnect();
+    const order = scriptOrder();
+    maOrdered = order;
+    maPositions = maVisible() ? new Map(order.map((c, i) => [c.id, i])) : new Map();
+    maCache = new Map();
     if (!cues.length) { cl.innerHTML = `<div class="card stack"><p class="small muted">字幕がまだありません。上の「字幕を作る・読み込む」から作成・読み込みできます。</p></div>`; return; }
-    cl.innerHTML = scriptOrder().map((c) => `
+    cl.innerHTML = order.map((c) => `
       <div class="cue ${c.id === curId ? 'cur' : ''}" data-id="${c.id}">
         <span class="ct">${fmtT(c.start)}</span>
         <span class="grow ctext ${view.test && !rangeMode ? 'veil' : ''}">${rangeMode && c.en ? `<div class="sen" ${langAttr(vlang)}>${toks(c).map((k, i) => `<span class="rk" data-rk="${c.id}:${i}">${esc(k.w)}</span>`).join(' ')}</div>` : textHTML(c, 'list') || '<span class="muted small">（非表示）</span>'}</span>
@@ -918,6 +963,18 @@ export async function videoPlay(el, params) {
         ${c.en ? `<button class="cbtn" data-ja="${c.id}" aria-label="日本語訳を編集">訳</button>` : ''}
         <button class="cbtn" data-edit="${c.id}" aria-label="編集">✎</button>
       </div>`).join('');
+    if (maVisible() && typeof IntersectionObserver !== 'undefined') {
+      maObserver = new IntersectionObserver((entries, observer) => {
+        if (observer !== maObserver) return;
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const row = entry.target, c = maOrdered[maPositions.get(row.dataset.id)], sen = $('.sen', row);
+          if (c?.en && sen) sen.innerHTML = markedEnglish(c);
+          observer.unobserve(row);
+        }
+      }, { root: cl, rootMargin: '120px 0px' });
+      for (const row of cl.children) maObserver.observe(row);
+    }
   }
   function drawStats() {
     const holes = cues.flatMap((c) => (c.holes || []).map((h, i) => ({ c, h, i })));
@@ -976,7 +1033,7 @@ export async function videoPlay(el, params) {
     await recordAnswer({ sessionId: 'video:' + v.id, qid: `${c.id}:${hi}:${Date.now()}`, wordId: vocab ? vocab.id : `cz_${c.id}_${h.s}`, direction: 'audio', format: 'video-cloze', mode: 'video', prompt: c.en, answer: ok ? '聞けた' : '聞けなかった', ms: 0, self: true,
       results: [{ skill: 'listening', correct: ok, hint: false }], srs: vocab ? { kind: 'word', lang: vlang } : { kind: 'cloze', lang: vlang } });
     $('#grade', el).innerHTML = ok ? '' : `<div class="hgrade">「${esc(h.text)}」を記録しました <button class="btn sm" data-addng="${c.id}:${hi}">単語帳に追加</button></div>`;
-    drawSub(); drawList(); drawStats();
+    drawList(); drawSub(); drawStats();
   }
   async function addToVocab(c, hi) {
     const h = c.holes[hi];
@@ -1004,7 +1061,7 @@ export async function videoPlay(el, params) {
         set.add(hi);
         $('#grade', el).innerHTML = `<div class="hgrade">「${esc(c.holes[hi].text)}」 <button class="btn sm ok" data-g="1" data-c="${c.id}" data-h="${hi}">聞けた</button><button class="btn sm ng" data-g="0" data-c="${c.id}" data-h="${hi}">聞けなかった</button></div>`;
       }
-      drawSub(); drawList(); return true;
+      drawList(); drawSub(); return true;
     }
     const tok = e.target.closest('.ctok');
     if (tok && editing) {
@@ -1012,12 +1069,18 @@ export async function videoPlay(el, params) {
       const c = cues.find((x) => x.id === tok.dataset.cue);
       toggleToken(c, +tok.dataset.t, view.clozeUnit, vlang);
       db.put('cues', c); revealed.delete(c.id);
-      drawSub(); drawList(); drawStats(); return true;
+      drawList(); drawSub(); drawStats(); return true;
     }
     return false;
   }
+  const maTap = e => {
+    const button = e.target.closest('[data-ma-word]');
+    if (!button || !maVisible()) return false;
+    showMAPhrase(button.dataset.maWord, v.id, () => vid?.pause()).catch(err => toast(err.message));
+    return true;
+  };
   sub.addEventListener('click', (e) => {
-    if (onTextTap(e)) return;
+    if (maTap(e) || onTextTap(e)) return;
     const c = cues.find((x) => x.id === curId); if (!c) return;
     if (view.test && revealedCue !== c.id) { revealedCue = c.id; drawSub(); return; }
     if (!editing && c.en) wordFromCue(c.id);
@@ -1029,7 +1092,7 @@ export async function videoPlay(el, params) {
   });
   $('#czStats', el).addEventListener('click', async (e) => { const a = e.target.closest('[data-addng]'); if (a) { const [cid, hi] = a.dataset.addng.split(':'); await addToVocab(cues.find((x) => x.id === cid), +hi); a.disabled = true; } });
   cl.addEventListener('click', (e) => {
-    if (onTextTap(e)) return;
+    if (maTap(e) || onTextTap(e)) return;
     const w = e.target.closest('[data-word]'); if (w) return wordFromCue(w.dataset.word);
     const ja = e.target.closest('[data-ja]'); if (ja) return editJa(ja.dataset.ja);
     const ed = e.target.closest('[data-edit]'); if (ed) return editCue(ed.dataset.edit);
@@ -1698,7 +1761,36 @@ export async function videoPlay(el, params) {
     on('seekbackward', () => $('#back', el)?.click()); on('seekforward', () => $('#fwd', el)?.click());
     on('seekto', (d) => { if (d.seekTime != null) vid.currentTime = d.seekTime; });
   }
+  if (prose) {
+    const box = $('#maSet', el), result = $('#maResult', el), run = $('#maLink', el);
+    const refreshIndex = async (manual = false) => {
+      if (run.disabled || !box.isConnected) return;
+      run.disabled = true;
+      try {
+        if (manual) {
+          maChapter = $('#maChapter', el).value.trim() || v.name;
+          await setSetting('ma.chapter.' + v.id, maChapter);
+          drawList(); drawSub();
+        }
+        result.textContent = '照合中…';
+        const n = await indexChapter(v.id, maChapter);
+        result.textContent = `音声と照合できた使用例 ${n ?? 0}件`;
+      } catch (err) { result.textContent = err.message; }
+      finally { run.disabled = false; }
+    };
+    run.onclick = () => refreshIndex(true);
+    box.onchange = e => {
+      if (!e.target.matches('#maOn,[data-ma-level]')) return;
+      maSettings.on = $('#maOn', box).checked;
+      maSettings.levels = $$('[data-ma-level]:checked', box).map(c => Number(c.dataset.maLevel));
+      setSetting('ma.highlight', maSettings);
+      drawList(); drawSub();
+    };
+    if (maChapter != null && maWords.length && (!vid || vid.paused)) void refreshIndex();
+  }
   setCleanup(() => {
+    maObserver?.disconnect();
+    maObserver = null;
     removeEventListener('resize', fitList); fitRO.disconnect();
     cancelAnimationFrame(rafId); savePos(); vid?.pause(); if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
     if (ms) { for (const a of MS_ACTS) { try { ms.setActionHandler(a, null); } catch {} } try { ms.metadata = null; } catch {} }

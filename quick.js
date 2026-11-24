@@ -276,7 +276,7 @@ export async function quickRun(el, params) {
     const st = { card, entry, flipped: false, revealed: false };
     const setFace = fc2
       ? (back) => { st.flipped = back; card.classList.toggle('revealed', back); if (back) { st.revealed = true; if (cfg.direction === 'ja2en') voice.tap(w.headword, w); } }
-      : (back) => { st.flipped = back; card.classList.add('flipping'); setTimeout(() => { $('.face', card).innerHTML = back ? f.back : f.front; card.classList.remove('flipping'); }, 90); if (back) { st.revealed = true; playWord(w).then((ok) => { if (!ok) speak(w.headword); }); } };
+      : (back) => { st.flipped = back; card.classList.add('flipping'); setTimeout(() => { $('.face', card).innerHTML = back ? f.back : f.front; card.classList.remove('flipping'); }, 90); if (back) { st.revealed = true; playWord(w).then((ok) => { if (!ok && !w.ma) speak(w.headword); }); } };
     st.flip = () => setFace(!st.flipped);
     st.autoFlip = () => { if (!st.flipped) setFace(true); };
     // fc2: tapping the English reads it aloud (again and again); tapping elsewhere shows the answer

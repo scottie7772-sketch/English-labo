@@ -52,6 +52,7 @@ export async function zipWrite(files, onProgress) {
     offset += 30 + name.length + blob.size;
   }
   const cdSize = central.reduce((a, p) => a + (p.byteLength ?? p.length), 0);
+  if (offset + cdSize + 22 > 0xffffffff || files.length > 0xffff) throw Error('標準ZIPのサイズ上限を超えています');
   const end = new DataView(new ArrayBuffer(22));
   end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
   end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
@@ -81,7 +82,9 @@ export async function zipRead(blob, { inflateFallback } = {}) {
   async function file(name) {
     const e = entries[name]; if (!e) return null;
     const lh = new DataView(await blob.slice(e.lho, e.lho + 30).arrayBuffer());
+    if (lh.byteLength !== 30 || lh.getUint32(0, true) !== 0x04034b50) throw Error(`${name} のZIPヘッダーが壊れています`);
     const start = e.lho + 30 + lh.getUint16(26, true) + lh.getUint16(28, true);
+    if (start + e.csize > cdOff || (e.method === 0 && e.csize !== e.size)) throw Error(`${name} のZIPデータが欠けています`);
     const raw = blob.slice(start, start + e.csize);
     if (e.method === 0) return raw;
     if (e.method === 8) {
@@ -92,5 +95,6 @@ export async function zipRead(blob, { inflateFallback } = {}) {
     }
     throw new Error(`${name} は対応していない圧縮形式です`);
   }
-  return { names: Object.keys(entries), file, async text(name) { const b = await file(name); return b ? b.text() : null; } };
+  return { names: Object.keys(entries), file, entrySize: name => entries[name]?.size,
+    async text(name) { const b = await file(name); return b ? b.text() : null; } };
 }

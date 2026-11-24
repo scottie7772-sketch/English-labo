@@ -86,8 +86,9 @@ export async function vocabList(el) {
       if (f.deck && !(w.deckIds || []).includes(f.deck)) return false;
       if (f.levels.length && !f.levels.includes(filterLevel(lvOf(mastery[w.id], f.skill)))) return false;
       if (f.src && srcKey(w) !== f.src) return false;
-      if (f.au === 'yes' && !wa?.has(w.headword)) return false;
-      if (f.au === 'no' && wa?.has(w.headword)) return false;
+      const hasA = Boolean(w.audio?.word?.state === 'confirmed') || wa?.has(w.headword);   // 1.19.31: a registered sound counts too
+      if (f.au === 'yes' && !hasA) return false;
+      if (f.au === 'no' && hasA) return false;
       if (q) {
         const hay = (w.headword + ' ' + (w.senses || []).flatMap((s) => s.meanings || []).join(' ') + ' ' + srcText(srcKey(w)) + ' ' + (w.tags || []).join(' ')).toLowerCase();
         if (!hay.includes(q)) return false;
@@ -116,7 +117,7 @@ export async function vocabList(el) {
         ${sel ? `<input type="checkbox" class="wsel" data-sel="${w.id}" ${sel.has(w.id) ? 'checked' : ''} aria-label="選ぶ">` : ''}
         <a class="wmain" href="#word?id=${w.id}">
           <b class="tl">${esc(w.headword)}</b>${w.ipa && isZh(langOf(w)) ? `<span class="small muted"> ${esc(numToMarks(w.ipa))}</span>` : ''}${w.review === 'unverified' ? '<span class="tagp ai">未検証</span>' : ''}${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}${headCount[headKey(w.headword)] > 1 ? '<span class="tagp">多義</span>' : ''}${w.slim ? '<span class="tagp slim">軽量</span>' : ''}
-          <span class="mean">${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>${f.sort === 'src' || f.src || f.au !== 'all' ? `<small class="muted wsrc">${wa?.has(w.headword) ? '🔊 ' : ''}${esc(srcText(srcKey(w)))}</small>` : ''}
+          <span class="mean">${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>${f.sort === 'src' || f.src || f.au !== 'all' ? `<small class="muted wsrc">${w.audio?.word?.state === 'confirmed' || wa?.has(w.headword) ? '🔊 ' : ''}${esc(srcText(srcKey(w)))}</small>` : ''}
         </a>
         <div class="wact">
           <button class="icon-btn spk" data-say="${esc(w.headword)}" aria-label="発音">${icon('speaker', 22)}</button>
@@ -344,6 +345,7 @@ export async function wordDetail(el, params) {
       <div class="kv"><span>登録元</span><b>${esc(SOURCE_JA[w.source?.type] || w.source?.type || '—')}${w.source?.note ? '（' + esc(w.source.note) + '）' : ''}</b></div>
     </div>
 
+    <div id="waBox">${isNew ? '' : (await import('./audio-words-ui.js')).wordAudioHTML(w)}</div>
     ${vrefs.length ? `<h2 class="sec">元の動画</h2><div class="card stack">${vrefs.map((r) => vnames[r.videoId]
       ? `<a class="vref" href="#video-play?id=${r.videoId}&t=${r.time}">${icon('play', 14)} <b>${esc(vnames[r.videoId].name)}</b> <span class="muted small">${Math.floor(r.time / 60)}:${String(Math.floor(r.time % 60)).padStart(2, '0')}</span>${r.text ? `<span class="small block">${esc(r.text)}</span>` : ''}</a>`
       : `<div class="small muted">（動画は削除済み）${esc(r.text || '')}</div>`).join('')}</div>` : ''}
@@ -386,8 +388,14 @@ export async function wordDetail(el, params) {
   drawSenses();
   $('#split', el)?.addEventListener('click', () => splitDialog(w, el, params));
   sensesEl.addEventListener('click', (e) => { const i = e.target.dataset.rm; if (i != null) { readSenses(); senses.splice(+i, 1); drawSenses(); } });
-  $('#say', el).onclick = () => sayOrig($('[name=headword]', el).value, () => speak($('[name=headword]', el).value, 0.95, wl));
+  $('#say', el).onclick = async () => { if (!isNew) { try { const m = await import('./word-audio.js'); if (await m.playWord(await db.get('words', w.id) || w)) return; } catch {} } sayOrig($('[name=headword]', el).value, () => speak($('[name=headword]', el).value, 0.95, wl)); };
 
+  // 1.19.31: the word's sounds (references). Changes are saved at once; w.audio follows so 保存する keeps them.
+  if (!isNew && $('#waBox', el)) {
+    const wa = await import('./audio-words-ui.js');
+    const redraw = async () => { const fresh = await db.get('words', w.id); w.audio = fresh?.audio; $('#waBox', el).innerHTML = wa.wordAudioHTML(w); wa.bindWordAudio($('#waBox', el), w.id, redraw); };
+    wa.bindWordAudio($('#waBox', el), w.id, redraw);
+  }
   $('#f', el).onsubmit = async (e) => {
     e.preventDefault();
     readSenses();

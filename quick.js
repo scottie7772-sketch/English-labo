@@ -6,7 +6,8 @@ import { LEVEL_LABELS, SKILL_LABELS, effLevel, filterLevel, loadAllMastery } fro
 import { recordAnswer, snapshotMastery, undoAnswer } from './judge.js';
 import { shuffle, allMeanings } from './study.js';
 import { toggleBookmark } from './words.js';
-import { makeSwipeCard, swipeCardHTML, answerStripHTML, swipeMap, isOneHand, swipeHint, oneHandPadHTML, fitStage, fc2FaceHTML, fc2CardHTML, fitBig, fc2Setup, fc2Fit, fc2Voice } from './swipecard.js';
+import { makeSwipeCard, swipeCardHTML, answerStripHTML, swipeMap, isOneHand, swipeHint, oneHandPadHTML, fitStage, fc2FaceHTML, fc2CardHTML, fitBig, fc2Setup, fc2Fit, fc2Voice, listenRevealOn, showAfterAudio } from './swipecard.js';
+import { playWord } from './word-audio.js';
 import { icon } from './icons.js';
 
 import { L, curLang, langOf, numToMarks, isZh } from './langs.js';
@@ -223,6 +224,9 @@ export async function quickRun(el, params) {
       info: () => `${$('#unitlbl', el).textContent}　${$('#tally', el).textContent}`,
       items: [
         { label: '直前の回答を取り消す', run: () => doUndo(), disabled: () => !undo.length },
+        { label: '単語の音声を再生', run: () => { const w = (cur && words[cur.entry.wordId]); if (w) voice.tap(w.headword, w); } },
+        { label: '例文の音声を再生', run: () => { const w = (cur && words[cur.entry.wordId]); if (w) voice.example(w); } },
+        { label: '単語→例文を続けて再生', run: () => { const w = (cur && words[cur.entry.wordId]); if (w) voice.both(w); } },
         { label: '一時停止', run: () => $('#pause', el).click() },
         { label: '表示・リピートの設定', run: () => openSheet(), text: () => `表示・リピートの設定（${REPEATS[cfg.repeat].label}）` },
       ],
@@ -271,14 +275,14 @@ export async function quickRun(el, params) {
     const card = stage.firstElementChild;
     const st = { card, entry, flipped: false, revealed: false };
     const setFace = fc2
-      ? (back) => { st.flipped = back; card.classList.toggle('revealed', back); if (back) { st.revealed = true; if (cfg.direction === 'ja2en') voice.tap(w.headword); } }
-      : (back) => { st.flipped = back; card.classList.add('flipping'); setTimeout(() => { $('.face', card).innerHTML = back ? f.back : f.front; card.classList.remove('flipping'); }, 90); if (back) { st.revealed = true; speak(w.headword); } };
+      ? (back) => { st.flipped = back; card.classList.toggle('revealed', back); if (back) { st.revealed = true; if (cfg.direction === 'ja2en') voice.tap(w.headword, w); } }
+      : (back) => { st.flipped = back; card.classList.add('flipping'); setTimeout(() => { $('.face', card).innerHTML = back ? f.back : f.front; card.classList.remove('flipping'); }, 90); if (back) { st.revealed = true; playWord(w).then((ok) => { if (!ok) speak(w.headword); }); } };
     st.flip = () => setFace(!st.flipped);
     st.autoFlip = () => { if (!st.flipped) setFace(true); };
     // fc2: tapping the English reads it aloud (again and again); tapping elsewhere shows the answer
-    const onTap = fc2 ? (t) => { const sayEl = t?.closest?.('[data-say]'); if (sayEl) voice.tap(sayEl.classList.contains('fc2-audio') ? w.headword : sayEl.textContent); else st.flip(); } : st.flip;
+    const onTap = fc2 ? (t) => { const sayEl = t?.closest?.('[data-say]'); if (sayEl) voice.tap(sayEl.classList.contains('fc2-audio') ? w.headword : sayEl.textContent, w); else st.flip(); } : st.flip;
     st.ctl = makeSwipeCard(card, { map, paper: fc2, pads: fc2 ? [qrun] : pad ? [pad] : [], canInteract: () => running && !ended, onTap, onCommit: (r) => { if (fc2) voice.stop(); answer(st, r); }, revealOnCommit: () => f.back });
-    if (fc2) { fitBig(card); if (cfg.direction !== 'ja2en') voice.auto(w.headword); }
+    if (fc2) { fitBig(card); if (cfg.direction !== 'ja2en') { const listening = cfg.direction.startsWith('audio'); voice.auto(w.headword, w, { listening }).then((done) => { if (done && listening && listenRevealOn() && cur === st) showAfterAudio(card, w); }); } }
     const bmb = $('.cardbm', card);
     bmb.onclick = async (e) => { e.stopPropagation(); const on = await toggleBookmark(w.id); w.bookmarked = on; bmb.classList.toggle('on', on); toast(on ? 'ブックマークしました' : 'ブックマークを外しました', 1000); };
     cur = st; cardMs = 0;

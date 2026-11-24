@@ -1,4 +1,4 @@
-import { adjustJaRows } from './ja-position.js';
+import { openJaPositionEditor } from './ja-position-ui.js';
 import { releaseVideoMedia } from './video-media-ref.js';
 import { readScriptJa, planScriptJa } from './video-script-ja.js';
 // Phase 6: Video Lab (local videos + SRT/VTT subtitles + word registration linked to video position)
@@ -10,7 +10,7 @@ import { pickWordsDialog } from './pick.js';
 import { headKey, wordsByHead, findDuplicate, newWord, newSense, saveWord, splitList } from './words.js';
 import { clozeHTML, toggleToken, candidates } from './cloze.js';
 import { translationRows, planTranslations } from './video-translations.js';
-import { readVideoJa, videoJaView, videoJaSource, compareVideoCues, parseJaPatch, cueStamps, saveVideoJa, removeVideoJaInTx, studioJaPatch } from './video-ja.js';
+import { readVideoJa, videoJaView, videoJaSource, compareVideoCues, parseJaPatch, cueStamps, saveVideoJa, removeVideoJaInTx, studioJaPatch, labJaRows, labJaChanges, applyJaChanges } from './video-ja.js';
 import { fingerprint } from './common-pack.js';
 import { recordAnswer } from './judge.js';
 
@@ -743,6 +743,9 @@ export async function videoPlay(el, params) {
         <button class="btn" id="exportJa" ${cues.some(c => c.en) ? '' : 'disabled'}>翻訳用の字幕情報を書き出す（JSON）</button>
         <button class="btn" id="clearJa" ${jaRecords.some(row => row.refs?.length) || cues.some(c => jaFor(c) || jaView.needsReview(c)) ? '' : 'hidden'}>日本語訳だけ削除</button>
         <button class="btn" id="reviewJa" ${jaView.review.length ? '' : 'hidden'}>日本語訳の要確認を表示</button>
+        <button class="btn" id="jaHistory">訳の変更履歴（保存後に元に戻す）</button>
+        <button class="btn" id="jaCorrections">手動修正した訳の書き出し・取り込み</button>
+        ${v.from?.material ? '<button class="btn" id="jaSync">スタジオの訳と比較・反映</button>' : ''}
         <button class="btn" id="askClaude" ${cues.some((c) => c.en) ? '' : 'disabled'}>翻訳依頼文をコピー</button>
         <button class="btn" data-paste="ja">返ってきた日本語訳を貼り付け</button>
         <label class="btn" for="fEn">${esc(TL)}字幕ファイル（SRT/VTT）を読み込む</label>
@@ -1319,6 +1322,17 @@ export async function videoPlay(el, params) {
   $('#exportJa', el).onclick = exportJaSource;
   $('#clearJa', el).onclick = clearJa;
   $('#reviewJa', el).onclick = showJaReview;
+  // 1.19.30: these open only when asked (no extra buttons on the learning screen itself)
+  const jaTool = (run) => async () => {
+    const place = keepPlace(); vid?.pause();
+    const tools = await import('./ja-tools-ui.js');
+    const changed = await run(tools);
+    if (changed) { cues = await cuesOf(v.id); await refreshJa(); }
+    restorePlace(place);
+  };
+  $('#jaHistory', el).onclick = jaTool(t => t.openJaHistory(v.id));
+  $('#jaCorrections', el).onclick = jaTool(t => t.openJaCorrections({ kind: 'lab', videoId: v.id }));
+  $('#jaSync', el)?.addEventListener('click', jaTool(t => t.openJaSync({ setId: v.from.material, videoId: v.id, start: 'lab' })));
   $('#askClaude', el).onclick = async () => {
     const text = `order の順に文脈を確認して各字幕を日本語に訳し、教材IDと cueId を維持して {"materialId":"…","translations":[{"cueIds":["字幕ID"],"ja":"訳文"}]} 形式のJSONだけ返してください。1つの訳が複数字幕に対応する場合は cueIds に全IDを入れてください。同じ字幕に複数の訳文が対応する場合は別々の行にしてください。英文・表示順・時刻は出力に含めないでください。\n\n${jaSource()}`;
     try { await navigator.clipboard.writeText(text); toast('翻訳依頼文をコピーしました'); }
@@ -1376,69 +1390,40 @@ export async function videoPlay(el, params) {
           `<p>${esc(id)}<br>${esc(jaView.draft({ id }))}</p>`).join('')}</details>` : ''}` : '<p>要確認の日本語訳はありません。</p>',
       okLabel: '閉じる', cancelLabel: null });
   }
-  async function editJa(id) {
+  // 1.19.30: the position editor shared with Studio (ja-position-ui.js). One save = one history entry (undo after saving).
+  // English, audio, timings and cue ids are never changed. The list scroll and the play position are kept.
+  const keepPlace = () => ({ list: cl?.scrollTop ?? 0, page: scrollY, time: vid?.currentTime ?? null, paused: vid ? vid.paused : true,
+    loop, ab, follow: followOff });
+  const restorePlace = (p) => {
+    if (vid && p.time != null) { singleSegment = null; stepCue = null; vid.pause(); vid.currentTime = p.time; if (!p.paused) vid.play().catch(() => {}); }
+    loop = p.loop; ab = p.ab; followOff = p.follow || Date.now();
+    requestAnimationFrame(() => { if (cl) cl.scrollTop = p.list; scrollTo(0, p.page); });
+    kick();
+  };
+  async function editJa(id, range = null) {
     const list = scriptOrder().filter(c => c.en), k = list.findIndex(c => c.id === id);
     if (k < 0) return;
-    const rows = list.slice(Math.max(0,k-1),k+2), center = rows.findIndex(c=>c.id===id);
-    const original = rows.map(c=>jaView.draft(c)), expected = cueStamps(rows), dlg = $('#dialog');
-    // Shared spans must not be flattened into independent duplicated translations.
-    const shared = new Set(jaRecords.filter(r=>r.cueIds?.length>1).map(r=>r.id));
-    const blocked = new Set(jaRecords.filter(r=>r.refs?.some(ref=>shared.has(ref))).map(r=>r.cueId));
-    if (rows.some(c=>blocked.has(c.id))) {
-      toast('複数字幕共通の訳は位置調整できません。対応JSONで再取り込みしてください'); return;
-    }
-    const pending = confirmDialog({title:'日本語字幕の位置調整', body:`
-      <p class="small muted">移動したい訳を選択して矢印を押すと部分移動。選択なしは全文移動。英文・音声は変わりません。</p>
-      ${rows.map((c,i)=>`<div class="stack" style="margin-bottom:12px"><b>${i===center?'対象：':''}${esc(c.en)}</b><textarea aria-label="日本語訳 ${i+1}" data-japos="${i}" rows="3">${esc(original[i])}</textarea><div class="row wrap">${[-1,1].filter(d=>rows[i+d]).map(d=>`<button type="button" class="btn sm" data-move="${d}" data-index="${i}">${d<0?'↑ 前へ':'↓ 次へ'}</button><button type="button" class="btn sm" data-swap="${d}" data-index="${i}">${d<0?'↑ 交換':'↓ 交換'}</button>`).join('')}</div></div>`).join('')}
-      <button type="button" class="btn" id="jaUndo">元に戻す</button>
-      <details><summary>従来の一括調整</summary><button class="btn sm" value="shiftUp">この行から下の訳を1行上へ</button><button class="btn sm" value="shiftDown">この行から下の訳を1行下へ</button></details>`,okLabel:'日本語訳だけ保存'});
-    const fields = [...dlg.querySelectorAll('[data-japos]')], history=[];
-    const snapshot=()=>fields.map(f=>f.value);
-    const restore=values=>fields.forEach((f,i)=>{f.value=values[i]});
-    dlg.querySelectorAll('[data-move],[data-swap]').forEach(btn=>{
-      // Keep textarea selection when tapping a control.
-      btn.addEventListener('mousedown',e=>e.preventDefault());
-      btn.onclick=()=>{
-        const i=Number(btn.dataset.index), d=Number(btn.dataset.move ?? btn.dataset.swap), j=i+d;
-        const before=snapshot(), f=fields[i];
-        const next=adjustJaRows(before,i,j,btn.dataset.swap!==undefined,f.selectionStart,f.selectionEnd);
-        if(next){history.push(before);restore(next);}
-      };
-    });
-    $('#jaUndo',dlg).onclick=()=>restore(history.pop() || original);
-    fields[center].focus();
-    const ok=await pending;
-    if (!ok && ['shiftUp','shiftDown'].includes(dlg.returnValue)) return shiftJa(id,dlg.returnValue==='shiftUp'?1:-1);
-    if (!ok) return;
-    const changes=new Map(rows.flatMap((c,i)=>fields[i].value===original[i]?[]:[[c.id,fields[i].value.trim()?[fields[i].value.trim()]:[]]]));
-    if(!changes.size) return;
+    const place = keepPlace();
+    vid?.pause();
+    const records = await readVideoJa(v.id), expected = cueStamps(cues);
+    const { rows, groups } = labJaRows(list, records);
+    // Preview: one line, or the previous line to the next line. Loops / A-B are suspended while the editor is open.
+    const preview = (i, mode) => {
+      if (!vid) return;
+      const a = list[mode === 'context' ? Math.max(0, i - 1) : i], z = list[mode === 'context' ? Math.min(list.length - 1, i + 1) : i];
+      loop = null; ab = null; stepCue = null;
+      singleSegment = { end: z.end };
+      vid.currentTime = a.start + 0.01; vid.play().catch(() => {}); kick();
+    };
+    const result = await openJaPositionEditor({ rows, groups, center: k, range, play: vid ? preview : null,
+      stop: () => { singleSegment = null; vid?.pause(); }, note: '保存後も「字・訳」→「訳の変更履歴」から元に戻せます。' });
+    if (!result) return restorePlace(place);
     try {
-      const result=await saveVideoJa(v.id,changes,expected,{atomic:true});
+      await applyJaChanges(v.id, labJaChanges(rows, groups, result.changes), expected, { label: `訳の位置調整（${result.changes.length}行）` });
       await refreshJa();
-      toast(result.needsReview.length?'字幕が変更されました。保存せず終了しました':'日本語訳を更新しました');
-    } catch(error){toast(error.message);}
-  }
-  // 1.19.28: fix English–Japanese pairs that are off by one line, from this line to the end (one save).
-  // dir 1 = each line takes the next line's translation (this line's own is dropped); -1 = each takes the previous one.
-  // The translation pushed off the end is NOT kept as text-only data: it is shown and then discarded.
-  async function shiftJa(id, dir) {
-    await new Promise((r) => setTimeout(r, 60));
-    const list = scriptOrder().filter(c => c.en), k = list.findIndex(c => c.id === id);
-    if (k < 0) return;
-    const part = list.slice(k), old = part.map(c => jaView.draft(c) || '');
-    const next = dir === 1 ? [...old.slice(1), ''] : ['', ...old.slice(0, -1)];
-    const dropped = dir === 1 ? old[0] : old.at(-1);
-    const ok = await confirmDialog({ title: dir === 1 ? '訳を1行上へずらす' : '訳を1行下へずらす',
-      body: `<p>${part.length}行の訳を${dir === 1 ? '上' : '下'}へ1行ずらします。</p>
-        <div class="stack small" style="max-height:40vh;overflow:auto">${part.slice(0, 4).map((c, i) => `<div><b>${esc(c.en.slice(0, 60))}</b><br><span class="muted">${esc(old[i].slice(0, 40)) || '（なし）'} → ${esc(next[i].slice(0, 40)) || '（なし）'}</span></div>`).join('')}${part.length > 4 ? '<div class="muted">…</div>' : ''}</div>
-        ${dropped ? `<p class="small">対応する英文がなくなる訳は保存しません：「${esc(dropped.slice(0, 60))}」</p>` : ''}`, okLabel: 'ずらす' });
-    if (!ok) return;
-    try {
-      const changes = new Map(part.map((c, i) => [c.id, next[i] ? [next[i]] : []]));
-      const result = await saveVideoJa(v.id, changes, cueStamps(part));
-      await refreshJa();
-      toast(result.needsReview.length ? '字幕が変更されました。開き直して確認してください' : `${part.length}行の訳をずらしました`);
-    } catch (error) { toast(error.message); }
+      toast(`日本語訳を更新しました（${result.changes.length}行）`);
+    } catch (error) { await refreshJa(); toast(error.message, 6000); }
+    restorePlace(place);
   }
   async function importText(text, lang) {
     const list = parseSubs(text);
@@ -1462,6 +1447,7 @@ export async function videoPlay(el, params) {
       let patch, unmatched = [], scriptReview = [];
       if (structured) {
         const data = JSON.parse(text);
+        if (data?.format === 'englabo-ja-corrections') return importCorrectionFile(data);
         const idPatch = Array.isArray(data?.translations) && (data.translations.some(row => row && Object.hasOwn(row, 'cueIds')) ||
           !data.translations.length && data.materialId != null);
         if (idPatch) {
@@ -1487,23 +1473,45 @@ export async function videoPlay(el, params) {
       const deletionCount = [...patch.values()].filter(values => !values.length).length;
       const sample = [...patch].filter(([id]) => targets.has(id)).slice(0, 10).map(([id, values]) =>
         `<li>${esc(targets.get(id))}<br>${values.length ? esc(values.map(value => value.ja ?? value).join(' / ')) : '日本語訳を削除'}</li>`).join('');
+      // 1.19.30: "only missing" and an explicit re-match are different operations; hand corrections are protected in both.
+      const hasJa = cues.some(c => jaView.draft(c));
+      const modeHTML = hasJa ? `<fieldset class="stack small"><legend>取り込み方</legend>
+          <label class="chk"><input type="radio" name="jaImportMode" value="missing" checked> 訳のない字幕だけに入れる（未割当のみ）</label>
+          <label class="chk"><input type="radio" name="jaImportMode" value="rematch"> 再照合する（既存の訳も置き換え）</label>
+          <span class="muted">どちらの場合も、手動で修正した訳は上書きしません。</span></fieldset>` : '';
       if (!(await confirmDialog({
         title: '日本語訳の対応を確認',
-        body: `<p>教材 ${esc(v.name)}・取込対象 ${patch.size}件${deletionCount ? `（訳を削除 ${deletionCount}件）` : ''}。</p>${reviewDetails}${unmatched.length ? `<p>要確認 ${unmatched.length}件。対応先 ${unmatched.slice(0, 10).map(esc).join('、')}</p>` : ''}
+        body: `<p>教材 ${esc(v.name)}・取込対象 ${patch.size}件${deletionCount ? `（訳を削除 ${deletionCount}件）` : ''}。</p>${modeHTML}${reviewDetails}${unmatched.length ? `<p>要確認 ${unmatched.length}件。対応先 ${unmatched.slice(0, 10).map(esc).join('、')}</p>` : ''}
           ${sample ? `<ol class="small">${sample}</ol>` : ''}
           ${flagged.length ? `<p>編集後に訳の確認が必要な字幕を選んでください。</p><div class="stack">${flagged.map((cue, i) => `<label class="chk">
             <input type="checkbox" data-ja-confirm="${i}"><span>${esc(cue.en)}<br>${esc(patch.get(cue.id).map(value => value.ja ?? value).join(' / '))}</span></label>`).join('')}</div>` : ''}`,
         okLabel: patch.size ? '日本語訳だけ保存' : '閉じる', cancelLabel: patch.size ? 'キャンセル' : null,
       })) || !patch.size) return;
       const approved = new Set($$('[data-ja-confirm]:checked', dlg).map(input => Number(input.dataset.jaConfirm)));
+      const mode = $('[name=jaImportMode]:checked', dlg)?.value || 'rematch';
       flagged.forEach((cue, i) => { if (!approved.has(i)) expected.delete(cue.id); });
-      const result = await saveVideoJa(v.id, patch, expected);
+      const result = await saveVideoJa(v.id, patch, expected, { protectManual: true, missingOnly: mode === 'missing' });
       await refreshJa();
       const pending = new Set([...unmatched, ...result.needsReview]);
-      toast(pending.size ? `適用できなかった字幕があります（要確認 ${pending.size}件）` : '日本語訳を保存しました');
+      const kept = result.skipped?.length ? `・既存の訳・手動修正を保護 ${result.skipped.length}件` : '';
+      toast(pending.size ? `適用できなかった字幕があります（要確認 ${pending.size}件${kept}）` : `日本語訳を保存しました${kept}`, 4000);
     } catch (error) {
       toast('日本語訳を読み込めませんでした。' + (error?.message || error), 6000);
     }
+  }
+  async function importCorrectionFile(data) {
+    try {
+      const { importCorrections } = await import('./ja-tools-ui.js');
+      const plan = await importCorrections({ kind: 'lab', videoId: v.id }, data);
+      const ok = await confirmDialog({ title: '修正JSONの取り込み', okLabel: plan.matched.length ? '取り込む' : '閉じる', cancelLabel: plan.matched.length ? 'キャンセル' : null,
+        body: `<p>適用できる修正 ${plan.matched.length}件・適用できない修正 ${plan.skipped.length}件。手動修正として保存します。</p>
+          <ol class="small">${plan.matched.slice(0, 20).map(m => `<li>${esc(m.item.en)}<br>${esc(m.item.ja) || '（訳を削除）'}</li>`).join('')}</ol>
+          ${plan.skipped.length ? `<details><summary>適用できない修正</summary><ul class="small">${plan.skipped.map(x => `<li>${esc(x.item.en)}<br>${esc(x.reason)}</li>`).join('')}</ul></details>` : ''}` });
+      if (!ok || !plan.matched.length) return;
+      await plan.apply();
+      await refreshJa();
+      toast(`${plan.matched.length}件の修正を取り込みました`);
+    } catch (error) { toast(error.message, 5000); }
   }
   async function importFile(e, lang) { const f = e.target.files[0]; e.target.value = ''; if (f) importText(await f.text(), lang); }
   async function pasteDialog(lang) {
@@ -1571,7 +1579,13 @@ export async function videoPlay(el, params) {
     if ((v.lang || 'en') !== 'en') { const w = await pickWordsDialog({ text: c.en, ja: jaFor(c), lang: v.lang, source: { type: 'video', videoId: v.id, cueId: c.id, time: c.start, text: c.en }, title: '字幕から語句を登録' }); if (w) { w.videoRefs = [...(w.videoRefs || []).filter((r) => r.cueId !== c.id), { videoId: v.id, cueId: c.id, time: c.start, text: c.en }]; await saveWord(w); } return; }
     const toks = c.en.split(/(\s+)/);
     let n = 0;
+    // 1.19.31: the word / example sound from this material (a range of the existing recording)
+    const wa = await import('./audio-words-ui.js');
+    const partVideos = new Map();
+    for (const p of v.parts || []) { const child = await db.get('videos', p.videoId); if (child) { const { blob, audioBlob, ...meta } = child; partVideos.set(p.videoId, meta); } }
+    const audioOpts = wa.labCueAudioOptions(v, scriptOrder(), c, { parts: partVideos });
     const dlg = $('#dialog');
+    const audioUI = wa.cueAudioSection(dlg, audioOpts, () => $('#wh', dlg)?.value || '');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>字幕から単語を登録</h3>
       <p class="hint">語をタップ（隣り合う語を続けて選ぶと熟語）</p>
       <div class="ptext">${toks.map((tk) => { if (!tk.trim()) return tk; const m = tk.match(/^([^A-Za-z']*)([A-Za-z][A-Za-z'\-]*)([^A-Za-z']*)$/); return m ? `${esc(m[1])}<span class="tok" data-n="${n++}">${esc(m[2])}</span>${esc(m[3])}` : esc(tk); }).join('')}</div>
@@ -1579,7 +1593,10 @@ export async function videoPlay(el, params) {
       <label class="field"><span>登録する語（編集可）</span><input id="wh" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
       <label class="field"><span>意味（「/」で複数・あとで入力も可）</span><input id="wm"></label>
       <label class="chk"><input type="checkbox" id="wb"> ブックマークする</label>
+      ${audioUI.html}
       <div class="row end"><button class="btn ghost" value="cancel">キャンセル</button><button class="btn primary" value="ok">登録</button></div></form>`;
+    audioUI.bind();
+    if (audioOpts.word && c.role === 'word') $('#wh', dlg).value = c.en.replace(/[.!?。]+$/, '');
     const sync = () => {
       const on = $$('.tok.on', dlg).map((t) => +t.dataset.n);
       const all = $$('.tok', dlg);
@@ -1589,26 +1606,32 @@ export async function videoPlay(el, params) {
     $('.ptext', dlg).onclick = (e) => { const t = e.target.closest('.tok'); if (t) { t.classList.toggle('on'); sync(); } };
     dlg.returnValue = '';
     dlg.onclose = async () => {
+      import('./word-audio.js').then((m) => m.stop()).catch(() => {});
       if (dlg.returnValue !== 'ok') return;
       const head = $('#wh', dlg).value.trim();
       if (!head) return toast('語を選んでください');
+      const sounds = audioUI.result();
+      // 1.19.31: from a 金フレ word line, the example is the example line of the same group (not the word itself)
+      const exCue = c.role === 'word' ? (cues.find((x) => x.studySet && x.studySet === c.studySet && x.role === 'example') || c) : c;
       const ref = { videoId: v.id, cueId: c.id, time: c.start, text: c.en };
       const exist = findDuplicate(await wordsByHead(), head, splitList($('#wm', dlg).value));
       if (exist) {
         exist.videoRefs = [...(exist.videoRefs || []).filter((r) => r.cueId !== c.id), ref];
         const s0 = exist.senses[0];
-        if (!(s0.examples || []).some((x) => x.en === c.en)) s0.examples = [...(s0.examples || []), { en: c.en, ja: jaFor(c) || '' }];
+        if (exCue !== c || c.role !== 'word') { if (!(s0.examples || []).some((x) => x.en === exCue.en)) s0.examples = [...(s0.examples || []), { en: exCue.en, ja: jaFor(exCue) || '' }]; }
         const add = splitList($('#wm', dlg).value).filter((m) => !s0.meanings.includes(m));
         s0.meanings.push(...add);
         if ($('#wb', dlg).checked) exist.bookmarked = true;
+        if (sounds.word || sounds.example) exist.audio = { ...(exist.audio || {}), ...sounds };   // replaces the earlier sound of the same kind
         await saveWord(exist);
-        toast(`「${exist.headword}」は登録済み：例文と動画の位置を追加しました`);
+        toast(`「${exist.headword}」は登録済み：例文と動画の位置${sounds.word || sounds.example ? '・音声' : ''}を追加しました`);
       } else {
         const w = newWord({ lang: v.lang || 'en', headword: head, bookmarked: $('#wb', dlg).checked, source: { type: 'video', ...ref },
-          senses: [newSense({ meanings: splitList($('#wm', dlg).value), examples: [{ en: c.en, ja: jaFor(c) || '' }] })] });
+          senses: [newSense({ meanings: splitList($('#wm', dlg).value), examples: exCue !== c || c.role !== 'word' ? [{ en: exCue.en, ja: jaFor(exCue) || '' }] : [] })] });
         w.videoRefs = [ref];
+        if (sounds.word || sounds.example) w.audio = sounds;
         await saveWord(w);
-        toast(`「${w.headword}」を登録しました`);
+        toast(`「${w.headword}」を登録しました${sounds.word || sounds.example ? '（音声付き）' : ''}`);
       }
     };
     dlg.showModal();
@@ -1622,6 +1645,7 @@ export async function videoPlay(el, params) {
       <button class="btn" value="pen">${esc(TL)}字幕を貼り付け</button>
       <button class="btn" value="pja">日本語訳を貼り付け</button>
       <button class="btn" value="copy" ${cues.some((c) => c.en) ? '' : 'disabled'}>${esc(TL)}字幕ID・英文・表示順を書き出す</button>
+      ${cues.some((c) => c.studySet && c.role) ? '<button class="btn" value="audioWords">音声付きで単語帳に登録（金フレ型）</button>' : ''}
       <button class="btn" value="rename">名前を変更</button>
       <button class="btn danger" value="del">動画を削除</button>
       <button class="btn ghost" value="cancel">閉じる</button></form>`;
@@ -1630,6 +1654,7 @@ export async function videoPlay(el, params) {
     dlg.onclose = async () => {
       const r = dlg.returnValue;
       if (r === 'pen' || r === 'pja') pasteDialog(r === 'pen' ? 'en' : 'ja');
+      else if (r === 'audioWords') { await new Promise((ok) => setTimeout(ok, 60)); vid?.pause(); (await import('./audio-words-ui.js')).openAudioWordBulk({ kind: 'lab', id: v.id }); }
       else if (r === 'copy') exportJaSource(); else if (r === 'rename') {
         const name = await askName('動画の名前', v.name);
         if (name?.trim()) { const cur = await db.get('videos', v.id); cur.name = name.trim(); await saveVideoMeta(cur); videoPlay(el, params); }

@@ -1,5 +1,6 @@
 import { ensurePackFolder, studioFolders, folderMembers, createStudioFolder, renameStudioFolder, moveStudioSets, saveStudioFolderOrder, getFolderJa, saveFolderJa } from './studio-folders.js';
-import { readStudioJaFiles, planStudioJa, studioJaView, confirmStudioJa, studioJaChoices, findStudioJaChoices } from './studio-ja.js';
+import { readStudioJaFiles, planStudioJa, studioJaView, confirmStudioJa, studioJaChoices, findStudioJaChoices, studioJaRows, studioJaEditBlocks } from './studio-ja.js';
+import { openJaPositionEditor } from './ja-position-ui.js';
 // 教材スタジオ（制作）: standalone page studio.html now; later mounted inside Englabo with mount(el, { base: 'studio/' }).
 // Rules: does not import learning modules and never touches the learning database (ell-db).
 import { $, $$, esc, toast, confirmDialog, swipeToDelete } from './ui.js';
@@ -23,7 +24,7 @@ import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange,
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.21';
+export const STUDIO_VERSION = '0.21.23';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -3010,7 +3011,7 @@ async function editorScreen(el, params, revision) {
       ${choices.length ? `<label class="field">フォルダの英日データから探す<input id="stJaFixSearch" type="search" placeholder="英文の一部、または日本語"></label>
         <div id="stJaFixChoices" class="stack" style="max-height:32dvh;overflow:auto"></div>` :
         sourceError ? `<p class="small warn-text">候補を読み込めませんでした。和訳は直接入力できます。<br>${esc(sourceError)}</p>` : ''}`,
-      [['save','この和訳で確定'],['cancel','閉じる']]);
+      [['save','この和訳で確定'],['pos','位置調整…'],['cancel','閉じる']]);
     const dlg = $('#dialog'), text = $('#stJaFixText', dlg);
     const save = $('button[value=save]', dlg);
     const updateSave = () => { save.disabled = !text.value.trim(); };
@@ -3041,7 +3042,9 @@ async function editorScreen(el, params, revision) {
       };
       render();
     }
-    if (await result !== 'save' || revision !== routeRevision || !text.value.trim()) return;
+    const answer = await result;
+    if (answer === 'pos' && revision === routeRevision) return studioJaPosition(row.id);
+    if (answer !== 'save' || revision !== routeRevision || !text.value.trim()) return;
     await run('和訳を確定', { blocks: [confirmStudioJa(row, text.value)], guardedSet: guard });
   }
 
@@ -3270,7 +3273,7 @@ async function editorScreen(el, params, revision) {
         ${head && prevRow ? `<button class="btn sm" value="headPrev">切り離した冒頭（${fmt(head.start)}〜${fmt(head.end)}）を前の字幕へ</button>` : ''}
         ${tail && nextRow ? `<button class="btn sm" value="tailNext">切り離した末尾（${fmt(tail.start)}〜${fmt(tail.end)}）を次の字幕へ</button>` : ''}
         <div class="row wrap">${prevRow ? '<button class="btn sm ghost" value="mergePrev">前の字幕と結合</button>' : ''}${nextRow ? '<button class="btn sm ghost" value="mergeNext">次の字幕と結合</button>' : ''}</div>
-        <div class="row wrap small"><span class="muted">訳が1行ずれているとき：</span><button class="btn sm ghost" value="jaUp">この行から下の訳を1行上へ</button><button class="btn sm ghost" value="jaDown">1行下へ</button></div></div>`);
+        <div class="row wrap small"><button class="btn sm" value="jaPos">日本語訳の位置調整…</button><span class="muted">訳が1行ずれているとき：</span><button class="btn sm ghost" value="jaUp">この行から下の訳を1行上へ</button><button class="btn sm ghost" value="jaDown">1行下へ</button></div></div>`);
     };
     draw();
     dlg.returnValue = '';
@@ -3278,7 +3281,9 @@ async function editorScreen(el, params, revision) {
       if (editorPlayback?.dlg === dlg) { editorPlayback.cleanup?.(); editorPlayback = null; vid.pause(); playing = null; }
       try {
         const rv = dlg.returnValue;
-        if (rv === 'jaUp' || rv === 'jaDown') return await studioJaShift(b.id, rv === 'jaUp' ? 1 : -1);
+        if (rv === 'jaPos') return await studioJaPosition(b.id);
+        // 1.19.30: the old "shift to the end" opens the range move (nothing pushed out is deleted; merge / swap / cancel)
+        if (rv === 'jaUp' || rv === 'jaDown') return await studioJaPosition(b.id, rv === 'jaUp' ? -1 : 1);
         if (['headPrev','tailNext','mergePrev','mergeNext'].includes(rv)) { readText(); return await editNeighbourAction(rv, b, work, originalSegments, cutParts(), prevRow, nextRow); }
         if (rv === 'ja-only') {
           const ja = $('#eJa', dlg).value.trim();
@@ -3304,22 +3309,33 @@ async function editorScreen(el, params, revision) {
     dlg.showModal();
   }
 
-  // 1.19.28: English–Japanese pairs off by one line, from this line to the end: shift the translations (one save / undo).
-  // The translation that loses its English line is shown and discarded (never kept as text-only data).
-  async function studioJaShift(id, dir) {
+  // 1.19.30: the Japanese position editor shared with Video Lab (ja-position-ui.js): one save = one undo step (↶).
+  // shift: -1 / 1 opens it with "this line to the end, one line up / down" filled in.
+  async function studioJaPosition(id, shift = 0) {
     await new Promise((r) => setTimeout(r, 60)); await reload();
-    const view = studioJaView(blocks);
+    if (revision !== routeRevision) return;
     const list = set.order.map((x) => byId[x]).filter((x) => x && (x.text || '').trim() && !isSymbolRow(x));
     const k = list.findIndex((x) => x.id === id); if (k < 0) return;
-    const part = list.slice(k), old = part.map((x) => view.value(x) || '');
-    const next = dir === 1 ? [...old.slice(1), ''] : ['', ...old.slice(0, -1)], dropped = dir === 1 ? old[0] : old.at(-1);
-    const ok = await confirmDialog({ title: dir === 1 ? '訳を1行上へずらす' : '訳を1行下へずらす',
-      body: `<p>${part.length}行の訳を${dir === 1 ? '上' : '下'}へ1行ずらします（↶で戻せます）。</p>
-        <div class="stack small" style="max-height:40vh;overflow:auto">${part.slice(0, 4).map((x, i) => `<div><b>${esc(x.text.slice(0, 60))}</b><br><span class="muted">${esc(old[i].slice(0, 40)) || '（なし）'} → ${esc(next[i].slice(0, 40)) || '（なし）'}</span></div>`).join('')}${part.length > 4 ? '<div class="muted">…</div>' : ''}</div>
-        ${dropped ? `<p class="small">対応する英文がなくなる訳は保存しません：「${esc(dropped.slice(0, 60))}」</p>` : ''}`, okLabel: 'ずらす' });
-    if (!ok || revision !== routeRevision) return;
-    const ups = part.map((x, i) => (next[i] === old[i] ? null : confirmStudioJa(x, next[i]))).filter(Boolean);
-    if (ups.length) await run('訳を1行ずらす', { blocks: ups });
+    const guard = jaGuard(set), { rows, groups } = studioJaRows(blocks, list);
+    const place = { src: vid.dataset.src, t: vid.currentTime };
+    ++playbackRequest; vid.pause(); playing = null;
+    const preview = (i, mode) => {
+      const seq = mode === 'context' ? list.slice(Math.max(0, i - 1), i + 2) : [list[i]];
+      const segments = seq.flatMap((x) => x.segments || []);
+      if (!segments.length) return toast('この行には音声区間がありません');
+      playBlock({ segments });
+    };
+    const result = await openJaPositionEditor({ rows, groups, center: k, play: preview,
+      stop: () => { ++playbackRequest; vid.pause(); playing = null; },
+      range: shift ? { a: k, b: list.length - 1, d: shift } : null, note: '保存後は ↶ で元に戻せます。' });
+    ++playbackRequest; vid.pause(); playing = null;
+    const back = () => { if (place.src && revision === routeRevision) attach(place.src, place.t); };
+    back();
+    if (!result || revision !== routeRevision) return;
+    let changed;
+    try { changed = studioJaEditBlocks(blocks, result.changes); } catch (error) { return toast(error.message, 4000); }
+    await run(`訳の位置調整（${changed.length}行）`, { blocks: changed, guardedSet: guard });
+    back();
   }
   // 1.19.19: from the edit screen — give the cut-off start / end to the neighbouring line, or merge with it (one save, one undo)
   async function editNeighbourAction(rv, b0, work, originalSegments, cuts, prevRow, nextRow) {
@@ -4388,6 +4404,8 @@ async function editorScreen(el, params, revision) {
       <button class="btn" value="stJa">英日対応データを反映</button>
       ${parentFolder ? '<button class="btn" value="stFolderJa">フォルダの英日データを使う</button>' : ''}
       <button class="btn" value="stJaReview">日本語訳の確認</button>
+      <button class="btn" value="stJaSync">Labの訳と比較・反映</button>
+      <button class="btn" value="stJaFix">手動修正した訳の書き出し・取り込み</button>
       <button class="btn" value="ver">版（保存・復元）</button>
       ${HOST ? '<button class="btn primary" value="send">英語ラボに送る</button>' : ''}
       <button class="btn" value="exp">教材パックとして書き出す${HOST ? '（ファイル）' : ''}</button>
@@ -4409,6 +4427,7 @@ async function editorScreen(el, params, revision) {
       <button class="btn" value="mergeset">別の教材をこの教材にまとめる</button>
       <button class="btn" value="names">固有名詞をまとめて直す</button>
       <button class="btn" value="words">単語リストを作る</button>
+      ${set.materialType === 'vocab' ? '<button class="btn" value="audioWords">音声付きで単語帳に登録（金フレ型）</button>' : ''}
       <button class="btn" value="txt">テキストを書き出す</button>
       <button class="btn" value="diag">照合・重複の診断データを書き出す（変更なし）</button>
       ${Object.values(srcs).some((x) => x.audio?.count > 1 && x.derived !== 'audio16k') ? '<button class="btn" value="track">使う音声トラックを選ぶ</button>' : ''}
@@ -4430,6 +4449,11 @@ async function editorScreen(el, params, revision) {
         lastSubId = undefined; drawList(); drawSub();
       };
       if (v === 'stJa') pickStudioJa([set.id], refreshJa);
+      if (v === 'stJaSync' || v === 'stJaFix') {
+        const tools = await import('./ja-tools-ui.js');
+        const changed = v === 'stJaSync' ? await tools.openJaSync({ setId: set.id, start: 'studio' }) : await tools.openJaCorrections({ kind: 'studio', setId: set.id });
+        if (changed && revision === routeRevision) { const keepAt = (() => { try { return viewAnchor(); } catch { return null; } })(); await refreshJa(); if (keepAt) try { restoreViewAnchor(keepAt, viewSwitchSerial); } catch {} }
+      }
       if (v === 'stFolderJa' && parentFolder) {
         const corpus = await getFolderJa(parentFolder.id);
         if (revision !== routeRevision) return;
@@ -4450,6 +4474,7 @@ async function editorScreen(el, params, revision) {
       if (v === 'splitAudio') splitAudioRange();
       if (v === 'asr') runAsr();
       if (v === 'words') nav(`words?id=${set.id}`);
+      if (v === 'audioWords') { ++playbackRequest; vid.pause(); playing = null; (await import('./audio-words-ui.js')).openAudioWordBulk({ kind: 'studio', id: set.id }); }
       if (v === 'names') fixNames();
       if (v === 'add') nav(`import?to=${set.id}&script=1`);
       if (v === 'addMedia') nav(`import?to=${set.id}`);
@@ -4486,6 +4511,8 @@ async function deleteSet(set) {
   const others = (await sdb.all('sets')).filter((s) => s.id !== set.id);
   const usedElsewhere = new Set((await Promise.all(others.map(async (s) => (await sdb.byIndex('blocks', 'setId', s.id)).flatMap((b) => b.segments.map((x) => x.sourceId))))).flat());
   const srcIds = new Set(blocks.flatMap((b) => b.segments.map((x) => x.sourceId)));
+  // 1.19.31: a recording used by word cards (単語帳の音声) is kept
+  try { const { referencedMedia } = await import('./audio-refs.js'); for (const id of (await referencedMedia()).studio.keys()) usedElsewhere.add(id); } catch {}
   await sdb.tx(['sets', 'blocks', 'blockRevs', 'versions', 'tracks', 'oplog', 'sources', 'meta'], 'readwrite', (t) => {
     t.objectStore('sets').delete(set.id);
     t.objectStore('meta').delete(`speech-first:${set.id}`);
@@ -4576,6 +4603,7 @@ async function cleanScreen(el) {
   const est = await navigator.storage?.estimate?.().catch(() => null);
   const sets = await sdb.all('sets'), srcs = await sdb.all('sources');
   const used = {}; for (const st of sets) for (const b of await sdb.byIndex('blocks', 'setId', st.id)) if (!b.deleted) for (const g of b.segments) (used[g.sourceId] ||= new Set()).add(st.title);
+  try { const { referencedMedia } = await import('./audio-refs.js'); for (const id of (await referencedMedia()).studio.keys()) (used[id] ||= new Set()).add('単語帳の音声'); } catch {}   // 1.19.31
   const orphans = srcs.filter((x) => !used[x.id]);
   const oplogN = (await sdb.all('oplog')).length, revN = (await sdb.all('blockRevs')).length;
   const names = (await caches.keys().catch(() => [])) || [];
@@ -4758,10 +4786,15 @@ async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offe
   const preview = `${scanned < ids.length ? `<p>未照合 ${ids.length-scanned}教材</p>` : ''}` +
     plans.map(plan => `<details><summary>${esc(plan.title)}　${plan.summary}</summary>${plan.sample}</details>`).join('');
   const choices = [['cancel','閉じる']];
-  if (plans.some(plan => plan.count) || scanned < ids.length) choices.push(['save', scanned < ids.length ? '照合済みの候補を反映' : '日本語訳を反映']);
+  if (plans.some(plan => plan.count) || scanned < ids.length) {
+    // 1.19.30: an explicit re-match and "only rows without a translation" are separate choices; hand corrections are kept in both
+    if (!missingOnly) choices.push(['saveMissing', '未割当の行だけ反映']);
+    choices.push(['save', scanned < ids.length ? '照合済みの候補を反映' : missingOnly ? '未割当の行に反映' : '再照合して反映（手動修正は保護）']);
+  }
   if (offerLab && HOST?.sendToLab && plans.length && scanned === ids.length) choices.push(['send','反映して一括教材化へ']);
-  const action = await studioDialog('日本語訳の反映を確認', preview, choices);
-  if (!['save','send'].includes(action) || start !== routeRevision) return;
+  const action = await studioDialog('日本語訳の反映を確認', preview + '<p class="small muted">手動で修正・確定した訳は、どちらの方法でも上書きしません。</p>', choices);
+  if (!['save','saveMissing','send'].includes(action) || start !== routeRevision) return;
+  if (action === 'saveMissing') missingOnly = true;
   const applied = [], errors = new Map();
   const saving = studioBatchProgress('日本語訳を反映中');
   let saved = 0;

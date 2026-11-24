@@ -156,7 +156,9 @@ export function planStudioJa(set, blocks, sections, { missingOnly = false } = {}
   const { patch, reviewCueIds } = planScriptJa(cues, { rows }, { allowUnknownChapters: true });
   const live = new Map(blocks.map(row => [row.id, row]));
   const missing = missingOnly ? new Set(studioJaView(blocks).summary.missing.map(row => row.id)) : null;
-  const writable = id => !manual(live.get(id)) && (!missing || missing.has(id));
+  // 1.19.30: a shared translation fixed by hand (jaImport.manual) is protected like a manual row
+  const handGroup = row => Boolean(row?.jaImport && live.get(row.jaImport.owner)?.jaImport?.manual);
+  const writable = id => !manual(live.get(id)) && !handGroup(live.get(id)) && (!missing || missing.has(id));
   const edits = new Map();
   const groups = new Map();
   for (const [id, entries] of patch) {
@@ -188,4 +190,66 @@ export function planStudioJa(set, blocks, sections, { missingOnly = false } = {}
     }),
     summary: studioJaView(changes).summary,
   };
+}
+
+// ================= 1.19.30: position editor (shared with Video Lab through ja-position.js) =================
+export const studioJaLocked = (row, rows) => manual(row) || Boolean(row?.jaImport && rows.get(row.jaImport.owner)?.jaImport?.manual);
+// rows for the editor: own = a hand translation (or an imported one used by this row only); groups = imported/hand
+// translations shared by several rows (kept as one group, never copied to each row).
+export function studioJaRows(blocks, list = blocks) {
+  const view = studioJaView(blocks), byId = new Map(blocks.map(row => [row.id, row]));
+  const groups = new Map();
+  const rows = list.map(row => {
+    if (manual(row)) return { id: row.id, en: row.text || '', own: row.ja || '', groups: [] };
+    const owner = row.jaImport?.owner && byId.get(row.jaImport.owner);
+    const group = owner?.jaImport?.members && view.value(row) ? owner.jaImport : null;
+    const members = group ? group.members.map(m => m.id).filter(id => byId.has(id) && !manual(byId.get(id))) : [];
+    if (group && members.length > 1) {
+      if (!groups.has(owner.id)) groups.set(owner.id, { text: group.texts.join('\n'), members, hand: Boolean(group.manual) });
+      return { id: row.id, en: row.text || '', own: '', groups: [owner.id] };
+    }
+    return { id: row.id, en: row.text || '', own: view.value(row) || '', groups: [] };
+  });
+  return { rows, groups };
+}
+// editor changes -> block states for one commit (one undo step). Rows that keep a shared group are untouched.
+export function studioJaEditBlocks(blocks, changes) {
+  const byId = new Map(blocks.map(row => [row.id, row]));
+  return changes.map(change => {
+    const row = byId.get(change.id);
+    if (!row) throw new Error('行が見つかりません');
+    if (change.after.groups.length) throw new Error('共有訳を残したまま個別の訳は保存できません');
+    return confirmStudioJa(row, change.after.own);
+  });
+}
+// A translation shared by several rows, set by hand (from Video Lab or a correction file): protected from re-matching.
+export function studioHandGroup(rows, texts) {
+  const owner = rows[0].id;
+  const members = rows.map(row => ({ id: row.id, stamp: stamp(row.text) }));
+  return rows.map(row => {
+    const { jaOverride, ...rest } = row;
+    return { ...rest, ja: '', jaReview: false, jaStatus: 'ok', jaImport: row.id === owner ? { owner, members, texts, manual: true } : { owner } };
+  });
+}
+export const studioJaManual = manual;
+// Write translation units [{ ids: [block ids in reading order], texts: [ja] }] as hand corrections:
+// one id -> manual row (empty texts = explicit removal), several ids -> one hand-made shared translation.
+// A group whose owner is rewritten keeps its other members' text (they become manual) so no row silently loses it.
+export function studioPatchUnits(blocks, units) {
+  const byId = new Map(blocks.map(row => [row.id, row])), out = new Map();
+  for (const unit of units) {
+    const rows = unit.ids.map(id => byId.get(id));
+    if (rows.some(row => !row)) throw new Error('行が見つかりません');
+    if (rows.length === 1) out.set(rows[0].id, confirmStudioJa(rows[0], unit.texts.filter(Boolean).join('\n')));
+    else for (const row of studioHandGroup(rows, unit.texts.filter(Boolean))) out.set(row.id, row);
+  }
+  const view = studioJaView(blocks);
+  for (const row of blocks) {
+    const owner = row.jaImport?.owner;
+    if (!owner || owner === row.id || out.has(row.id) || !out.has(owner) || manual(row)) continue;
+    if (out.get(owner).jaImport?.owner === owner && out.get(owner).jaImport.members?.some(m => m.id === row.id)) continue;
+    const text = view.value(row);
+    if (text) out.set(row.id, confirmStudioJa(row, text));
+  }
+  return [...out.values()];
 }

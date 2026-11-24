@@ -41,10 +41,12 @@ export async function storageScreen(el) {
       <div class="row between"><span><b>音声認識モデル</b><br><small class="muted">字幕の自動作成に使う部品。消しても、次に使うとき自動で再ダウンロード（Wi-Fi推奨）</small></span><button class="btn sm" id="delModel" ${model.length ? '' : 'disabled'}>${fmtSize(mTotal)} 削除</button></div>
       <div class="row between"><span><b>アプリ本体の保存分</b><br><small class="muted">画面の部品。消すと最新版を読み込み直します（ネット接続が必要）</small></span><button class="btn sm" id="delApp">${fmtSize(aTotal)} 削除</button></div>
     </div>
+    ${await (await import('./audio-words-ui.js')).storageAudioHTML().catch(() => '')}
     <h2 class="sec">動画（大きい順）</h2>
     <div class="card list">${vids.sort((a, b) => vSize(b) - vSize(a)).map((v) => `<div class="row between vrow2"><span class="grow"><b>${esc(v.name)}</b><br><small class="muted">${fmtSize(vSize(v))}${v.compressed ? `・圧縮済み（${esc(v.compressed.label)}）` : ''}・字幕 ${cueN[v.id] || 0}行${v.blob || v.fileSize != null ? '' : '・動画ファイルなし'}</small></span>
       ${(v.blob || v.fileSize != null) && v.kind !== 'multi' ? `<button class="btn sm" data-comp="${v.id}">圧縮</button>` : ''}${v.blob || v.fileSize != null ? `<button class="btn sm" data-dropfile="${v.id}">動画だけ削除</button>` : ''}<button class="btn sm danger" data-del="${v.id}">全部削除</button></div>`).join('') || '<p class="empty">動画はありません</p>'}</div>
     <p class="hint">「動画だけ削除」は字幕・穴埋め・学習記録を残します（あとで「動画を選び直す」で戻せます）。「全部削除」は字幕なども消えます。</p>`;
+  (await import('./audio-words-ui.js')).bindStorageAudio(el, () => storageScreen(el));
   $$('[data-comp]', el).forEach((b) => (b.onclick = async () => { const { compressVideoAudio } = await import('./video.js'); if (await compressVideoAudio(b.dataset.comp)) storageScreen(el); }));
   $('#delModel', el).onclick = async () => {
     if (!(await confirmDialog({ title: '音声認識モデルを削除', body: `<p>${fmtSize(mTotal)} を空けます。次に字幕を自動で作るとき、もう一度ダウンロードします。</p>`, okLabel: '削除' }))) return;

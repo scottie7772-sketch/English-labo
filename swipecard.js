@@ -1,3 +1,4 @@
+import { wordAudio, sameText } from './audio-refs.js';
 // Shared 3-direction swipe card (left / up / right) with tap-to-flip.
 // iPhone Safari + home-screen PWA: Touch Events (preventDefault) + touch-action:none; Pointer Events for mouse.
 //
@@ -256,23 +257,71 @@ export function fc2Fit(stage) {
 export function fc2Voice(root, speakFn) {
   let pending = null, unlocked = false, wa = null, seq = 0;
   // 1.17.10: the original recording first (when the same word / sentence is in a matched material), else the synthetic voice
+  // 1.19.31: a word that has its own registered sound (word.audio) plays exactly that range first
   import('./word-audio.js').then((m) => { wa = m; return m.prepare(true); }).catch(() => {});
-  const tts = (text) => { try { const u = speakFn(text); if (u) { u.onstart = () => { unlocked = true; pending = null; }; } } catch { /* the cards still work without sound */ } };
-  const say = (text, waited = false) => {
-    if (!text) return; const my = ++seq;
-    try { speechSynthesis.cancel(); } catch {}
-    if (wa && origOn() && !wa.ready() && !waited) {   // 1.18.6: the list of recordings is still loading: wait a moment instead of using TTS
-      Promise.race([wa.prepare(), new Promise((r) => setTimeout(r, 2500))]).then(() => { if (my === seq) { seq--; say(text, true); } }); return;
-    }
-    if (wa?.has(text) && origOn()) { wa.play(text).then((ok) => { if (ok) { unlocked = true; pending = null; } else if (my === seq) tts(text); }); return; }
-    wa?.stop(); tts(text);
+  const tts = (text, onEnd) => {
+    try { const u = speakFn(text); if (u) { u.onstart = () => { unlocked = true; pending = null; }; if (onEnd) { u.onend = onEnd; u.onerror = onEnd; } } else onEnd?.(); }
+    catch { onEnd?.(); /* the cards still work without sound */ }
   };
-  root.addEventListener('touchstart', () => { wa?.unlock(); if (!unlocked) { unlocked = true; if (pending) { const t = pending; pending = null; say(t); } } }, { capture: true, passive: true });
+  const refOf = (w, text) => {
+    if (!w) return null;
+    if (text == null || text === w.headword) return wordAudio(w, 'word');
+    const ex = wordAudio(w, 'example');
+    return ex && sameText(ex.origin?.text, text) ? ex : null;
+  };
+  const say = (text, { w = null, waited = false, onEnd = null } = {}) => {
+    if (!text) { onEnd?.(); return; }
+    const my = ++seq;
+    try { speechSynthesis.cancel(); } catch {}
+    const ref = refOf(w, text);
+    if (ref) {
+      const run = (m) => m.playRef(ref, { onEnd }).then((ok) => { if (ok) { unlocked = true; pending = null; } else if (my === seq) tts(text, onEnd); else onEnd?.(); });
+      if (wa) return void run(wa);
+      return void import('./word-audio.js').then((m) => { wa = m; if (my === seq) run(m); else onEnd?.(); }).catch(() => tts(text, onEnd));
+    }
+    if (wa && origOn() && !wa.ready() && !waited) {   // 1.18.6: the list of recordings is still loading: wait a moment instead of using TTS
+      Promise.race([wa.prepare(), new Promise((r) => setTimeout(r, 2500))]).then(() => { if (my === seq) { seq--; say(text, { w, waited: true, onEnd }); } else onEnd?.(); }); return;
+    }
+    if (wa?.has(text) && origOn()) { wa.play(text, { onEnd }).then((ok) => { if (ok) { unlocked = true; pending = null; } else if (my === seq) tts(text, onEnd); else onEnd?.(); }); return; }
+    wa?.stop(); tts(text, onEnd);
+  };
+  // word, then the example (both from the registered sounds; the example only when it has its own sound)
+  const both = (w, onEnd) => {
+    const a = refOf(w, w.headword), b = wordAudio(w, 'example');
+    if (a && b) {
+      const my = ++seq; try { speechSynthesis.cancel(); } catch {}
+      const go = (m) => m.playRefs([a, b], { onEnd }).then((ok) => { if (ok) { unlocked = true; pending = null; } else if (my === seq) say(w.headword, { w, onEnd }); });
+      return void (wa ? go(wa) : import('./word-audio.js').then((m) => { wa = m; go(m); }));
+    }
+    say(w.headword, { w, onEnd });
+  };
+  root.addEventListener('touchstart', () => { wa?.unlock(); if (!unlocked) { unlocked = true; if (pending) { const t = pending; pending = null; t(); } } }, { capture: true, passive: true });
+  const ended = (fn) => new Promise((resolve) => fn(resolve));
   return {
-    auto(text) { pending = text; say(text); },
-    tap(text) { pending = null; say(text); },
+    // shown with a new card. listening (audio…) directions always play; otherwise the 自動再生 setting decides
+    auto(text, w = null, { listening = false } = {}) {
+      if (!listening && !autoOn()) return Promise.resolve(false);
+      return ended((resolve) => {
+        const run = () => (w && seqOn() && !listening ? both(w, () => resolve(true)) : say(text, { w, onEnd: () => resolve(true) }));
+        pending = run; run();
+      });
+    },
+    tap(text, w = null) { pending = null; return ended((resolve) => say(text, { w, onEnd: () => resolve(true) })); },
+    both(w) { pending = null; return ended((resolve) => both(w, () => resolve(true))); },
+    example(w) { const ex = wordAudio(w, 'example') || null; const text = ex?.origin?.text || (w.senses || []).flatMap((x) => x.examples || []).find((x) => x.en)?.en; pending = null; return ended((resolve) => say(text, { w, onEnd: () => resolve(true) })); },
     stop() { pending = null; seq++; wa?.stop(); try { speechSynthesis.cancel(); } catch {} },
   };
 }
+// 音声→ cards: the English appears under the speaker once the sound has played (setting), the answer stays hidden
+export function showAfterAudio(card, w) {
+  const top = card?.querySelector('.fc2-top');
+  if (!top || top.querySelector('.fc2-after')) return;
+  top.insertAdjacentHTML('beforeend', `<div class="fc2-after" lang="en">${escH(w.headword)}</div>`);
+}
+const flag = (key, dflt) => { try { const v = localStorage.getItem(key); return v == null ? dflt : v === '1'; } catch { return dflt; } };
+// 1.19.31 settings: play the word when a card appears / then its example / in 音声→ cards, show the English after the sound
+export const autoOn = () => flag('fc-auto', true);
+export const seqOn = () => flag('fc-seq', false);
+export const listenRevealOn = () => flag('fc-listen-en', false);
 // setting: use the original recording on cards (on by default)
 export const origOn = () => { try { return localStorage.getItem('fc-orig') !== '0'; } catch { return true; } };

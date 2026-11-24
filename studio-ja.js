@@ -32,12 +32,23 @@ async function inflateJaEntry(raw, expectedSize) {
   }
 }
 
+// 1.19.31: one JSON may hold several chapters: [{ chapter, items }, …] or { chapters: [...] } / { sections: [...] }
+const rowsOf = d => d && typeof d === 'object' && !Array.isArray(d) ? d.items ?? d.translations ?? d.cues : null;
+export function jaJsonDocuments(data) {
+  const list = Array.isArray(data) ? data : Array.isArray(data?.chapters) ? data.chapters : Array.isArray(data?.sections) ? data.sections : null;
+  if (list?.length && list.every(d => Array.isArray(rowsOf(d)))) return list.map(d => (data.materialId != null && d.materialId == null ? { ...d, materialId: data.materialId } : d));
+  return [data];
+}
 export async function readStudioJaFiles(files) {
   const sections = [];
   const add = (name, text) => {
-    const data = JSON.parse(text);
-    readScriptJa(data, data?.materialId);
-    sections.push({ name, data, index: sections.length });
+    const docs = jaJsonDocuments(JSON.parse(text));
+    docs.forEach((data, i) => {
+      try { readScriptJa(data, data?.materialId); }
+      catch (error) { throw new Error(docs.length > 1 ? `${i + 1}番目の章：${error.message}` : error.message); }
+      const label = docs.length > 1 ? `${name}#${data.chapter ?? i + 1}` : name;
+      sections.push({ name: label, data, index: sections.length });
+    });
   };
   for (const file of files) {
     try {
@@ -59,6 +70,13 @@ export async function readStudioJaFiles(files) {
   return orderStudioJaSections(sections);
 }
 
+// English–Japanese data pasted as text (a JSON with one or several chapters)
+export async function readStudioJaText(text, name = '貼り付けたJSON.json') {
+  const value = String(text || '').trim();
+  if (!value) throw new Error('JSONを貼り付けてください');
+  return readStudioJaFiles([new File([value], name, { type: 'application/json' })]);
+}
+
 export function orderStudioJaSections(sections) {
   // A BEFORE interlude may explicitly identify its position in the ZIP filename.
   const position = section => {
@@ -71,7 +89,7 @@ export function orderStudioJaSections(sections) {
     .sort((a, b) => position(a) - position(b) || a.index - b.index);
 }
 
-const englishChapter = text => {
+export const englishChapter = text => {
   const header = text.trim().match(/^chapter\s+(\d+|[a-z-]+(?:\s+[a-z]+)?)$/i);
   if (!header) return null;
   if (/^\d+$/.test(header[1])) return String(Number(header[1]));
@@ -146,7 +164,10 @@ export function findStudioJaChoices(choices, english, search = '', { before = ''
   }).sort((a, b) => b.score - a.score).slice(0, 10).map(result => result.choice);
 }
 
-export function planStudioJa(set, blocks, sections, { missingOnly = false } = {}) {
+// overwrite: false = rows that already have a translation (imported with the material, or fixed by hand) are kept;
+// 'imported' = translations that came with the material / an earlier import are replaced too (hand corrections kept);
+// 'all' = hand corrections are replaced as well. Only rows that the new data matches change; the others keep theirs.
+export function planStudioJa(set, blocks, sections, { missingOnly = false, overwrite = false } = {}) {
   const rows = sections.flatMap(({ data, index }) => {
     if (data?.materialId != null && data.materialId !== set.id) return [];
     const input = readScriptJa(data, set.id);
@@ -158,7 +179,16 @@ export function planStudioJa(set, blocks, sections, { missingOnly = false } = {}
   const missing = missingOnly ? new Set(studioJaView(blocks).summary.missing.map(row => row.id)) : null;
   // 1.19.30: a shared translation fixed by hand (jaImport.manual) is protected like a manual row
   const handGroup = row => Boolean(row?.jaImport && live.get(row.jaImport.owner)?.jaImport?.manual);
-  const writable = id => !manual(live.get(id)) && !handGroup(live.get(id)) && (!missing || missing.has(id));
+  const hand = row => Boolean(row?.jaOverride) || handGroup(row);
+  const writable = id => {
+    const row = live.get(id);
+    if (missing && !missing.has(id)) return false;
+    if (overwrite === 'all') return true;
+    if (overwrite === 'imported') return !hand(row);
+    return !manual(row) && !handGroup(row);
+  };
+  // a row that is overwritten drops its own text so the imported group is what it shows
+  const clean = row => { if (!row.ja && !row.jaOverride) return row; const { jaOverride, ...rest } = row; return { ...rest, ja: '' }; };
   const edits = new Map();
   const groups = new Map();
   for (const [id, entries] of patch) {
@@ -173,7 +203,7 @@ export function planStudioJa(set, blocks, sections, { missingOnly = false } = {}
     const members = ids.map(id => ({ id, stamp: stamp(live.get(id).text) }));
     for (const id of ids) {
       const row = live.get(id);
-      edits.set(id, { ...row, ...(row.jaStatus === 'needsReview' && { jaStatus: 'ok' }),
+      edits.set(id, { ...clean(row), ...(row.jaStatus === 'needsReview' && { jaStatus: 'ok' }),
         jaReview: false, jaImport: id === owner ? { owner, members, texts } : { owner } });
     }
   }
@@ -186,7 +216,8 @@ export function planStudioJa(set, blocks, sections, { missingOnly = false } = {}
     changes: [...edits.values()].filter(row => {
       const old = live.get(row.id);
       return Boolean(row.jaReview) !== Boolean(old.jaReview) || row.jaStatus !== old.jaStatus ||
-        JSON.stringify(row.jaImport) !== JSON.stringify(old.jaImport);
+        JSON.stringify(row.jaImport) !== JSON.stringify(old.jaImport) || (row.ja || '') !== (old.ja || '') ||
+        Boolean(row.jaOverride) !== Boolean(old.jaOverride);
     }),
     summary: studioJaView(changes).summary,
   };

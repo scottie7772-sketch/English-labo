@@ -1,5 +1,5 @@
 import { ensurePackFolder, studioFolders, folderMembers, createStudioFolder, renameStudioFolder, moveStudioSets, saveStudioFolderOrder, getFolderJa, saveFolderJa } from './studio-folders.js';
-import { readStudioJaFiles, planStudioJa, studioJaView, confirmStudioJa, studioJaChoices, findStudioJaChoices, studioJaRows, studioJaEditBlocks } from './studio-ja.js';
+import { readStudioJaFiles, readStudioJaText, planStudioJa, studioJaView, confirmStudioJa, studioJaChoices, findStudioJaChoices, studioJaRows, studioJaEditBlocks } from './studio-ja.js';
 import { openJaPositionEditor } from './ja-position-ui.js';
 // 教材スタジオ（制作）: standalone page studio.html now; later mounted inside Englabo with mount(el, { base: 'studio/' }).
 // Rules: does not import learning modules and never touches the learning database (ell-db).
@@ -24,7 +24,7 @@ import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange,
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.23';
+export const STUDIO_VERSION = '0.21.24';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -141,13 +141,18 @@ async function folderJaScreen(el, params, revision) {
     <section class="card stack">
       <strong>📁 ${esc(folder.name)}</strong>
       <p class="small" id="folderJaSaved">登録済み ${saved?.sections.length || 0}件</p>
-      <label class="field">ZIPまたはJSONファイル（複数選択可）
-        <input type="file" id="folderJaFiles" multiple>
+      <label class="field">ZIPまたはJSONファイル（複数選択可・1つのJSONに複数章も可）
+        <input type="file" id="folderJaFiles" accept=".json,.zip,application/json,application/zip" multiple>
       </label>
+      <details><summary class="small">JSONを貼り付けて追加</summary>
+        <textarea id="folderJaText" rows="6" placeholder='{"chapter": 3, "items": [{"en": "…", "ja": "…"}]}' autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+        <button type="button" class="btn sm" id="folderJaRead">貼り付けたJSONを読み込む</button>
+      </details>
       <p class="small" id="folderJaStatus" role="status"></p>
       <div class="row wrap">
         <button type="button" class="btn primary" id="folderJaSave" disabled>フォルダに登録</button>
         <button type="button" class="btn" id="folderJaReplace" hidden disabled>登録データを入れ替える</button>
+        <button type="button" class="btn" id="folderJaApply" ${saved?.sections.length ? '' : 'hidden'}>登録済みのデータをフォルダの教材に反映</button>
       </div>
     </section>`;
   const input = $('#folderJaFiles', el), status = $('#folderJaStatus', el);
@@ -164,6 +169,23 @@ async function folderJaScreen(el, params, revision) {
     status.classList.toggle('warn-text', error);
   };
   setButtons();
+  $('#folderJaRead', el).onclick = async () => {
+    setButtons(true);
+    try {
+      sections = await readStudioJaText($('#folderJaText', el).value);
+      setStatus(`貼り付けたJSON：取り込み可能な英日データ ${sections.length}件`);
+    } catch (error) { sections = []; setStatus(error.message, true); }
+    finally { setButtons(); }
+  };
+  // 1.19.31: register, then apply to the folder's materials right away (single or all; how = missing / re-match / overwrite)
+  const applyToFolder = async () => {
+    const corpus = await getFolderJa(folder.id);
+    if (!corpus?.sections.length || revision !== routeRevision) return;
+    const ids = (await sdb.all('sets')).filter(set => set.folder === folder.name).map(set => set.id);
+    if (!ids.length) return setStatus('このフォルダにはまだ教材がありません');
+    await applyStudioJa(ids, corpus.sections, null);
+  };
+  $('#folderJaApply', el).onclick = applyToFolder;
   input.onchange = async () => {
     sections = [];
     const files = Array.from(input.files);
@@ -190,7 +212,10 @@ async function folderJaScreen(el, params, revision) {
       count = await saveFolderJa(folder.id, sections, append);
       sections = [];
       $('#folderJaSaved', el).textContent = `登録済み ${count}件`;
-      setStatus(`フォルダに保存しました。日本語訳を反映するには、フォルダの「⋯」から「日本語訳を一括照合」を選んでください。`);
+      $('#folderJaText', el).value = '';
+      $('#folderJaApply', el).hidden = false;
+      setStatus(`フォルダに保存しました（同じ名前・同じ章のデータは更新）。`);
+      if (revision === routeRevision && await confirmDialog({ title: 'フォルダの教材に反映', body: '<p>登録したデータを、このフォルダの教材の日本語訳に反映しますか？（反映のしかたを次に選びます。英日対応済みの訳を置き換える「上書き」も選べます）</p>', okLabel: '反映へ進む', cancelLabel: 'あとで' })) await applyToFolder();
     } catch (error) {
       setStatus(`フォルダに保存できませんでした（${error.message || error.name}）`, true);
     } finally { setButtons(); }
@@ -336,18 +361,21 @@ async function setsScreen(el, params, revision) {
   }
   async function openFolderMenu(folder, overview) {
     const members = overview ? folderMembers(allSets, folder) : sets;
-    const corpus = overview ? null : await getFolderJa(folder.id);
+    // the home list opens its menu at once; the registered data is read when an English–Japanese action is chosen
+    let corpus = overview ? null : await getFolderJa(folder.id);
     if (revision !== routeRevision) return;
     const publish = HOST?.sendToLab ? [['lab','一括教材化（新しい教材だけ追加）'],['labUpdate','登録済みも更新して教材化']] : [['folderPack','一括教材化（ZIPで書き出す）']];
+    const jaActions = [['register','英日対応データを登録・追加・更新（JSON/ZIP）'],
+      ...((overview || corpus?.sections.length) && members.length ? [['apply','日本語訳を一括反映（未割当・再照合・上書き）']] : [])];
     const actions = overview ? [
       ...(members.length ? publish : []),
       ['open','フォルダを開く'],
+      ...jaActions,
       ['rename','フォルダ名を変更'],
     ] : [
       ...(members.length ? publish : []),
       ['io','教材パック（読み込み・書き出し）'],
-      ['register','英日対応データを登録・追加・更新'],
-      ...(corpus?.sections.length && members.length ? [['apply','日本語訳を一括照合'],['missing','未割当の訳だけ照合']] : []),
+      ...jaActions,
       ...(members.length ? [['review','照合結果を確認']] : []),
       ['rename','フォルダ名を変更'], ...(members.length > 1 ? [['sort','教材を並べ替え'],['merge','このフォルダの音声をまとめて照合']] : []),
     ];
@@ -360,7 +388,10 @@ async function setsScreen(el, params, revision) {
     if (action === 'register') {
       nav(folderJaPath(folder));
     } else if (action === 'apply' || action === 'missing') {
-      await applyStudioJa(ids, corpus.sections, refreshFolderProgress, { missingOnly: action === 'missing' });
+      corpus ||= await getFolderJa(folder.id);
+      if (!corpus?.sections.length) { toast('このフォルダには英日対応データがまだありません。登録画面を開きます', 3500); return nav(folderJaPath(folder)); }
+      await applyStudioJa(ids, corpus.sections, overview ? null : refreshFolderProgress, { missingOnly: action === 'missing' });
+      if (overview && revision === routeRevision) route();
     } else if (action === 'review') {
       await reviewFolderJa();
     } else if (action === 'folderPack') {
@@ -4727,22 +4758,27 @@ async function showStudioJaReview(set, summary, edit) {
 
 async function chooseStudioJaFiles() {
   const picker = studioDialog('英日対応データを選ぶ',
-    '<label class="btn primary" for="stJaFiles">JSONまたはZIPを選ぶ</label><input type="file" id="stJaFiles" accept=".json,.zip,application/json,application/zip" multiple hidden>',
+    `<label class="btn primary" for="stJaFiles">JSONまたはZIPを選ぶ（複数可）</label><input type="file" id="stJaFiles" accept=".json,.zip,application/json,application/zip" multiple hidden>
+    <details><summary class="small">JSONを貼り付ける（1つのJSONに複数章も可）</summary><textarea id="stJaText" rows="6" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+    <button class="btn sm" value="text">貼り付けたJSONを使う</button></details>`,
     [['cancel','閉じる']]);
   const dlg = $('#dialog'), input = $('#stJaFiles', dlg);
-  let files = [];
+  let files = [], text = '';
   input.onchange = () => {
     files = [...input.files];
     if (files.length) dlg.close('files');
   };
-  return await picker === 'files' ? files : [];
+  const result = await picker;
+  if (result === 'text') text = $('#stJaText', dlg)?.value || '';
+  return result === 'files' ? files : result === 'text' ? { text } : [];
 }
 
 async function pickStudioJa(ids, onSaved) {
   const start = routeRevision;
-  const files = await chooseStudioJaFiles();
-  if (!files.length || start !== routeRevision) return;
-  try { await applyStudioJa(ids, await readStudioJaFiles(files), onSaved, { offerLab: true }); }
+  const picked = await chooseStudioJaFiles();
+  if ((Array.isArray(picked) ? !picked.length : !picked.text?.trim()) || start !== routeRevision) return;
+  await new Promise(resolve => setTimeout(resolve, 60));
+  try { await applyStudioJa(ids, Array.isArray(picked) ? await readStudioJaFiles(picked) : await readStudioJaText(picked.text), onSaved, { offerLab: true }); }
   catch (error) { toast(error.message, 5500); }
 }
 
@@ -4762,7 +4798,27 @@ function studioBatchProgress(title) {
   };
 }
 
-async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offerLab = false } = {}) {
+// 1.19.31: how the English–Japanese data is applied (one choice for one material, chosen materials or a whole folder)
+async function chooseJaMode(initial = 'rematch') {
+  const modes = [
+    ['missing', '未割当の行だけ', '訳のない行だけに入れます。既存の訳はそのまま。'],
+    ['rematch', '再照合（照合結果を更新）', '以前この方法で照合した訳を新しいデータで更新します。教材に元からあった訳と手で直した訳はそのまま。'],
+    ['overwrite', '上書き（英日対応済みの訳も置き換え）', '新しいデータに一致した行は、教材に元からあった訳や以前の照合結果も置き換えます。一致しない行はそのまま。'],
+  ];
+  const choice = await studioDialog('英日データの反映のしかた', `<div class="stack small">${modes.map(([v, t, d]) =>
+    `<label class="chk"><input type="radio" name="stJaMode" value="${v}" ${v === initial ? 'checked' : ''}> <span><b>${t}</b><br><span class="muted">${d}</span></span></label>`).join('')}
+    <label class="chk"><input type="checkbox" id="stJaHand"> 手で直した訳（和訳の確定・位置調整）も上書きする</label>
+    <span class="muted">どの方法でも、反映後に ↶ または「今回の反映を戻す」で元に戻せます。</span></div>`, [['next','候補を確認'],['cancel','閉じる']]);
+  if (choice !== 'next') return null;
+  const dlg = $('#dialog'), mode = dlg.querySelector('[name=stJaMode]:checked')?.value || initial, all = dlg.querySelector('#stJaHand')?.checked;
+  await new Promise(resolve => setTimeout(resolve, 60));
+  return { missingOnly: mode === 'missing', overwrite: all ? 'all' : mode === 'overwrite' ? 'imported' : false, mode, all };
+}
+async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offerLab = false, how = null } = {}) {
+  how ||= await chooseJaMode(missingOnly ? 'missing' : 'rematch');
+  if (!how) return;
+  ({ missingOnly } = how);
+  const overwrite = how.overwrite;
   const start = routeRevision, plans = [];
   const planning = studioBatchProgress('日本語訳の候補を照合中');
   let scanned = 0;
@@ -4773,7 +4829,7 @@ async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offe
       scanned++;
       if (!set) continue;
       planning.show(scanned - 1, ids.length, set.title);
-      const blocks = await liveBlocks(set), plan = planStudioJa(set, blocks, sections, { missingOnly });
+      const blocks = await liveBlocks(set), plan = planStudioJa(set, blocks, sections, { missingOnly, overwrite });
       const updated = new Map(plan.changes.map(row => [row.id,row]));
       const view = studioJaView(blocks.map(row => updated.get(row.id) || row));
       const sample = plan.changes.filter(row => view.value(row)).slice(0, 3)
@@ -4786,15 +4842,11 @@ async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offe
   const preview = `${scanned < ids.length ? `<p>未照合 ${ids.length-scanned}教材</p>` : ''}` +
     plans.map(plan => `<details><summary>${esc(plan.title)}　${plan.summary}</summary>${plan.sample}</details>`).join('');
   const choices = [['cancel','閉じる']];
-  if (plans.some(plan => plan.count) || scanned < ids.length) {
-    // 1.19.30: an explicit re-match and "only rows without a translation" are separate choices; hand corrections are kept in both
-    if (!missingOnly) choices.push(['saveMissing', '未割当の行だけ反映']);
-    choices.push(['save', scanned < ids.length ? '照合済みの候補を反映' : missingOnly ? '未割当の行に反映' : '再照合して反映（手動修正は保護）']);
-  }
+  if (plans.some(plan => plan.count) || scanned < ids.length) choices.push(['save', scanned < ids.length ? '照合済みの候補を反映' : '日本語訳を反映']);
   if (offerLab && HOST?.sendToLab && plans.length && scanned === ids.length) choices.push(['send','反映して一括教材化へ']);
-  const action = await studioDialog('日本語訳の反映を確認', preview + '<p class="small muted">手動で修正・確定した訳は、どちらの方法でも上書きしません。</p>', choices);
-  if (!['save','saveMissing','send'].includes(action) || start !== routeRevision) return;
-  if (action === 'saveMissing') missingOnly = true;
+  const modeText = how.mode === 'missing' ? '未割当の行だけ' : how.mode === 'overwrite' ? '上書き（英日対応済みの訳も置き換え）' : '再照合';
+  const action = await studioDialog('日本語訳の反映を確認', `<p class="small">方法：<b>${modeText}</b>・手で直した訳は${how.all ? '<b>上書きします</b>' : '保持します'}</p>` + preview, choices);
+  if (!['save','send'].includes(action) || start !== routeRevision) return;
   const applied = [], errors = new Map();
   const saving = studioBatchProgress('日本語訳を反映中');
   let saved = 0;
@@ -4806,7 +4858,7 @@ async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offe
       try {
         const set = await sdb.get('sets', plan.id);
         if (!set || JSON.stringify(jaGuard(set)) !== JSON.stringify(plan.guard)) throw Error('教材が変更されました');
-        const current = planStudioJa(set, await liveBlocks(set), sections, { missingOnly });
+        const current = planStudioJa(set, await liveBlocks(set), sections, { missingOnly, overwrite });
         if (!current.changes.length) continue;
         const op = await commit(set, '日本語訳を反映', { blocks: current.changes, guardedSet: plan.guard });
         applied.push({ id: set.id, opId: op.opId });
@@ -4833,7 +4885,7 @@ async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offe
     }
     await onSaved?.();
     toast(skipped ? `${skipped}教材には後から編集が入っています` : '日本語訳の反映を戻しました');
-  } else if (next === 'resume') await applyStudioJa(rest, sections, onSaved, { missingOnly, offerLab });
+  } else if (next === 'resume') await applyStudioJa(rest, sections, onSaved, { missingOnly, offerLab, how });
   else if (next === 'send') await batchSendToLab(done.filter(plan => !errors.has(plan.id)).map(plan => plan.id));
   else if (/^review\d+$/.test(next)) {
     const set = await sdb.get('sets', done[Number(next.slice(6))].id);

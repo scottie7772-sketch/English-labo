@@ -17,7 +17,7 @@ import { speechRegions, regionStatistics, snapCueToRegion } from './studio-struc
 import { speechFirstPlaybackRange, nextSourceSegment } from './studio-playback-boundary.js';
 import { planVocabAlignment, isVocabTarget, unassignedVocabRanges, vocabKey, isVocabHead } from './studio-vocab-align.js';
 import { maSeams, maWindow, inspectMaSeam, proposeMaSeam, maBoundaryUpdates, wavRangeReader } from './studio-ma-boundary.js';
-import { createRescueSearch, sameRescueVersion, rescuePreviewRange } from './studio-prose-rescue.js';
+import { createRescueSearch, sameRescueVersion, rescuePreviewRange, manualRescuePair } from './studio-prose-rescue.js';
 import { isSymbolRow, needsWork, wordCount, planBulkGaps, rangePieces, keepInPiece, withoutTaken, adjacentWithSound } from './studio-ma-tools.js';
 import { alignUtterances } from './studio-import-align.js';
 import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange, chooseTrack, mp4Audio } from './media-probe.js';
@@ -2632,9 +2632,9 @@ async function editorScreen(el, params, revision) {
       <label class="chk"><input id="rsExpand" type="checkbox"> 探索範囲を広げる</label>
       <label class="field"><span>音声候補</span><select id="rsCandidate"></select></label>
       <div class="row wrap"><label class="field grow"><span>開始（分:秒.小数）</span><input id="rsStart" type="text" inputmode="decimal" placeholder="14:03.0"></label><label class="field grow"><span>終了（分:秒.小数）</span><input id="rsEnd" type="text" inputmode="decimal" placeholder="14:10.6"></label></div>
-      <div class="st-rescue-timeline"><div class="row st-rescue-hscroll"><button type="button" class="btn sm" id="rsView">ファイル全体を表示</button><button type="button" class="btn sm" id="rsStartZero">開始を先頭へ</button><button type="button" class="btn sm" id="rsEndLast">終了を末尾へ</button></div><p class="small muted">バーの下にある短い開始ポインターと長い終了ポインターをドラッグして調整できます。中央をタップすると再生位置を移動します。</p><div class="st-rescue-track" id="rsTrack" style="position:relative;touch-action:none;min-height:44px"><i id="rsSelection" style="pointer-events:none"></i><b id="rsHead" style="pointer-events:none"></b><button type="button" class="st-range-pointer st-range-start" id="rsHandleStart" aria-label="割当開始をドラッグ"></button><button type="button" class="st-range-pointer st-range-end" id="rsHandleEnd" aria-label="割当終了をドラッグ"></button></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div><div class="row wrap st-preview-controls"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsPlayHead">▶ 頭2秒</button><button type="button" class="btn sm" id="rsPlayLast">▶ 後ろ2秒</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div></div>
+      <div id="rsPairTools" hidden><label class="field"><span>2行の境界（分:秒.小数）</span><input id="rsSplit" type="text" inputmode="decimal"></label><div class="row wrap"><button type="button" class="btn sm" id="rsSplitNow">再生位置を境界に</button><button type="button" class="btn sm" id="rsPairA">▶ 前半</button><button type="button" class="btn sm" id="rsPairB">▶ 後半</button></div><p class="small muted">境界を試聴して確認してください。前後の既存割当は変更しません。</p></div><div class="st-rescue-timeline"><div class="row st-rescue-hscroll"><button type="button" class="btn sm" id="rsView">ファイル全体を表示</button><button type="button" class="btn sm" id="rsStartZero">開始を先頭へ</button><button type="button" class="btn sm" id="rsEndLast">終了を末尾へ</button></div><p class="small muted">バーの下にある短い開始ポインターと長い終了ポインターをドラッグして調整できます。中央をタップすると再生位置を移動します。</p><div class="st-rescue-track" id="rsTrack" style="position:relative;touch-action:none;min-height:44px"><i id="rsSelection" style="pointer-events:none"></i><b id="rsHead" style="pointer-events:none"></b><button type="button" class="st-range-pointer st-range-start" id="rsHandleStart" aria-label="割当開始をドラッグ"></button><button type="button" class="st-range-pointer st-range-end" id="rsHandleEnd" aria-label="割当終了をドラッグ"></button></div><div class="row small muted"><span id="rsClockStart">--:--</span><span class="grow"></span><span id="rsClockNow">--:--</span><span class="grow"></span><span id="rsClockEnd">--:--</span></div><div class="row wrap st-preview-controls"><button type="button" class="btn sm" id="rsPlay">▶ 候補を試聴</button><button type="button" class="btn sm" id="rsPlayHead">▶ 頭2秒</button><button type="button" class="btn sm" id="rsPlayLast">▶ 後ろ2秒</button><button type="button" class="btn sm" id="rsStop">■ 停止</button></div></div>
       <div class="small st-rescue-script" id="rsRows" style="max-height:7rem;overflow:auto">${missing.map((b,i)=>`<div>${i+1}. ${esc(b.text)}</div>`).join('')}</div>
-      <p id="rsReason" class="small muted"></p><p class="small muted">朗読の手動割当は「今回割り当てる行数」を1行にしてください。時刻は例 14:03.0 と入力できます。</p>
+      <p id="rsReason" class="small muted"></p><p class="small muted">朗読の手動割当は1行または2行を選択してください。時刻は例 14:03.0 と入力できます。</p>
       <div class="row end st-rescue-hscroll">
         <button id="rsEditAnchor" class="btn" value="anchor" hidden>既存字幕の境界を確認</button>
         <button id="rsSaved" class="btn" value="saved">既存ASRと照合</button>
@@ -2705,8 +2705,10 @@ async function editorScreen(el, params, revision) {
       hint.textContent = mode.value === 'prose' ?
         '複数行は、本文と順序が確認できた区間を保存します。1行は手動指定もできます。' :
         '金フレ型では例文の繰り返しを別区間として扱います。仮割当は試聴して境界を確認してください。';
-      apply.textContent = mode.value === 'prose' ? '1行に手動で割り当て' : '確認して仮割当';
-      apply.disabled = !pickRange() || Boolean(pickRange().review) || (mode.value === 'prose' && selected.length !== 1);
+      const pair = mode.value === 'prose' && selected.length === 2;
+      $('#rsPairTools',dlg).hidden = !pair;
+      apply.textContent = mode.value === 'prose' ? (pair ? '2行に分割して割り当て' : '1行に手動で割り当て') : '確認して仮割当';
+      apply.disabled = !pickRange() || Boolean(pickRange().review) || (mode.value === 'prose' && ![1,2].includes(selected.length));
       saved.disabled = mode.value === 'prose' && (!pickRange() || Boolean(pickRange().review));
       localButton.disabled = !pickRange() || Boolean(pickRange().review);
     };
@@ -2715,6 +2717,7 @@ async function editorScreen(el, params, revision) {
       stopRescuePreview();
       st.value = c ? rescueClockValue(c.start) : '';
       en.value = c ? rescueClockValue(c.end) : '';
+      $('#rsSplit',dlg).value = c ? rescueClockValue((c.start+c.end)/2) : '';
       st.disabled = en.disabled = !c || Boolean(c.review);
       st.title = en.title = c?.review ? 'これは既存字幕の確認用です。下の「手動で時刻指定」を選んでください。' : ''; 
       $('#rsPlay',dlg).disabled = $('#rsPlayHead',dlg).disabled = $('#rsPlayLast',dlg).disabled = !c;
@@ -2759,6 +2762,12 @@ async function editorScreen(el, params, revision) {
     expand.onchange = refreshCandidates;
     refreshCandidates();
     $('#rsStop',dlg).onclick = stopRescuePreview;
+    $('#rsSplitNow',dlg).onclick = () => { const c=pickRange(); if(c && vid.dataset.src===c.sid) $('#rsSplit',dlg).value=rescueClockValue(vid.currentTime); };
+    for (const [button,half] of [['rsPairA',0],['rsPairB',1]]) $('#'+button,dlg).onclick=()=>{
+      const c=pickRange(), a=parseClock(st.value), z=parseClock(en.value), m=parseClock($('#rsSplit',dlg).value);
+      if(!c || c.review || !manualRescuePair(c.sid,a,m,z,srcs[c.sid]?.duration)) return toast('分割位置を確認してください');
+      stopRescuePreview(); playBlock({segments:[{sourceId:c.sid,start:half?m:a,end:half?z:m}]});
+    };
     for (const [button, part] of [['rsPlay', 'all'], ['rsPlayHead', 'head'], ['rsPlayLast', 'tail']]) {
       $('#' + button, dlg).onclick = () => {
         const c = pickRange();
@@ -2814,7 +2823,16 @@ async function editorScreen(el, params, revision) {
     if (action !== 'ok') return;
     if (prose) {
       if (selected.length === 1) return previewProseAssignment(selected,range,{manual:true,expected});
-      return;
+      if (selected.length !== 2) return;
+      const segments=manualRescuePair(c.sid,a,parseClock($('#rsSplit',dlg).value),z,srcs[c.sid]?.duration);
+      if (!segments) { toast('分割位置が範囲外です'); return rescueUnassigned(id); }
+      const ok=await confirmDialog({title:'2行の音声を保存',body:selected.map((r,i)=>`<p>${esc(r.text)}<br>${fmt(segments[i].start)}〜${fmt(segments[i].end)}</p>`).join(''),okLabel:'2行を保存'});
+      if (!ok || revision!==routeRevision) return;
+      await reload();
+      const guardedSet=rescueVersion(), fresh=currentRescueSearch(), current=selected.map(r=>byId[r.id]);
+      if (revision!==routeRevision || !sameRescueVersion(guardedSet,expected) || current.some((r,i)=>!r || r.rev!==selected[i].rev || r.segments.length || r.sync==='manual') || !fresh.byRow.get(current[0].id)?.rows.some(r=>r.id===current[1].id)) return toast('字幕が更新されました。開き直してください');
+      if (!segments.every(g=>fresh.isFree(g))) { toast('既存の割当と重複しています。範囲を調整してください'); return rescueUnassigned(id); }
+      return run('2行の手動音声割当',{blocks:current.map((r,i)=>({...(({unconfirmed,...rest})=>rest)(r),segments:[segments[i]],sync:'manual',align:[],lineage:{op:'prose-rescue-pair',from:[`${r.id}@${r.rev}`],at:Date.now()}})),guardedSet});
     }
     await reload();
     if (revision !== routeRevision) return;

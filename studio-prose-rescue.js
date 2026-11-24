@@ -267,3 +267,9 @@ export function createRescueSearch(blocks, sourceIds, sources) {
   };
   return {byRow,search,estimates,assignments,isFree,availableRanges};
 }
+
+// Manual split uses the existing source timebase, never copies audio.
+export function manualRescuePair(sourceId,start,split,end,duration) {
+  if (!sourceId || ![start,split,end].every(Number.isFinite) || start<0 || split-start<.12 || end-split<.12 || (Number.isFinite(duration)&&duration>0&&end>duration)) return null;
+  return [{sourceId,start,end:split},{sourceId,start:split,end}];
+}

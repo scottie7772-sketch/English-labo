@@ -9,6 +9,29 @@ const stamp = text => {
 };
 const manual = row => row.jaOverride || Boolean(row.ja);
 
+async function inflateJaEntry(raw, expectedSize) {
+  const { Inflate } = await import('./vendor/pako-inflate.js');
+  const inflater = new Inflate({ raw: true });
+  const chunks = [];
+  let size = 0;
+  inflater.onData = chunk => {
+    size += chunk.length;
+    if (size > expectedSize) throw Error('ZIPの展開サイズが一致しません');
+    chunks.push(chunk);
+  };
+  const reader = raw.stream().getReader();
+  try {
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+      if (inflater.ended || !inflater.push(chunk.value, false)) throw Error('ZIP内の圧縮データを展開できません');
+    }
+    if (!inflater.ended && !inflater.push(new Uint8Array(), true)) throw Error('ZIP内の圧縮データを展開できません');
+    if (size !== expectedSize) throw Error('ZIPの展開サイズが一致しません');
+    return new Blob(chunks);
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+}
+
 export async function readStudioJaFiles(files) {
   const sections = [];
   const add = (name, text) => {
@@ -17,14 +40,20 @@ export async function readStudioJaFiles(files) {
     sections.push({ name, data, index: sections.length });
   };
   for (const file of files) {
-    if (/\.zip$/i.test(file.name)) {
-      const zip = await zipRead(file);
-      for (const name of zip.names) if (/\.json$/i.test(name) && !/(?:^|\/)(?:__MACOSX|\._)/.test(name)) {
-        try { add(name, await zip.text(name)); } catch (error) { throw new Error(name + '：' + error.message); }
+    try {
+      const signature = new DataView(await file.slice(0, 4).arrayBuffer());
+      const isZip = signature.byteLength === 4 && [0x04034b50, 0x06054b50].includes(signature.getUint32(0, true));
+      if (isZip || /\.zip$/i.test(file.name.trim())) {
+        const zip = await zipRead(file, { inflateFallback: inflateJaEntry });
+        const names = zip.names.filter(name => /\.json$/i.test(name) && !/(?:^|\/)(?:__MACOSX|\._)/.test(name));
+        if (!names.length) throw Error('ZIP内に英日対応JSONがありません');
+        for (const name of names) {
+          try { add(name, await zip.text(name)); } catch (error) { throw new Error(name + '：' + error.message); }
+        }
+      } else {
+        add(file.name, await file.text());
       }
-    } else {
-      try { add(file.name, await file.text()); } catch (error) { throw new Error(file.name + '：' + error.message); }
-    }
+    } catch (error) { throw new Error(file.name + '：' + error.message); }
   }
   if (!sections.length) throw new Error('英日対応JSONがありません');
   return orderStudioJaSections(sections);

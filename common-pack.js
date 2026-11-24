@@ -59,7 +59,7 @@ export async function zipWrite(files, onProgress) {
 }
 
 // ---------- ZIP reader: returns { names, file(name) -> Blob, text(name) } (stored; deflate via DecompressionStream) ----------
-export async function zipRead(blob) {
+export async function zipRead(blob, { inflateFallback } = {}) {
   const tailLen = Math.min(blob.size, 66000);
   const tail = new DataView(await blob.slice(blob.size - tailLen).arrayBuffer());
   let eocd = -1;
@@ -69,7 +69,7 @@ export async function zipRead(blob) {
   const cd = new DataView(await blob.slice(cdOff, cdOff + cdSize).arrayBuffer());
   const utf8 = new TextDecoder('utf-8', { fatal: true }); let sjis = null;
   const decName = (bytes, flag) => { if (flag & 0x800) return new TextDecoder().decode(bytes); try { return utf8.decode(bytes); } catch { try { sjis ||= new TextDecoder('shift_jis'); return sjis.decode(bytes); } catch { return new TextDecoder().decode(bytes); } } };
-  const entries = {};
+  const entries = Object.create(null);
   for (let p = 0, n = 0; n < count; n++) {
     if (cd.getUint32(p, true) !== 0x02014b50) throw new Error('ZIPの目次が壊れています');
     const flag = cd.getUint16(p + 8, true), method = cd.getUint16(p + 10, true), csize = cd.getUint32(p + 20, true), size = cd.getUint32(p + 24, true);
@@ -84,7 +84,12 @@ export async function zipRead(blob) {
     const start = e.lho + 30 + lh.getUint16(26, true) + lh.getUint16(28, true);
     const raw = blob.slice(start, start + e.csize);
     if (e.method === 0) return raw;
-    if (e.method === 8 && 'DecompressionStream' in window) return new Response(raw.stream().pipeThrough(new DecompressionStream('deflate-raw'))).blob();
+    if (e.method === 8) {
+      let decoder;
+      try { decoder = new DecompressionStream('deflate-raw'); } catch {}
+      if (decoder) return new Response(raw.stream().pipeThrough(decoder)).blob();
+      if (inflateFallback) return inflateFallback(raw, e.size);
+    }
     throw new Error(`${name} は対応していない圧縮形式です`);
   }
   return { names: Object.keys(entries), file, async text(name) { const b = await file(name); return b ? b.text() : null; } };

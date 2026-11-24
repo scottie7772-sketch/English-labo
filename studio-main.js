@@ -22,7 +22,7 @@ import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange,
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.14';
+export const STUDIO_VERSION = '0.21.15';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -86,7 +86,7 @@ async function route() {
   if (!inStudio()) return;
   const revision = routeRevision;
   const { path, params } = parseHash();
-  const screens = { sets: setsScreen, import: importScreen, set: editorScreen, versions: versionsScreen, io: ioScreen, words: wordsScreen, clean: cleanScreen };
+  const screens = { sets: setsScreen, 'folder-ja': folderJaScreen, import: importScreen, set: editorScreen, versions: versionsScreen, io: ioScreen, words: wordsScreen, clean: cleanScreen };
   try { await (screens[path] || setsScreen)(ROOT, params, revision); }
   catch (e) { if (revision !== routeRevision) return; console.error(e); ROOT.innerHTML = `<div class="card warn">エラー：${esc((e?.message || String(e)))}</div><a class="btn" href="#${BASE}sets">一覧に戻る</a>`; }
   if (revision === routeRevision) scrollTo(0, 0);
@@ -120,12 +120,80 @@ async function readDuration(file) {
 
 // ================= sets list =================
 const folderPath = folder => 'sets?folder=' + encodeURIComponent(folder.id);
+const folderJaPath = folder => 'folder-ja?folder=' + encodeURIComponent(folder.id);
 async function importDestination(params) {
   const id = params?.get('folder');
   if (!id) return null;
   const folder = (await studioFolders([])).find(folder => folder.id === id);
   if (!folder) throw Error('取り込み先のフォルダが見つかりません');
   return folder;
+}
+
+async function folderJaScreen(el, params, revision) {
+  const folder = await importDestination(params);
+  if (!folder) { nav('sets'); return; }
+  const saved = await getFolderJa(folder.id);
+  if (revision !== routeRevision) return;
+  el.innerHTML = `${head('英日データを取り込む', folderPath(folder))}
+    <section class="card stack">
+      <strong>📁 ${esc(folder.name)}</strong>
+      <p class="small" id="folderJaSaved">登録済み ${saved?.sections.length || 0}件</p>
+      <label class="field">ZIPまたはJSONファイル（複数選択可）
+        <input type="file" id="folderJaFiles" multiple>
+      </label>
+      <p class="small" id="folderJaStatus" role="status"></p>
+      <div class="row wrap">
+        <button type="button" class="btn primary" id="folderJaSave" disabled>フォルダに登録</button>
+        <button type="button" class="btn" id="folderJaReplace" hidden disabled>登録データを入れ替える</button>
+      </div>
+    </section>`;
+  const input = $('#folderJaFiles', el), status = $('#folderJaStatus', el);
+  const save = $('#folderJaSave', el), replace = $('#folderJaReplace', el);
+  let sections = [], count = saved?.sections.length || 0;
+  const setButtons = (busy = false) => {
+    input.disabled = busy;
+    save.disabled = replace.disabled = busy || !sections.length;
+    save.textContent = count ? '追加・同名ファイルを更新' : 'フォルダに登録';
+    replace.hidden = !count;
+  };
+  const setStatus = (message, error = false) => {
+    status.textContent = message;
+    status.classList.toggle('warn-text', error);
+  };
+  setButtons();
+  input.onchange = async () => {
+    sections = [];
+    const files = Array.from(input.files);
+    if (!files.length) { setButtons(); return; }
+    setButtons(true);
+    setStatus('英日データを読み込み中…');
+    try {
+      sections = await readStudioJaFiles(files);
+      setStatus(`選択 ${files.length}ファイル・取り込み可能な英日データ ${sections.length}件`);
+    } catch (error) {
+      setStatus(error.message, true);
+    } finally { input.value = ''; setButtons(); }
+  };
+  const register = async append => {
+    if (!sections.length || revision !== routeRevision) return;
+    setButtons(true);
+    try {
+      if (!append && !(await confirmDialog({
+        title: '登録データを入れ替える',
+        body: '<p>このフォルダの共有英日データを、今回選んだファイルに入れ替えます。</p>',
+        okLabel: '入れ替える',
+      }))) return;
+      if (revision !== routeRevision) return;
+      count = await saveFolderJa(folder.id, sections, append);
+      sections = [];
+      $('#folderJaSaved', el).textContent = `登録済み ${count}件`;
+      setStatus(`フォルダに保存しました。日本語訳を反映するには、フォルダの「⋯」から「日本語訳を一括照合」を選んでください。`);
+    } catch (error) {
+      setStatus(`フォルダに保存できませんでした（${error.message || error.name}）`, true);
+    } finally { setButtons(); }
+  };
+  save.onclick = () => register(true);
+  replace.onclick = () => register(false);
 }
 async function setsScreen(el, params, revision) {
   const allSets = (await sdb.all('sets')).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -169,7 +237,7 @@ async function setsScreen(el, params, revision) {
     el.innerHTML = `${head(current ? current.name : '教材スタジオ', current ? 'sets' : HOST ? '__exit' : null,
       current ? '<button class="icon-btn" id="folderMenu" aria-label="フォルダのメニュー">⋯</button>' :
         '<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#' + BASE + 'clean">容量</a>')}
-    <div class="row wrap">${access}${!current ? '<button class="btn" id="newFolder">＋ フォルダ</button>' : ''}</div>
+    <div class="row wrap">${access}${current ? `<a class="btn" href="#${BASE}${folderJaPath(current)}">英日データを取り込む</a>` : '<button class="btn" id="newFolder">＋ フォルダ</button>'}</div>
     ${current ? `<p class="small muted">${progress(sets)}</p>` : ''}
     ${est ? `<p class="small muted">端末の保存量：${fmtSize(est.usage || 0)}${est.quota ? ` / 目安の上限 ${fmtSize(est.quota)}` : ''}</p>` : ''}
     ${sets.length ? `<div class="row end"><button class="btn sm" id="edit">${editing ? '完了' : '教材を選ぶ'}</button></div>` : ''}
@@ -238,15 +306,7 @@ async function setsScreen(el, params, revision) {
     if (revision !== routeRevision) return;
     const ids = sets.map(set => set.id);
     if (action === 'register') {
-      const files = await chooseStudioJaFiles();
-      if (!files.length || revision !== routeRevision) return;
-      const sections = await readStudioJaFiles(files);
-      const save = await studioDialog('フォルダに英日対応データを保存', `<p>${sections.length}ファイルを「${esc(folder.name)}」に登録します。</p>`,
-        [...(corpus?.sections.length ? [['append','追加・同名ファイルを更新']] : []), ['replace',corpus?.sections.length ? '登録データを入れ替え' : '登録する'], ['cancel','閉じる']]);
-      if (revision === routeRevision && (save === 'append' || save === 'replace')) {
-        await saveFolderJa(folder.id, sections, save === 'append');
-        toast('英日対応データを登録しました');
-      }
+      nav(folderJaPath(folder));
     } else if (action === 'apply' || action === 'missing') {
       await applyStudioJa(ids, corpus.sections, refreshFolderProgress, { missingOnly: action === 'missing' });
     } else if (action === 'review') {

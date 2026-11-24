@@ -110,12 +110,16 @@ export function mergeFolderJaSections(previous, incoming) {
 }
 
 export async function saveFolderJa(id, incoming, append) {
-  return sdb.tx(['meta'], 'readwrite', tx => {
+  let count;
+  await sdb.tx(['meta'], 'readwrite', tx => {
     const store = tx.objectStore('meta'), key = corpusKey(id);
     const request = store.get(key);
     request.onsuccess = () => {
       const previous = append ? request.result?.sections || [] : [];
-      store.put({ key, sections: mergeFolderJaSections(previous, incoming), updatedAt: Date.now() });
+      const sections = mergeFolderJaSections(previous, incoming);
+      count = sections.length;
+      store.put({ key, sections, updatedAt: Date.now() });
     };
   });
+  return count;
 }

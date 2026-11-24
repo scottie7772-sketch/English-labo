@@ -1777,14 +1777,14 @@ export async function videoPlay(el, params) {
         result.textContent = '照合中…';
         const match = await indexChapter(v.id, maChapter);
         if (!box.isConnected) return;
-        const detected = Boolean(match?.chapters.length);
+        const detected = Boolean(match?.chapters.length || match?.count);
         if (detected !== maDetected) {
           maDetected = detected;
           drawList(); drawSub();
         }
         result.textContent = detected
-          ? `音声と照合できた使用例 ${match.count}件${maChapter == null ? `（自動判定: ${match.chapters.join('、')}）` : ''}${match.stats.unavailable ? `・音声区間なし／未確定 ${match.stats.unavailable}件` : ''}${match.stats.legacy ? `・旧形式の試聴 ${match.stats.legacy}件` : ''}`
-          : '自動で章を特定できませんでした。出典章を指定できます。';
+          ? `音声と照合できた使用例 ${match.count}件${maChapter == null && match.chapters.length ? `（自動判定: ${match.chapters.join('、')}）` : ''}${match.stats.unavailable ? `・音声区間なし／未確定 ${match.stats.unavailable}件` : ''}${match.stats.legacy ? `・旧形式の試聴 ${match.stats.legacy}件` : ''}`
+          : `自動で章を特定できませんでした。字幕一致 ${match?.stats.matches || 0}件・音声区間なし／未確定 ${match?.stats.unavailable || 0}件。出典章を指定できます。`;
       } catch (err) { result.textContent = err.message; }
       finally { run.disabled = false; }
     };

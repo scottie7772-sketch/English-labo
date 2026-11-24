@@ -210,7 +210,7 @@ export async function vocabList(el) {
     const w = words.find(x => x.id === spk.closest('.wcard').dataset.id);
     if (w?.ma) {
       unlock();
-      if (!(await playMA(w))) await showMAPhrase(w.id);
+      if (!(await playMA(w)) && !(await playMA(w, 'example'))) await showMAPhrase(w.id);
     } else sayOrig(spk.dataset.say);
   });
   listEl.addEventListener('change', async (e) => {
@@ -403,7 +403,7 @@ export async function wordDetail(el, params) {
   $('#say', el).onclick = async () => {
     if (w.ma) {
       unlock();
-      if (!await playMA(w)) toast('フレーズ音声は未確定、または参照切れです。MA原音声欄を確認してください');
+      if (!await playMA(w) && !await playMA(w, 'example')) toast('フレーズ音声は未確定、または参照切れです。MA原音声欄を確認してください');
       return;
     }
     if (!isNew) { try { const m = await import('./word-audio.js'); if (await m.playWord(await db.get('words', w.id) || w)) return; } catch {} } sayOrig($('[name=headword]', el).value, () => speak($('[name=headword]', el).value, 0.95, wl)); };

@@ -2,7 +2,7 @@
 import { db, getSetting } from './db.js';
 import { newWord, newSense, parseCSV } from './words.js';
 import { zipRead } from './common-pack.js';
-import { labRows, makeRef } from './audio-refs.js';
+import { labRows, makeRef, refBlob, studioConfirmed } from './audio-refs.js';
 
 export const priorities = [1, 2, 3];
 export const tokens = text => [...String(text ?? '').matchAll(/[\p{L}\p{N}]+(?:['’‘ʼ`][\p{L}\p{N}]+)*/gu)].map(m => ({
@@ -155,7 +155,7 @@ export async function importMA(items) {
 
 export const maMaterial = v => v && (v.lang || 'en') === 'en' &&
   (v.materialType === 'prose' || !v.materialType);
-export const looksLikeMA = v => /\bmaster\s+(?:(?:and|[&＆])\s+)?apprentice\b|マスター[＆&と・ ]*アプレンティス/i.test([v.name, v.folder].join(' '));
+export const looksLikeMA = v => /\bmaster\s+(?:(?:and|[&＆])\s+)?apprentice\b|マスター[＆&と・ ]*アプレンティス|\bMA(?=[ _.-]*(?:第|chapter|ch[. _-]*\d|before))/i.test([v.name, v.folder].join(' '));
 export async function chapterFor(v) {
   const saved = await getSetting('ma.chapter.' + v.id, null);
   if (saved != null) return saved;
@@ -264,7 +264,7 @@ export function inferChapters(words, index) {
   return { chapters, eligible };
 }
 
-const stamp = c => [c.id, c.en, c.start, c.end, c.part, Boolean(c.maAligned), c.wordTimings || null, c.sync || null, Boolean(c.timeEdited)];
+const stamp = c => [c.id, c.en, c.start, c.end, c.part, Boolean(c.maAligned), c.wordTimings || null, c.sync || null, Boolean(c.timeEdited), ...(c.rev != null ? [c.rev] : [])];
 function boundary(cue, token, edge, segment) {
   const line = tokens(cue.en);
   const at = line.findIndex(t => t.start === token.start);
@@ -286,7 +286,7 @@ export function linkChapter(words, cues, video, rows, chapter) {
   const stats = { matches: 0, unavailable: 0, context: 0, legacy: 0 };
   const entries = words.map(w => {
     const examples = w.ma.examples.filter(e => inferred
-      ? inferred.chapters.has(chapterKey(e.chapter)) && inferred.eligible.has(keyOf(e.en))
+      ? inferred.eligible.has(keyOf(e.en)) && (inferred.chapters.has(chapterKey(e.chapter)) || tokens(e.en).length >= 8)
       : !e.chapter || chapterKey(e.chapter) === chapterKey(chapter));
     const variants = patterns(w);
     const found = [], candidates = [];
@@ -305,10 +305,13 @@ export function linkChapter(words, cues, video, rows, chapter) {
       const media = segments[0]?.segments[0];
       const confirmed = segments.every(r => r?.confirmed);
       // Old exports kept assigned cue ranges but did not carry confirmation metadata.
-      const legacy = !confirmed && Boolean(video.from?.material) && slice.every((c, j) =>
-        segments[j]?.confirmed || (c.itemId && c.sync !== 'estimated' && c.maAligned == null && c.sourceSegments?.length === 1));
+      const legacy = !confirmed && !video.studioId && slice.every((c, j) =>
+        segments[j]?.confirmed ||
+        (video.from?.material && c.itemId && c.sync !== 'estimated' && c.maAligned == null && c.sourceSegments?.length === 1) ||
+        (!c.itemId && c.sync == null && c.maAligned == null));
+      const duration = video.kind === 'multi' || video.studioId ? null : video.duration;
       if ((!confirmed && !legacy) || !media || !segments.every((r, j) => r?.segments.length === 1 && r.segments[0].key === media.key &&
-            r.segments[0].start >= 0 && r.segments[0].end > r.segments[0].start && r.segments[0].size &&
+            r.segments[0].start >= 0 && r.segments[0].end > r.segments[0].start && r.segments[0].size && (!Number.isFinite(duration) || duration <= 0 || r.segments[0].end <= duration + .1) &&
             (!j || r.segments[0].start >= segments[j - 1].segments[0].end - .08))) {
         stats.unavailable++;
         candidates.push(exampleKey(e));
@@ -328,7 +331,7 @@ export function linkChapter(words, cues, video, rows, chapter) {
       if (context) stats.context++;
       if (legacy) stats.legacy++;
       const ref = makeRef({ ...media, start, end, limit: { min: start, max: end }, state: 'confirmed',
-        origin: { from: 'lab', materialId: video.id, cueId: slice[0].id, title: video.name, text: e.en } });
+        origin: { from: video.studioId ? 'studio' : 'lab', materialId: video.id, ...(video.studioId ? { studioId: video.studioId } : {}), ...(video.from?.material ? { importedFrom: video.from.material } : {}), cueId: slice[0].id, title: video.name, text: e.en } });
       const occurrencesInExample = [];
       for (let offset = 0; offset < keys.length; offset++) for (const variant of variants) {
         if (offset + variant.length <= keys.length && matches(stream, i + offset, variant)) occurrencesInExample.push([offset, variant.length]);
@@ -363,10 +366,44 @@ export async function indexChapter(videoId, chapter) {
     const cue = cuesById.get(row.id);
     if (cue?.maAligned && cue.sync !== 'estimated') row.confirmed = true;
   }
+  return saveChapterPlan(video, cues, rows, chapter);
+}
+
+// Studio and Lab have separate databases. Keep references to the existing Studio sources.
+function studioCue(block) {
+  const segment = block.segments?.[0];
+  return { id: block.id, en: block.text, start: segment?.start, end: segment?.end,
+    part: segment?.sourceId, maAligned: studioConfirmed(block), sync: block.sync,
+    wordTimings: block.wordTimings, rev: block.rev };
+}
+
+export async function indexStudioChapter(set) {
+  const video = { ...set, id: 'studio:' + set.id, name: set.title, studioId: set.id };
+  if (!maMaterial(video)) return null;
+  const { sdb, liveBlocks } = await import('./studio-db.js');
+  const blocks = (await liveBlocks(set)).filter(b => b.text && (!b.asr || b.aligned));
+  const cues = blocks.map(studioCue);
+  const ids = new Set(blocks.flatMap(b => (b.segments || []).map(g => g.sourceId)));
+  const assets = new Map();
+  for (const key of ids) {
+    const source = await sdb.get('sources', key);
+    const labKey = source?.labRef?.videoId;
+    const address = source?.blob ? { store: 'studio', key } : labKey ? { store: 'vblobs', key: labKey } : null;
+    const blob = source?.blob || (address && await refBlob(address));
+    if (blob) assets.set(key, { ...address, size: blob.size });
+  }
+  const rows = blocks.map(b => ({ id: b.id, confirmed: studioConfirmed(b),
+    segments: (b.segments || []).flatMap(g => {
+      const asset = assets.get(g.sourceId);
+      return asset ? [{ ...asset, start: g.start, end: g.end }] : [];
+    }) }));
+  return saveChapterPlan(video, cues, rows, await chapterFor(video));
+}
+
+async function saveChapterPlan(video, cues, rows, chapter) {
   const words = (await db.all('words')).filter(w => w.ma);
   await new Promise(resolve => setTimeout(resolve, 0));
   const { entries: plan, chapters, stats } = linkChapter(words, cues, video, rows, chapter);
-  if (!chapters.length) return { count: 0, chapters, stats };
   const snapshots = new Map(words.map(w => [w.id, w]));
   await db.tx(['words'], 'readwrite', async tx => {
     const store = tx.objectStore('words');
@@ -399,14 +436,36 @@ export function maLinks(w, videoId = null, allowAmbiguous = false) {
   const entries = Object.entries(w.ma?.chapters || {}).filter(([id]) => !videoId || id === videoId);
   const grouped = new Map();
   for (const [, entry] of entries) for (const link of entry.found) {
-    const same = grouped.get(link.key)?.some(l => l.ref.src.key === link.ref.src.key && l.ref.start === link.ref.start && l.ref.end === link.ref.end);
-    if (!same) append(grouped, link.key, link);
+    const group = grouped.get(link.key) || [];
+    const origin = link.ref.origin;
+    const index = group.findIndex(l => {
+      const existing = l.ref.origin;
+      return (l.ref.src.store === link.ref.src.store && l.ref.src.key === link.ref.src.key &&
+        l.ref.start === link.ref.start && l.ref.end === link.ref.end) ||
+        (origin.studioId && origin.studioId === existing.importedFrom) ||
+        (existing.studioId && existing.studioId === origin.importedFrom);
+    });
+    if (index < 0) append(grouped, link.key, link);
+    else if (allowAmbiguous && origin.from !== group[index].ref.origin.from) append(grouped, link.key, link);
+    else if (origin.from === 'lab' && group[index].ref.origin.from === 'studio') group[index] = link;
   }
   // The same body example discovered in several assets requires a material choice.
   return [...grouped.values()].flatMap(links => !videoId && !allowAmbiguous && links.length > 1 ? [] : links);
 }
 
 export async function validMALink(link) {
+  if (link.ref.origin.from === 'studio') {
+    const { sdb } = await import('./studio-db.js');
+    const set = await sdb.get('sets', link.ref.origin.studioId);
+    if (!set) return false;
+    const source = await sdb.get('sources', link.cues[0][4]);
+    const src = link.ref.src;
+    if (!source || (src.store === 'studio' ? source.id : source.labRef?.videoId) !== src.key) return false;
+    const blocks = await Promise.all(link.cues.map(([id]) => set.order.includes(id) ? sdb.get('blocks', id) : null));
+    if (blocks.some((b, i) => !b || b.deleted || JSON.stringify(stamp(studioCue(b))) !== JSON.stringify(link.cues[i]))) return false;
+    const blob = await refBlob(src);
+    return Boolean(blob && blob.size === src.size);
+  }
   const v = await db.get('videos', link.ref.origin.materialId);
   if (!v) return false;
   const part = link.cues[0][4];

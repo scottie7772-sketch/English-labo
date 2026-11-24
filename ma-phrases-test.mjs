@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { installFakeIndexedDB } from './fake-idb.mjs';
 const { zipWrite } = await import('./common-pack.js').catch(() => import('../common-pack.js'));
 const { db } = await import('./db.js').catch(() => import('../db.js'));
-const { parseMA, readMAStudyZip, importMA, linkChapter, cueIndex, inferChapters, phraseIndex, highlightRanges, indexChapter, maLinks, validMALink, saveMABoundary, playMA } =
+const { parseMA, readMAStudyZip, importMA, linkChapter, cueIndex, inferChapters, phraseIndex, highlightRanges, indexChapter, indexStudioChapter, maLinks, validMALink, saveMABoundary, playMA } =
   await import('./ma-phrases.js').catch(() => import('../ma-phrases.js'));
 
 installFakeIndexedDB();
@@ -158,3 +158,30 @@ assert.equal(planForOld({ sync: 'estimated' }).stats.unavailable, 1);
 const [context] = planForOld({}, { ...oldRow, confirmed: true }).entries[0].found;
 assert.equal(context.context, true);
 assert.equal(context.legacy, undefined);
+
+// A single chapter-exclusive passage can play as a timed subtitle even before the chapter is identified.
+const plain = { id: 'plain', videoId: v.id, en: sentences[0], start: 24, end: 27 };
+const plainResult = linkChapter(exampleWords, [plain], v, [{ ...oldRow, id: 'plain', segments: [{ ...oldRow.segments[0], start: 24, end: 27 }] }], null);
+assert.deepEqual(plainResult.chapters, []);
+assert.equal(plainResult.entries[0].found[0].legacy, true);
+assert.equal(plainResult.entries[0].found[0].phrase, null);
+
+const { sdb } = await import('./studio-db.js').catch(() => import('../studio-db.js'));
+const one = { ...exampleWords[0], ma: { ...exampleWords[0].ma, examples: [{ en: sentences[0], chapter: '1' }] } };
+await db.put('words', one);
+const set = { id: 'studio-test', title: 'MA Chapter 1', materialType: 'prose', order: ['studio-block'] };
+const studioBlock = { id: set.order[0], setId: set.id, rev: 1, text: sentences[0], aligned: true,
+  segments: [{ sourceId: 'studio-audio', start: 1, end: 4 }] };
+await sdb.tx(['sets', 'blocks', 'sources'], 'readwrite', tx => {
+  tx.objectStore('sets').put(set);
+  tx.objectStore('blocks').put(studioBlock);
+  tx.objectStore('sources').put({ id: 'studio-audio', blob: wav });
+});
+assert.equal((await indexStudioChapter(set)).count, 1);
+const studioLink = maLinks(await db.get('words', one.id))[0];
+assert.equal(studioLink.ref.src.store, 'studio');
+assert.equal(await validMALink(studioLink), true);
+await sdb.tx(['blocks'], 'readwrite', tx => {
+  tx.objectStore('blocks').put({ ...studioBlock, rev: 2, deleted: true });
+});
+assert.equal(await validMALink(studioLink), false);

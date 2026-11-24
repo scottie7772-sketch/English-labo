@@ -1,3 +1,3 @@
 // Display identifiers only; keep database schema versions independent.
-export const APP_VERSION = '1.19.39';
-export const BUILD_LABEL = '2026-11-24-ma-cue-playback';
+export const APP_VERSION = '1.19.40';
+export const BUILD_LABEL = '2026-11-24-ma-library-rescan';

@@ -76,6 +76,8 @@ with ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, dir
             });
           };
         }""")
+        page.locator('#maRescan').click()
+        expect(page.locator('output')).to_contain_text('ラボ 1教材・スタジオ 1教材・章特定 2教材・字幕一致 6件・再生可 6件')
         video_id = page.evaluate("videoId")
         page.goto(base + "#video-play?id=" + video_id)
         page.locator("#openSet").click()
@@ -98,11 +100,13 @@ with ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, dir
         page.wait_for_function("clips.some(x => x.start >= .49 && x.start < .7)")
         print(f"example_click_to_playing_ms={(perf_counter() - t0)*1000:.1f}")
         page.get_by_role("link", name="単語帳で開く").click()
-        page.get_by_text("フレーズの境界を調整").click()
-        page.locator('[data-edge="start"]').fill("1.1")
-        page.locator('[data-edge="end"]').fill("1.7")
-        page.get_by_role("button", name="境界を確定").click()
-        page.get_by_role("button", name="▶ フレーズ").click()
+        lab_audio = page.locator('[data-ma-source="lab"]')
+        expect(page.locator('[data-ma-source="studio"]')).to_have_count(1)
+        lab_audio.get_by_text("フレーズの境界を調整").click()
+        lab_audio.locator('[data-edge="start"]').fill("1.1")
+        lab_audio.locator('[data-edge="end"]').fill("1.7")
+        lab_audio.get_by_role("button", name="境界を確定").click()
+        lab_audio.get_by_role("button", name="▶ フレーズ").click()
         page.wait_for_function("clips.some(x => x.start >= 1.09 && x.start < 1.3)")
         assert not errors, errors
         print("PASS MA import, Studio ZIP transfer, highlight controls, original example and phrase playback")

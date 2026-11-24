@@ -2,7 +2,7 @@ import { db } from './db.js';
 import { $, esc, toast } from './ui.js';
 import { loadWordMastery, levelText, overall } from './mastery.js';
 import { meaningsOf } from './words.js';
-import { parseMA, readMAStudyZip, importMA, maLinks, validMALink, playMA, saveMABoundary, maMaterial, chapterFor, indexChapter } from './ma-phrases.js';
+import { parseMA, readMAStudyZip, importMA, maLinks, validMALink, playMA, saveMABoundary, maMaterial, chapterFor, indexChapter, indexStudioChapter } from './ma-phrases.js';
 import { unlock, playRef } from './word-audio.js';
 
 export async function maImportScreen(el) {
@@ -15,13 +15,51 @@ export async function maImportScreen(el) {
       <label class="field">和訳TXT（任意）<input type="file" name="ja" accept=".txt,text/plain"></label>
       <p class="hint">CSVの必須列は phrase、meaning、priority（1〜3）です。id は再インポート時も同じ値を使ってください。同じ id の行を追加すると使用例を複数登録できます。</p>
       <p class="hint">使用例は example_en と example_ja、出典は chapter と position、前後の文は before と after、異形は variants（| 区切り）。TXTを使う場合は原文・和訳を同じ順で空行区切りにし、CSVの paragraph に原文の段落番号（1から）を指定できます。CSVに使用例がない場合は、フレーズが含まれる段落を取り込みます。</p>
-      <button class="btn primary">端末に登録</button><output aria-live="polite"></output>
+      <button class="btn primary">端末に登録</button>
+      <button type="button" id="maRescan" class="btn">登録済みのMAフレーズを音声と再照合</button><output aria-live="polite"></output>
     </form>`;
   const form = $('form', el), out = $('output', form), button = $('button', form);
-  form.onsubmit = async e => {
+  const rescan = $('#maRescan', form);
+  const scan = async message => {
+    const summary = { lab: 0, studio: 0, chapters: 0, matches: 0, count: 0, unavailable: 0, failed: 0 };
+    const collect = async (kind, run) => {
+      try {
+        const result = await run();
+        if (!result) return;
+        summary[kind]++;
+        if (result.chapters.length) summary.chapters++;
+        summary.matches += result.stats.matches;
+        summary.count += result.count;
+        summary.unavailable += result.stats.unavailable;
+      } catch { summary.failed++; }
+    };
+    out.textContent = message + ' 音声を照合中…';
+    for (const id of await db.keys('videos')) {
+      if (!out.isConnected) return;
+      const video = await db.get('videos', id);
+      if (maMaterial(video)) await collect('lab', async () => indexChapter(id, await chapterFor(video)));
+    }
+    const { sdb } = await import('./studio-db.js');
+    for (const set of await sdb.all('sets')) {
+      if (!out.isConnected) return;
+      await collect('studio', () => indexStudioChapter(set));
+    }
+    const s = summary;
+    out.textContent = message + ` ラボ ${s.lab}教材・スタジオ ${s.studio}教材・章特定 ${s.chapters}教材・字幕一致 ${s.matches}件・再生可 ${s.count}件・音声区間なし／未確定 ${s.unavailable}件・エラー ${s.failed}教材。`;
+  };
+  const run = async task => {
+    button.disabled = rescan.disabled = true;
+    try { await task(); }
+    catch (err) { out.textContent = err.message; }
+    finally { button.disabled = rescan.disabled = false; }
+  };
+  rescan.onclick = () => run(async () => {
+    if (!(await db.all('words')).some(w => w.ma)) throw Error('先にMAフレーズ集を登録してください');
+    await scan('再照合の結果');
+  });
+  form.onsubmit = e => {
     e.preventDefault();
-    button.disabled = true;
-    try {
+    return run(async () => {
       const files = ['csv', 'en', 'ja'].map(name => form.elements[name].files[0]);
       const zip = form.elements.zip.files[0];
       if (zip && files.some(Boolean)) throw Error('ZIPと個別ファイルのどちらかを選んでください');
@@ -29,25 +67,8 @@ export async function maImportScreen(el) {
       const items = zip ? await readMAStudyZip(zip) : parseMA(...await Promise.all(files.map(file => file?.text() || '')));
       const n = await importMA(items);
       const message = `${n}件を登録・更新しました。単語集「MAフレーズ」で学習できます。`;
-      out.textContent = message;
-      let count = 0, failed = 0, materials = 0, inspected = 0, unavailable = 0, legacy = 0;
-      for (const id of await db.keys('videos')) {
-        if (!out.isConnected) break;
-        const video = await db.get('videos', id);
-        if (!maMaterial(video)) continue;
-        const chapter = await chapterFor(video);
-        try {
-          inspected++;
-          const result = await indexChapter(id, chapter);
-          if (result?.chapters.length) materials++;
-          count += result?.count || 0;
-          unavailable += result?.stats.unavailable || 0;
-          legacy += result?.stats.legacy || 0;
-        } catch { failed++; }
-      }
-      if (inspected) out.textContent = message + ` 検査 ${inspected}教材・章特定 ${materials}教材・再生可 ${count}件（旧形式の試聴 ${legacy}件）・音声区間なし／未確定 ${unavailable}件${failed ? `・エラー ${failed}教材` : ''}。`;
-    } catch (err) { out.textContent = err.message; }
-    finally { button.disabled = false; }
+      await scan(message);
+    });
   };
 }
 
@@ -91,9 +112,9 @@ export async function mountMAAudio(root, w, { videoId = null, pause = null, adju
     ${links.map((link, i) => {
       const phrase = confirmedPhrase(link);
       const saved = link.manual || phrase;
-      return `<section class="stack"><small>${esc(link.ref.origin.title)}</small><div>${esc(link.ref.origin.text)}</div>
+      return `<section class="stack" data-ma-source="${link.ref.origin.from === 'studio' ? 'studio' : 'lab'}"><small>${link.ref.origin.from === 'studio' ? 'スタジオ' : 'Video Lab'}・${esc(link.ref.origin.title)}</small><div>${esc(link.ref.origin.text)}</div>
         ${valid[i] ? `<div class="row wrap">
-          <button type="button" class="btn sm" data-ma-play="${i}:example">▶ ${link.legacy ? '字幕の音声を試聴（旧形式）' : link.context ? '使用例を含む字幕' : '使用例'}</button>
+          <button type="button" class="btn sm" data-ma-play="${i}:example">▶ ${link.legacy ? '字幕の音声を試聴（境界未確認）' : link.context ? '使用例を含む字幕' : '使用例'}</button>
           ${phrase ? `<button type="button" class="btn sm" data-ma-play="${i}:word">▶ フレーズ</button>` : '<span class="small">フレーズ単体の時刻は未確定</span>'}
         </div>
         ${adjust ? `<details data-ma-edge="${i}"><summary>フレーズの境界を調整</summary>

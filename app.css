@@ -1340,3 +1340,41 @@ dialog.st-rescue-dialog .field select { box-sizing: border-box; max-width: 100%;
 
 .vp-root .sja { white-space: pre-line; }
 .vfmenu { float: right; width: 32px; height: 28px; margin: -4px -4px 0 0; }
+
+/* 1.19.30: Japanese subtitle position editor (Video Lab and Studio share it). Phone first: one tool panel, two columns. */
+dialog:has(.jp-form) { width: min(96vw, 560px); max-width: 96vw; overflow-x: hidden; }
+.jp-form { box-sizing: border-box; width: 100%; min-width: 0; padding-bottom: 0; display: flex; flex-direction: column; gap: 8px; }
+.jp-form * { box-sizing: border-box; max-width: 100%; }
+.jp-head { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 6px; background: var(--surface); padding: 6px 0; margin-top: -6px; }
+.jp-head h3 { margin: 0; font-size: 16px; }
+.jp-rows { display: flex; flex-direction: column; gap: 8px; }
+.jp-row { border: 1px solid var(--line); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.jp-row.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.jp-row.changed { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.jp-row.locked textarea { opacity: .6; }
+.jp-en { display: flex; align-items: flex-start; gap: 6px; font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; min-width: 0; }
+.jp-en .grow { min-width: 0; }
+.jp-pick { flex: none; border: 1px solid var(--line); background: var(--surface2); color: var(--text); border-radius: 8px; padding: 2px 6px; font-size: 12px; min-height: 28px; }
+.jp-row.on .jp-pick { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.jp-row textarea { width: 100%; font-size: 16px; line-height: 1.45; resize: vertical; overflow-wrap: anywhere; }
+.jp-shared { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 6px; border-radius: 8px; background: var(--surface2); overflow-wrap: anywhere; }
+.jp-shared-text { flex: 1 1 100%; }
+.jp-was { overflow-wrap: anywhere; }
+.jp-more { align-self: center; }
+.jp-tools { position: sticky; bottom: 0; z-index: 3; background: var(--surface); border-top: 1px solid var(--line); padding: 8px 0 10px; display: flex; flex-direction: column; gap: 6px; max-height: 52vh; overflow-y: auto; }
+.jp-target { overflow-wrap: anywhere; }
+.jp-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.jp-grid .btn { white-space: normal; min-height: 40px; line-height: 1.25; }
+.jp-panel { gap: 8px; }
+.jp-split { padding: 8px; border-radius: 8px; background: var(--surface2); font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
+.jp-split i { color: var(--accent); font-style: normal; font-weight: 700; padding: 0 2px; }
+.jp-panel input[type=range] { width: 100%; min-height: 36px; }
+.jp-range { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.jp-range input[type=number] { width: 5.5em; font-size: 16px; }
+.jp-impact { margin: 0; padding-left: 1.2em; overflow-wrap: anywhere; }
+.jp-compare { display: flex; flex-direction: column; gap: 8px; max-height: 34vh; overflow-y: auto; overflow-wrap: anywhere; }
+.jp-list { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow-y: auto; overflow-wrap: anywhere; }
+.jp-form .btn.xs { min-height: 32px; padding: 0 8px; font-size: 12px; }
+.jp-grid4 { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+.jp-grid4 .btn { min-height: 38px; padding: 0 4px; font-size: 13px; }
+.jp-form .jp-tools .jp-target { font-size: 13px; }

@@ -62,6 +62,12 @@ export function openDB() {
   return dbPromise;
 }
 
+// Closes the connection (the next call opens it again). Used by the tests to simulate an app restart.
+export async function closeDB() {
+  const p = dbPromise; dbPromise = null;
+  try { (await p)?.close(); } catch {}
+}
+
 function wrap(req) {
   return new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
 }

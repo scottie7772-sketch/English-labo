@@ -74,7 +74,7 @@ export function parseJaPatch(text, materialId) {
   return patch;
 }
 
-export function planJaWrites(materialId, cues, records, patch, expected, { clear = false, fromStudio = false, replaceStudio = false } = {}) {
+export function planJaWrites(materialId, cues, records, patch, expected, { clear = false, fromStudio = false, replaceStudio = false, atomic = false } = {}) {
   const current = new Map(cues.map(c => [c.id, c]));
   const links = new Map(records.filter(r => r.cueId).map(r => [r.cueId, r]));
   const texts = new Map(records.filter(r => typeof r.ja === 'string').map(r => [r.ja, r]));
@@ -92,6 +92,7 @@ export function planJaWrites(materialId, cues, records, patch, expected, { clear
   }
   const eligible = new Set();
   for (const [id, stamp] of expected) if (current.has(id) && stamp === digest(current.get(id))) eligible.add(id);
+  if (atomic && [...patch.keys()].some(id => !eligible.has(id))) return { puts, deletes, needsReview: [...patch.keys()] };
   const groupCache = new WeakMap();
   for (const [cueId, values] of patch) {
     const cue = current.get(cueId), old = links.get(cueId);

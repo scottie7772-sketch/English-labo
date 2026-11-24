@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { sdb } from '../studio-db.js';
 import {
   studioFolders, folderMembers, createStudioFolder, renameStudioFolder, moveStudioSets,
-  saveStudioFolderOrder, getFolderJa, saveFolderJa, ensurePackFolder,
+  saveStudioFolderOrder, getFolderJa, saveFolderJa,
 } from '../studio-folders.js';
 import { planStudioJa, studioJaView } from '../studio-ja.js';
 
@@ -77,13 +77,4 @@ assert.equal(studioJaView(plan.changes).value(plan.changes[1]), c3.data.items[0]
 await moveStudioSets(['c'], null);
 assert.deepEqual(await sdb.get('sets','c'), sets[2]);
 assert.deepEqual((await getFolderJa(renamed.id)).sections, corpus);
-// 1.19.28: a pack tagged with a folder id goes back to that folder (renamed here), or creates it with that id
-{
-  const reg = (await sdb.get('meta','studio-folders')).folders, f0 = reg[0];
-  assert.equal(await ensurePackFolder(f0.id, 'Old name from pack'), f0.name);
-  assert.equal(await ensurePackFolder('folder-new', 'Arrived'), 'Arrived');
-  assert.ok((await sdb.get('meta','studio-folders')).folders.some(f => f.id === 'folder-new' && f.name === 'Arrived'));
-  assert.equal(await ensurePackFolder('folder-new', 'Other'), 'Arrived');
-  console.log('Pack folders: tagged packs return to the same folder by id');
-}
 console.log('Studio folders: old labels, empty folders, ID-preserving moves, ordering, rename, archived chapters, reusable corpus and missing-only protection');

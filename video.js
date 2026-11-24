@@ -1,3 +1,4 @@
+import { adjustJaRows } from './ja-position.js';
 import { releaseVideoMedia } from './video-media-ref.js';
 import { readScriptJa, planScriptJa } from './video-script-ja.js';
 // Phase 6: Video Lab (local videos + SRT/VTT subtitles + word registration linked to video position)
@@ -1376,22 +1377,46 @@ export async function videoPlay(el, params) {
       okLabel: '閉じる', cancelLabel: null });
   }
   async function editJa(id) {
-    const cue = cues.find(c => c.id === id);
-    if (!cue) return;
-    const expected = cueStamps([cue]), dlg = $('#dialog');
-    const ok = await confirmDialog({ title: '日本語訳を編集',
-      body: `<p>${esc(cue.en)}</p><label class="field"><span>日本語訳（空欄で削除）</span><textarea id="editJaText" rows="4">${esc(jaView.draft(cue))}</textarea></label>
-        <p class="small muted">訳が1行ずれているとき（この行から下をまとめて直す）：</p>
-        <div class="row wrap"><button class="btn sm" value="shiftUp">この行から下の訳を1行上へ</button><button class="btn sm" value="shiftDown">この行から下の訳を1行下へ</button></div>`,
-      okLabel: '日本語訳だけ保存' });
-    if (!ok && (dlg.returnValue === 'shiftUp' || dlg.returnValue === 'shiftDown')) return shiftJa(id, dlg.returnValue === 'shiftUp' ? 1 : -1);
+    const list = scriptOrder().filter(c => c.en), k = list.findIndex(c => c.id === id);
+    if (k < 0) return;
+    const rows = list.slice(Math.max(0,k-1),k+2), center = rows.findIndex(c=>c.id===id);
+    const original = rows.map(c=>jaView.draft(c)), expected = cueStamps(rows), dlg = $('#dialog');
+    // Shared spans must not be flattened into independent duplicated translations.
+    const shared = new Set(jaRecords.filter(r=>r.cueIds?.length>1).map(r=>r.id));
+    const blocked = new Set(jaRecords.filter(r=>r.refs?.some(ref=>shared.has(ref))).map(r=>r.cueId));
+    if (rows.some(c=>blocked.has(c.id))) {
+      toast('複数字幕共通の訳は位置調整できません。対応JSONで再取り込みしてください'); return;
+    }
+    const pending = confirmDialog({title:'日本語字幕の位置調整', body:`
+      <p class="small muted">移動したい訳を選択して矢印を押すと部分移動。選択なしは全文移動。英文・音声は変わりません。</p>
+      ${rows.map((c,i)=>`<div class="stack" style="margin-bottom:12px"><b>${i===center?'対象：':''}${esc(c.en)}</b><textarea aria-label="日本語訳 ${i+1}" data-japos="${i}" rows="3">${esc(original[i])}</textarea><div class="row wrap">${[-1,1].filter(d=>rows[i+d]).map(d=>`<button type="button" class="btn sm" data-move="${d}" data-index="${i}">${d<0?'↑ 前へ':'↓ 次へ'}</button><button type="button" class="btn sm" data-swap="${d}" data-index="${i}">${d<0?'↑ 交換':'↓ 交換'}</button>`).join('')}</div></div>`).join('')}
+      <button type="button" class="btn" id="jaUndo">元に戻す</button>
+      <details><summary>従来の一括調整</summary><button class="btn sm" value="shiftUp">この行から下の訳を1行上へ</button><button class="btn sm" value="shiftDown">この行から下の訳を1行下へ</button></details>`,okLabel:'日本語訳だけ保存'});
+    const fields = [...dlg.querySelectorAll('[data-japos]')], history=[];
+    const snapshot=()=>fields.map(f=>f.value);
+    const restore=values=>fields.forEach((f,i)=>{f.value=values[i]});
+    dlg.querySelectorAll('[data-move],[data-swap]').forEach(btn=>{
+      // Keep textarea selection when tapping a control.
+      btn.addEventListener('mousedown',e=>e.preventDefault());
+      btn.onclick=()=>{
+        const i=Number(btn.dataset.index), d=Number(btn.dataset.move ?? btn.dataset.swap), j=i+d;
+        const before=snapshot(), f=fields[i];
+        const next=adjustJaRows(before,i,j,btn.dataset.swap!==undefined,f.selectionStart,f.selectionEnd);
+        if(next){history.push(before);restore(next);}
+      };
+    });
+    $('#jaUndo',dlg).onclick=()=>restore(history.pop() || original);
+    fields[center].focus();
+    const ok=await pending;
+    if (!ok && ['shiftUp','shiftDown'].includes(dlg.returnValue)) return shiftJa(id,dlg.returnValue==='shiftUp'?1:-1);
     if (!ok) return;
+    const changes=new Map(rows.flatMap((c,i)=>fields[i].value===original[i]?[]:[[c.id,fields[i].value.trim()?[fields[i].value.trim()]:[]]]));
+    if(!changes.size) return;
     try {
-      const ja = $('#editJaText', dlg).value.trim();
-      const result = await saveVideoJa(v.id, new Map([[id, ja ? [ja] : []]]), expected);
+      const result=await saveVideoJa(v.id,changes,expected,{atomic:true});
       await refreshJa();
-      toast(result.needsReview.length ? '字幕が変更されました。開き直して確認してください' : '日本語訳を更新しました');
-    } catch (error) { toast(error.message); }
+      toast(result.needsReview.length?'字幕が変更されました。保存せず終了しました':'日本語訳を更新しました');
+    } catch(error){toast(error.message);}
   }
   // 1.19.28: fix English–Japanese pairs that are off by one line, from this line to the end (one save).
   // dir 1 = each line takes the next line's translation (this line's own is dropped); -1 = each takes the previous one.

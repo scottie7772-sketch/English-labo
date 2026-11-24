@@ -123,3 +123,17 @@ export async function saveFolderJa(id, incoming, append) {
   });
   return count;
 }
+
+// 1.19.28: a material pack tagged with a Studio folder id (packId) goes back into that same folder, even when
+// the members arrive in a different order, some are missing, or the folder was renamed on this side.
+export function ensurePackFolder(packId, name) {
+  return editFolders((folders, sets) => {
+    const byId = folders.find(folder => folder.id === packId);
+    if (byId) return byId.name;
+    const byName = name && folders.find(folder => folder.name === name);
+    if (byName) return byName.name;
+    const folder = { id: packId, name: name || 'フォルダ', order: sets.filter(set => set.folder === name).map(set => set.id) };
+    folders.push(folder);
+    return folder.name;
+  });
+}

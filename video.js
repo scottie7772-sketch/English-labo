@@ -75,15 +75,27 @@ function preserveCueEdits(c, old) {
 
 // a studio material (from a pack file, or sent directly by the studio inside this app) → video lab.
 // The same material again: subtitles are replaced in place, learning records kept. getFile(m) → Blob of a media file or null.
-export async function importMaterial(manifest, mat, getFile, { askUpdate = true, direct = false, update: updateExisting = true } = {}) {
+export async function importMaterial(manifest, mat, getFile, { askUpdate = true, direct = false, archive = false, update: updateExisting = true } = {}) {
   const { copyBlob } = await import('./media-audio.js');
+  // 1.19.28: 音声のみ materials keep their sentence ranges without text (playback / sentence repeat still work)
+  const audioOnly = mat.set?.contents === 'audio';
+  const hasLine = (it) => Boolean(it.text || it.ja || (audioOnly && it.segments?.length));
   // same material imported before (same studio set): update it in place, keeping the learning records
   const all = (await db.all('videos')).map(({ blob, ...x }) => x);
+  function all0() { return all; }
+  // 1.19.28: the folder (pack) a material belongs to is tagged by the Studio folder's id, so members imported in any
+  // order, some missing, or after the folder was renamed here still go to the same folder (its name in the Lab wins)
+  if (mat.set?.packId) {
+    const mate = all.find((x) => x.from?.packId === mat.set.packId && x.folder);
+    if (mate) mat.set = { ...mat.set, folder: mate.folder };
+  }
+
   const mine = all.filter((x) => x.from?.material && x.from.material === manifest.materialId && x.kind !== 'multi');
   const oldParent = all.find((x) => x.kind === 'multi' && x.from?.material === manifest.materialId);
   const findOld = (m) => mine.find((x) => x.from.media === m.id) || mine.find((x) => !x.from.media && (x.name === manifest.title || x.name === `${manifest.title}（${m.name}）`));
-  const withText = (m) => mat.items.some(it => (it.text || it.ja) && it.segments?.some(g => g.media === m.id));
+  const withText = (m) => mat.items.some(it => hasLine(it) && it.segments?.some(g => g.media === m.id));
   const plan = mat.media.filter(withText).map((m) => ({ m, old: findOld(m) }));
+  if (!plan.length) throw Error('音声に割り当てられた字幕がありません。スタジオで字幕の再生位置を設定してください。');
   const existingComplete = mine.some(v => v.from?.importComplete) ||
     (mine.length && mine.every(v => v.from?.importComplete == null) && plan.length > 0 && plan.every(p => p.old) && (plan.length === 1 || oldParent));
   if (direct && !updateExisting && existingComplete) return { skipped: true, reason: '登録済み' };
@@ -126,21 +138,23 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true,
     update = !askUpdate || await confirmDialog({ title: 'すでにある教材です', body: `<p>「${esc(manifest.title)}」は前に取り込んでいます。字幕を新しい内容に入れ替えますか？</p><p class="hint">入れ替えても、単語帳の「元の動画」へのリンク・再生位置・固有名詞・変わっていない行のディクテーション記録は残ります。</p>`, okLabel: '入れ替える', cancelLabel: '別の教材として追加' });
     if (!update) plan.forEach((p) => (p.old = null));
   }
-  const missing = plan.filter((p) => !p.old && !p.m.included);
-  if (!plan.some((p) => p.old || p.m.included)) throw new Error('このパックには動画・音声が入っていません。スタジオで「動画・音声も含める」を選んで書き出し直してください');
-  let first = null, nUpd = 0, nNew = 0; const made = [];
+  const missing = [];
   for (const { m, old } of plan) {
-    if (!old && !m.included) continue;
+    if (!m.included && !(old && await videoBlob(await db.get('videos', old.id)))) missing.push(m.name || m.id);
+  }
+  if (missing.length) throw Error(`再生に必要な音声がありません（${missing.join('、')}）。スタジオの「音声もすべて含める」で書き出し直してください。`);
+  let first = null, nUpd = 0; const made = [];
+  for (const { m, old } of plan) {
     toast('取り込み中…', 10000);
     let v, freshBlob = null;
     const openSource = async () => {
       const raw = await getFile(m);
-      if (!raw) throw Error(`音声ファイルを開けません（${m.name}）`);
+      if (!(raw?.size > 0)) throw Error(`音声ファイルを開けません（${m.name}）`);
       return raw;
     };
     if (old) {
       v = await db.get('videos', old.id);
-      if (m.included && !direct && m.size && v.from?.mediaSize && m.size !== v.from.mediaSize) {   // the sound itself changed in the studio: replace it
+      if (m.included && !direct && ((m.size && v.from?.mediaSize && m.size !== v.from.mediaSize) || !await videoBlob(v))) {
         const raw = await openSource(); const { saveVideoCopy } = await import('./media-audio.js');
         const sv = m.kind === 'video' ? await saveVideoCopy(new File([raw], m.name, { type: m.mime || 'video/mp4' }), { onStep: (x) => toast(x, 10000) }) : { blob: await copyBlob(raw, () => {}, { name: m.name, type: m.mime || 'audio/mp4' }) };
         freshBlob = sv.blob; Object.assign(v, { size: sv.blob.size, mime: m.mime || v.mime, duration: m.duration || v.duration, audioChecked: true, audioFixed: true }); if (sv.info) v.audioInfo = sv.info; if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
@@ -160,7 +174,6 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true,
         if (sv.trackIndex != null) v.audioTrack = sv.trackIndex;
         v.audioChecked = true; v.audioFixed = true;
       }
-      nNew++;
     }
     if (direct) {
       v.from.importComplete = false;
@@ -170,7 +183,11 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true,
         if (!key || !(await db.get('vblobs', key))?.blob) {
           const fp = await fingerprint(raw);
           key = `studio-media:${m.id}:${fp.head}:${fp.tail}:${fp.size}`;
-          if (!await db.get('vblobs', key)) await putVideoBlob(key, new File([raw], m.name, { type: m.mime || raw.type }));
+          if (!await db.get('vblobs', key)) {
+            const type = m.mime || raw.type;
+            const blob = archive ? await copyBlob(raw, () => {}, { name:m.name, type }) : new File([raw], m.name, { type });
+            await putVideoBlob(key, blob);
+          }
         }
         v.mediaRef = key;
         v.size = raw.size;
@@ -195,7 +212,7 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true,
     v.materialType = mat.set?.materialType || v.materialType;
     if (freshBlob) await putVideoBlob(v.id, freshBlob);
     await saveVideoMeta(v);
-    const fresh = mat.items.filter((it) => it.segments?.[0]?.media === m.id && (it.text || it.ja) && !v.removedStudioItems?.includes(it.id))
+    const fresh = mat.items.filter((it) => it.segments?.[0]?.media === m.id && hasLine(it) && !v.removedStudioItems?.includes(it.id))
       .map((it, order) => ({ id: uid('c_'), videoId: v.id, ...(direct || mat.jaSpans ? { studioOrder: order } : {}), ...studioCue(it, it.segments[0].start) }))
       .sort((a, b) => a.start - b.start);
     if (old) {   // keep cue ids (word links) and records of lines that still exist
@@ -227,7 +244,7 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true,
     delete P.blob; delete P.trim; P.materialType = mat.set?.materialType || P.materialType;
     await db.put('videos', P);
     const partOf = Object.fromEntries(parts.map((p) => [p.media, p]));
-    const fresh = mat.items.filter((it) => partOf[it.segments?.[0]?.media] && (it.text || it.ja) && !P.removedStudioItems?.includes(it.id)).map((it, order) => {
+    const fresh = mat.items.filter((it) => partOf[it.segments?.[0]?.media] && hasLine(it) && !P.removedStudioItems?.includes(it.id)).map((it, order) => {
       const p = partOf[it.segments[0].media];
       const cue = studioCue(it, p.offset + it.segments[0].start, p.offset);
       if (it.role === 'example') cue.segments = it.segments.filter(g => partOf[g.media])
@@ -254,13 +271,13 @@ export async function importMaterial(manifest, mat, getFile, { askUpdate = true,
       await syncStudioLabFolder(mat.set?.folder || '', [manifest.materialId], mat.set?.folderOrder);
     }
   }
-  if (missing.length) toast(`音声が入っていない部分（${missing.length}件）は取り込めませんでした。スタジオで音声を含めて書き出してください`, 5000);
-  if (!missing.length) toast(`${nUpd ? `更新しました` : '取り込みました'}（字幕 ${mat.items.filter((it) => it.segments?.length && (it.text || it.ja)).length}行）`);
+  toast(`${nUpd ? '更新しました' : '取り込みました'}（字幕 ${mat.items.filter((it) => it.segments?.length && (it.text || it.ja)).length}行）`);
   return first;
 }
 
 function setStudioLabFolder(video, set) {
   video.folder = set?.folder || '';
+  if (set?.packId) video.from = { ...video.from, packId: set.packId, packRank: set.folderOrder ?? null };
   if (Number.isInteger(set?.folderOrder) && video.folder) video.folderOrder = set.folderOrder;
   else delete video.folderOrder;
 }
@@ -271,6 +288,32 @@ export async function studioLabState() {
   const children = new Set(videos.flatMap(video => (video.parts || []).map(part => part.videoId)));
   return new Set(videos.filter(video => video.from?.material && video.from.importComplete !== false &&
     !children.has(video.id)).map(video => video.from.material));
+}
+
+export async function importMaterialCollection(entries, { onProgress = () => {}, stopped = () => false } = {}) {
+  const registered = await studioLabState();
+  const report = [], failed = [];
+  for (const [index, entry] of entries.entries()) {
+    if (stopped()) break;
+    onProgress(index + 1, entries.length, entry.title);
+    try {
+      const { manifest, material, getFile } = await entry.read();
+      if (registered.has(manifest.materialId)) {
+        report.push(['スキップ', entry.title, '登録済み']);
+        continue;
+      }
+      const result = await importMaterial(manifest, material, getFile, { askUpdate:false, direct:true, archive:true, update:false });
+      if (result?.skipped) report.push(['スキップ', entry.title, result.reason]);
+      else {
+        registered.add(manifest.materialId);
+        report.push(['成功', entry.title]);
+      }
+    } catch (error) {
+      failed.push(entry);
+      report.push(['失敗', entry.title, error.message]);
+    }
+  }
+  return { report, failed };
 }
 
 // Publish the Studio folder and order without republishing any Lab subtitles or audio.
@@ -342,6 +385,14 @@ export async function compressVideoAudio(id) {
 export async function videoBlob(v) { if (!v) return null; return (await db.get('vblobs', v.id))?.blob || (v.mediaRef ? (await db.get('vblobs', v.mediaRef))?.blob : null) || v.blob || null; }
 async function putVideoBlob(id, blob) { await db.put('vblobs', { id, blob, size: blob.size, at: Date.now() }); }
 // save the video record without its file (never puts a file read from the database back)
+// 1.19.28: text input in the app's own dialog (window.prompt may not open in a home-screen app on the iPhone)
+async function askName(title, value = '') {
+  const dlg = $('#dialog'); if (dlg.open) { dlg.onclose = null; dlg.close(); await new Promise((r) => setTimeout(r, 60)); }
+  dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(title)}</h3><input id="askName" value="${esc(value)}" autocomplete="off"><div class="row end"><button class="btn ghost" value="cancel">キャンセル</button><button class="btn primary" value="ok">OK</button></div></form>`;
+  dlg.returnValue = ''; dlg.showModal(); const inp = dlg.querySelector('#askName'); setTimeout(() => { inp.focus(); inp.select(); }, 50);
+  await new Promise((q) => (dlg.onclose = q));
+  return dlg.returnValue === 'ok' ? inp.value.trim() : null;
+}
 async function saveVideoMeta(rec) {
   const { blob, audioBlob, ...m } = rec;
   if (blob && !(await db.get('vblobs', rec.id))) m.blob = blob;   // older record not moved yet: left as it was
@@ -404,11 +455,20 @@ export async function videoList(el) {
     ${resume ? `<a class="card vresume" href="#video-play?id=${resume.id}"><span class="grow"><span class="vmeta">続きから</span><b>${esc(displayName(resume.name))}</b><span class="vmeta">${T(resume.lastTime)} / ${T(resume.duration)}</span></span><span class="vresume-play">▶︎</span></a>` : ''}
     <div class="row vacts"><a class="btn sm primary grow" href="#studio/sets">🛠 教材を作る</a><label class="btn sm grow" for="vpack">📦 パックを読み込む</label></div>
     <input type="file" id="vpack" hidden><input type="file" id="vfile" accept="video/*" hidden>
+    <div class="small" id="vpackStatus" role="status" hidden></div>
     <div id="vlbar"></div>
     <div id="vl">${[...folders].map(([folder, materials]) => folder ?
-      `<details class="card" open><summary>📁 ${esc(folder)}（${materials.length}）</summary>${materials.sort((a,b) =>
+      `<details class="card" open><summary>📁 ${esc(folder)}（${materials.length}）<button type="button" class="icon-btn vfmenu" data-vfolder="${esc(folder)}" aria-label="${esc(folder)}のメニュー">⋯</button></summary>${materials.sort((a,b) =>
         (a.folderOrder ?? Infinity) - (b.folderOrder ?? Infinity) || recent(b) - recent(a)).map(renderMaterial).join('')}</details>` :
       materials.map(renderMaterial).join('')).join('') || '<div class="card center muted">まだ教材がありません。「教材を作る」から作れます。</div>'}</div>`;
+  // 1.19.28: a folder's ⋯: rename it (all its materials move with it; the Studio pack tag keeps them together)
+  $$('[data-vfolder]', el).forEach((b) => b.addEventListener('click', async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const old = b.dataset.vfolder, name = await askName('フォルダの名前', old);
+    if (!name || name === old) return;
+    for (const v of vids.filter((x) => x.folder === old)) { const cur = await db.get('videos', v.id); if (cur) { cur.folder = name; await saveVideoMeta(cur); } }
+    toast('フォルダの名前を変えました'); videoList(el);
+  }));
   // ⋯: less used things and the explanations
   $('#vlMenu', el).onclick = async () => {
     const dlg = $('#dialog');
@@ -431,7 +491,7 @@ export async function videoList(el) {
       const dlg = $('#dialog');
       dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(displayName(v.name))}</h3><button class="btn" value="rename">名前を変更</button>${v.kind === 'multi' ? '' : `<button class="btn" value="comp">音声を圧縮${v.compressed ? `（${v.compressed.label}済み）` : ''}</button>`}<button class="btn danger" value="del">削除</button><button class="btn ghost" value="cancel">閉じる</button></form>`;
       dlg.returnValue = ''; dlg.showModal(); await new Promise((q) => (dlg.onclose = q));
-      if (dlg.returnValue === 'rename') { await new Promise((r) => setTimeout(r, 60)); const name = prompt('教材の名前', displayName(v.name)); if (name?.trim()) { const cur = await db.get('videos', v.id); cur.name = name.trim(); await saveVideoMeta(cur); videoList(el); } }
+      if (dlg.returnValue === 'rename') { await new Promise((r) => setTimeout(r, 60)); const name = await askName('教材の名前', displayName(v.name)); if (name?.trim()) { const cur = await db.get('videos', v.id); cur.name = name.trim(); await saveVideoMeta(cur); videoList(el); } }
       if (dlg.returnValue === 'del') { await new Promise((r) => setTimeout(r, 60)); if (await removeVideos([v.id])) videoList(el); }
       if (dlg.returnValue === 'comp') { await new Promise((r) => setTimeout(r, 60)); if (await compressVideoAudio(v.id)) videoList(el); }
     }, 550);
@@ -473,16 +533,45 @@ export async function videoList(el) {
   swipeToDelete($$('#vl .vrow', el), async (row) => { if (picking) return false; const ok = await removeVideos([row.dataset.id]); if (ok) videoList(el); return ok; });
   drawBar();
   // material pack from the studio: its sound/video + subtitles (EN/JA) + hidden words become a video lab entry
+  async function importFolderPack(entries, input) {
+    const status = $('#vpackStatus', el);
+    status.hidden = false;
+    const { report, failed } = await importMaterialCollection(entries, {
+      onProgress: (i, n, title) => { status.textContent = `教材パックを取り込み中… ${i} / ${n}　${title}`; },
+      stopped: () => !el.contains(input),
+    });
+    if (!el.contains(input)) return;
+    await videoList(el);
+    const next = $('#vpackStatus', el);
+    if (!next) return;
+    next.hidden = false;
+    next.innerHTML = `<details open><summary>${['成功','スキップ','失敗'].map(state => `${state} ${report.filter(row => row[0] === state).length}件`).join('・')}</summary>
+      ${report.map(row => `<div>${esc(row.join('　'))}</div>`).join('')}</details>
+      ${failed.length ? '<button type="button" class="btn sm" data-retry-pack>失敗した教材だけ再実行</button>' : ''}`;
+    const retry = $('[data-retry-pack]', next);
+    if (retry) retry.onclick = async () => {
+      const chooser = $('#vpack', el);
+      chooser.disabled = true;
+      try { await importFolderPack(failed, chooser); }
+      catch (error) { toast(error.message, 5000); }
+      finally { chooser.disabled = false; }
+    };
+  }
   $('#vpack', el).onchange = async (e) => {
-    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    const input = e.target, f = input.files[0]; if (!f) return;
+    const status = $('#vpackStatus', el);
+    status.hidden = true; input.disabled = true;
     try {
-      const { zipRead } = await import('./common-pack.js'); const { copyBlob } = await import('./media-audio.js');
-      const z = await zipRead(f);
-      const manifest = JSON.parse(await z.text('manifest.json')), mat = JSON.parse(await z.text('material.json'));
-      if (manifest.format !== 'elpack') throw new Error('教材スタジオのパックではありません');
-      const first = await importMaterial(manifest, mat, async (m) => (m.included ? z.file(m.path) : null));
+      const { readMaterialImport } = await import('./material-pack.js');
+      const pack = await readMaterialImport(f);
+      if (pack.entries) { await importFolderPack(pack.entries, input); return; }
+      const { manifest, material, getFile } = pack;
+      const first = await importMaterial(manifest, material, getFile);
       if (first) go(`#video-play?id=${first.id}`);
-    } catch (err) { toast('取り込めませんでした：' + (err?.message || err), 5000); }
+    } catch (err) {
+      status.textContent = '取り込めませんでした：' + (err?.message || err);
+      status.hidden = false;
+    } finally { input.value = ''; input.disabled = false; }
   };
   $('#vfile', el).onchange = async (e) => {
     const f = e.target.files[0]; e.target.value = '';
@@ -1108,7 +1197,7 @@ export async function videoPlay(el, params) {
     $$('[data-pn]', el).forEach((b) => (b.onclick = () => { const ta = $('#dIn', el), w = v.properNouns[+b.dataset.pn]; const p0 = ta.selectionStart ?? ta.value.length; ta.value = ta.value.slice(0, p0) + (p0 && !/\s$/.test(ta.value.slice(0, p0)) ? ' ' : '') + w + ' ' + ta.value.slice(p0); dictTyped = ta.value; ta.focus(); }));
     $('#dPN', el).onclick = async () => {
       const cur = (v.properNouns || []).join(', ');
-      const ans = prompt('この動画の固有名詞（人名・地名など）をカンマ区切りで\n例：Maria, Cleveland, Burns and Associates', cur); if (ans == null) return;
+      const ans = await askName('この動画の固有名詞（人名・地名など）をカンマ区切りで（例：Maria, Cleveland）', cur); if (ans == null) return;
       v.properNouns = [...new Set(ans.split(/[,、，\n]/).map((x) => x.trim()).filter(Boolean))];
       const dbv = await db.get('videos', v.id); if (dbv) { dbv.properNouns = v.properNouns; await saveVideoMeta(dbv); }
       drawDict();
@@ -1291,14 +1380,39 @@ export async function videoPlay(el, params) {
     if (!cue) return;
     const expected = cueStamps([cue]), dlg = $('#dialog');
     const ok = await confirmDialog({ title: '日本語訳を編集',
-      body: `<p>${esc(cue.en)}</p><label class="field"><span>日本語訳（空欄で削除）</span><textarea id="editJaText" rows="4">${esc(jaView.draft(cue))}</textarea></label>`,
+      body: `<p>${esc(cue.en)}</p><label class="field"><span>日本語訳（空欄で削除）</span><textarea id="editJaText" rows="4">${esc(jaView.draft(cue))}</textarea></label>
+        <p class="small muted">訳が1行ずれているとき（この行から下をまとめて直す）：</p>
+        <div class="row wrap"><button class="btn sm" value="shiftUp">この行から下の訳を1行上へ</button><button class="btn sm" value="shiftDown">この行から下の訳を1行下へ</button></div>`,
       okLabel: '日本語訳だけ保存' });
+    if (!ok && (dlg.returnValue === 'shiftUp' || dlg.returnValue === 'shiftDown')) return shiftJa(id, dlg.returnValue === 'shiftUp' ? 1 : -1);
     if (!ok) return;
     try {
       const ja = $('#editJaText', dlg).value.trim();
       const result = await saveVideoJa(v.id, new Map([[id, ja ? [ja] : []]]), expected);
       await refreshJa();
       toast(result.needsReview.length ? '字幕が変更されました。開き直して確認してください' : '日本語訳を更新しました');
+    } catch (error) { toast(error.message); }
+  }
+  // 1.19.28: fix English–Japanese pairs that are off by one line, from this line to the end (one save).
+  // dir 1 = each line takes the next line's translation (this line's own is dropped); -1 = each takes the previous one.
+  // The translation pushed off the end is NOT kept as text-only data: it is shown and then discarded.
+  async function shiftJa(id, dir) {
+    await new Promise((r) => setTimeout(r, 60));
+    const list = scriptOrder().filter(c => c.en), k = list.findIndex(c => c.id === id);
+    if (k < 0) return;
+    const part = list.slice(k), old = part.map(c => jaView.draft(c) || '');
+    const next = dir === 1 ? [...old.slice(1), ''] : ['', ...old.slice(0, -1)];
+    const dropped = dir === 1 ? old[0] : old.at(-1);
+    const ok = await confirmDialog({ title: dir === 1 ? '訳を1行上へずらす' : '訳を1行下へずらす',
+      body: `<p>${part.length}行の訳を${dir === 1 ? '上' : '下'}へ1行ずらします。</p>
+        <div class="stack small" style="max-height:40vh;overflow:auto">${part.slice(0, 4).map((c, i) => `<div><b>${esc(c.en.slice(0, 60))}</b><br><span class="muted">${esc(old[i].slice(0, 40)) || '（なし）'} → ${esc(next[i].slice(0, 40)) || '（なし）'}</span></div>`).join('')}${part.length > 4 ? '<div class="muted">…</div>' : ''}</div>
+        ${dropped ? `<p class="small">対応する英文がなくなる訳は保存しません：「${esc(dropped.slice(0, 60))}」</p>` : ''}`, okLabel: 'ずらす' });
+    if (!ok) return;
+    try {
+      const changes = new Map(part.map((c, i) => [c.id, next[i] ? [next[i]] : []]));
+      const result = await saveVideoJa(v.id, changes, cueStamps(part));
+      await refreshJa();
+      toast(result.needsReview.length ? '字幕が変更されました。開き直して確認してください' : `${part.length}行の訳をずらしました`);
     } catch (error) { toast(error.message); }
   }
   async function importText(text, lang) {
@@ -1492,7 +1606,7 @@ export async function videoPlay(el, params) {
       const r = dlg.returnValue;
       if (r === 'pen' || r === 'pja') pasteDialog(r === 'pen' ? 'en' : 'ja');
       else if (r === 'copy') exportJaSource(); else if (r === 'rename') {
-        const name = prompt('動画の名前', v.name);
+        const name = await askName('動画の名前', v.name);
         if (name?.trim()) { const cur = await db.get('videos', v.id); cur.name = name.trim(); await saveVideoMeta(cur); videoPlay(el, params); }
       } else if (r === 'del') {
         if (!(await confirmDialog({ title: '動画を削除', body: '<p>動画と字幕を削除します。この動画から登録した単語は残りますが、動画へのリンクは使えなくなります。</p>', okLabel: '削除', danger: true }))) return;

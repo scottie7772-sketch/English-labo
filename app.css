@@ -1339,3 +1339,4 @@ dialog.st-rescue-dialog .field select { box-sizing: border-box; max-width: 100%;
 .vp-root[data-mode="both"][data-primary="ja"] .cue .sen { color: var(--muted); font-weight: 400; }
 
 .vp-root .sja { white-space: pre-line; }
+.vfmenu { float: right; width: 32px; height: 28px; margin: -4px -4px 0 0; }

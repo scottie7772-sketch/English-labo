@@ -1,12 +1,13 @@
-import { studioFolders, folderMembers, createStudioFolder, renameStudioFolder, moveStudioSets, saveStudioFolderOrder, getFolderJa, saveFolderJa } from './studio-folders.js';
-import { readStudioJaFiles, planStudioJa, studioJaView } from './studio-ja.js';
+import { ensurePackFolder, studioFolders, folderMembers, createStudioFolder, renameStudioFolder, moveStudioSets, saveStudioFolderOrder, getFolderJa, saveFolderJa } from './studio-folders.js';
+import { readStudioJaFiles, planStudioJa, studioJaView, confirmStudioJa, studioJaChoices, findStudioJaChoices } from './studio-ja.js';
 // 教材スタジオ（制作）: standalone page studio.html now; later mounted inside Englabo with mount(el, { base: 'studio/' }).
 // Rules: does not import learning modules and never touches the learning database (ell-db).
 import { $, $$, esc, toast, confirmDialog, swipeToDelete } from './ui.js';
 import { sdb, newId, commit, undo, redo, saveVersion, restoreVersion, liveBlocks, allBlocksMap, sourcesMap, newBlock, tokensOf, blockDur, linkToLab } from './studio-db.js';
 import { parseScript, withoutPlainScriptHeaders, SUB_EXT, isJa, langFromName, autoPair, alignJa } from './studio-subs.js';
 import * as ops from './studio-ops.js';
-import { fingerprint, zipWrite, zipRead } from './common-pack.js';
+import { fingerprint, zipRead } from './common-pack.js';
+import { materialPackEntries, packMedia, readMaterialPack, writeMaterialCollection, writeMaterialPack } from './material-pack.js';
 import { decodeTo16k, openTranscriber, speechPieces, captureTo16k, QUALITY, recognisePiece } from './asr.js';
 import { extractPhrases, extractWords } from './studio-words.js';
 import { findCandidates, applySpans } from './studio-names.js';
@@ -22,7 +23,7 @@ import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange,
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.15';
+export const STUDIO_VERSION = '0.21.21';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -99,10 +100,11 @@ const head = (title, backPath = null, right = '') => `
 // (compressed, cut, made into sound only). Before this, the editor could keep playing / reading the original camera-roll file:
 // "再生できません（コード4）", transcription "再生もできません", the start not cut — until the app was reopened.
 function forgetSource(id) { const u = urlCache.get(id); if (u) { try { URL.revokeObjectURL(u); } catch {} } urlCache.delete(id); probeCache.delete(id); }
+const studioSourceFile = source => source && (source.blob?.size > 0 ? source.blob : sessionFiles.get(source.id));
 function mediaURL(src) {
   if (!src) return null;
   if (urlCache.has(src.id)) return urlCache.get(src.id);
-  const blob = src.stored ? src.blob : sessionFiles.get(src.id);
+  const blob = studioSourceFile(src);
   if (!blob) return null;
   const u = URL.createObjectURL(blob); urlCache.set(src.id, u); return u;
 }
@@ -197,7 +199,9 @@ async function folderJaScreen(el, params, revision) {
 }
 async function setsScreen(el, params, revision) {
   const allSets = (await sdb.all('sets')).sort((a, b) => b.updatedAt - a.updatedAt);
-  const registry = (await studioFolders(allSets)).sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true }));
+  const registry = await studioFolders(allSets);
+  const sortFolders = () => registry.sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true }));
+  sortFolders();
   const current = registry.find(folder => folder.id === params?.get('folder'));
   const sets = current ? folderMembers(allSets, current) : allSets;
   const srcs = await sourcesMap();
@@ -225,20 +229,22 @@ async function setsScreen(el, params, revision) {
   const lab = HOST?.studioLabState ? await HOST.studioLabState() : null;
   const est = !current && await navigator.storage?.estimate?.().catch(() => null);
   if (revision !== routeRevision) return;
-  let editing = false; const chosen = new Set();
-  const progress = members => {
+  let editing = false, folderMenuOpen = false; const chosen = new Set();
+  // 1.19.28: short: number of materials and how many are published (+ translated); details are in the folder / ⋯
+  const progress = (members, short = false) => {
     const ready = members.filter(set => jaInfo.get(set.id)).length;
     const made = members.filter(set => lab?.has(set.id)).length;
+    if (short) return `${members.length}教材${lab ? ` · 教材化 ${made}/${members.length}` : ''} · 訳 ${ready}/${members.length}`;
     return `${members.length}教材 · 訳済 ${ready} · 未反映／要確認 ${members.length-ready}${lab ? ` · 教材化済 ${made} · 未教材化 ${members.length-made}` : ''}`;
   };
   const draw = () => {
     const suffix = current ? '?folder=' + encodeURIComponent(current.id) : '';
-    const access = `<a class="btn primary grow" href="#${BASE}import${suffix}">＋ 動画・音声・字幕</a><a class="btn" href="#${BASE}io${suffix}">教材パック</a>`;
+    const access = `<a class="btn primary" href="#${BASE}import${suffix}">＋ 動画・音声・字幕</a>${current ? '' : `<a class="btn" href="#${BASE}io${suffix}">教材パック</a>`}`;
     el.innerHTML = `${head(current ? current.name : '教材スタジオ', current ? 'sets' : HOST ? '__exit' : null,
       current ? '<button class="icon-btn" id="folderMenu" aria-label="フォルダのメニュー">⋯</button>' :
         '<button class="btn sm" id="upd">更新を確認</button><a class="btn sm" href="#' + BASE + 'clean">容量</a>')}
-    <div class="row wrap">${access}${current ? `<a class="btn" href="#${BASE}${folderJaPath(current)}">英日データを取り込む</a>` : '<button class="btn" id="newFolder">＋ フォルダ</button>'}</div>
-    ${current ? `<p class="small muted">${progress(sets)}</p>` : ''}
+    <div class="st-home-actions">${access}${current ? '' : '<button class="btn" id="newFolder">＋ フォルダ</button>'}</div>
+    ${current ? `<p class="small muted">${progress(sets, true)}　<span class="muted">（教材パック・英日データ・一括教材化は右上の ⋯）</span></p>` : ''}
     ${est ? `<p class="small muted">端末の保存量：${fmtSize(est.usage || 0)}${est.quota ? ` / 目安の上限 ${fmtSize(est.quota)}` : ''}</p>` : ''}
     ${sets.length ? `<div class="row end"><button class="btn sm" id="edit">${editing ? '完了' : '教材を選ぶ'}</button></div>` : ''}
     ${editing ? `<div class="row wrap"><button class="btn sm" id="eAll">すべて選ぶ</button><button class="btn sm" id="eNone">解除</button>
@@ -249,12 +255,40 @@ async function setsScreen(el, params, revision) {
     ${current ? `${sets.length ? `<div class="card list">${sets.map(rowHTML).join('')}</div>` : '<p class="empty">このフォルダにはまだ教材がありません。</p>'}` :
       registry.map(folder => {
         const members = folderMembers(sets, folder);
-        if (!editing) return `<a class="card st-folderrow" href="#${BASE}${folderPath(folder)}"><span class="grow"><b>📁 ${esc(folder.name)}</b><small class="muted">${progress(members)}</small></span>›</a>`;
+        if (!editing) return `<div class="card st-folderrow" data-folder-row="${esc(folder.id)}">
+          <a class="grow st-folderlink" href="#${BASE}${folderPath(folder)}"><b>📁 ${esc(folder.name)}</b><small class="muted">${progress(members, true)}</small></a>
+          <button type="button" class="icon-btn st-foldermenu" aria-label="${esc(folder.name)}のメニュー" aria-haspopup="dialog">⋯</button>
+        </div>`;
         return members.length ? `<div class="card list"><b>📁 ${esc(folder.name)}</b>${members.map(rowHTML).join('')}</div>` : '';
       }).join('') + (!sets.some(s => !s.folder) ? '' : `<div class="card list">${sets.filter(s => !s.folder).map(rowHTML).join('')}</div>`)}
     ${!current && !sets.length && !registry.length ? '<p class="empty">まだ教材がありません。</p>' : ''}`;
     $('#eFold', el)?.addEventListener('click', () => toFolder(sets.filter(x => chosen.has(x.id))));
-    $('#folderMenu', el)?.addEventListener('click', () => openFolderMenu(current).catch(error => toast(error.message, 5500)));
+    $('#folderMenu', el)?.addEventListener('click', () => showFolderMenu(current));
+    $$('[data-folder-row]', el).forEach(row => {
+      const folder = registry.find(entry => entry.id === row.dataset.folderRow);
+      const link = $('.st-folderlink', row);
+      $('.st-foldermenu', row).onclick = () => showFolderMenu(folder, true);
+      let timer, start, held = false;
+      const stop = () => { clearTimeout(timer); start = null; };
+      link.onpointerdown = event => {
+        if (!event.isPrimary || event.button !== 0) return;
+        stop();
+        held = false;
+        start = { x: event.clientX, y: event.clientY };
+        timer = setTimeout(() => { held = true; showFolderMenu(folder, true); }, 550);
+      };
+      link.onpointermove = event => {
+        if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) stop();
+      };
+      link.onpointerup = link.onpointercancel = link.onpointerleave = stop;
+      link.oncontextmenu = event => {
+        event.preventDefault();
+        stop();
+        held = true;
+        showFolderMenu(folder, true);
+      };
+      link.onclick = event => { if (held && event.detail !== 0) { event.preventDefault(); held = false; } };
+    });
     $('#newFolder', el)?.addEventListener('click', async () => {
       const name = (await askText('フォルダを作成', ''))?.trim();
       if (name && revision === routeRevision) nav(folderPath(await createStudioFolder(name)));
@@ -292,41 +326,70 @@ async function setsScreen(el, params, revision) {
     if (del) for (const k of kids) await deleteSet(await sdb.get('sets', k.s.id));
     nav(`set?id=${P.id}&align=1`);
   }
-  async function openFolderMenu(folder) {
-    const corpus = await getFolderJa(folder.id);
+  async function showFolderMenu(folder, overview = false) {
+    if (!folder || folderMenuOpen || revision !== routeRevision) return;
+    folderMenuOpen = true;
+    try { await openFolderMenu(folder, overview); }
+    catch (error) { toast(error.message, 5500); }
+    finally { folderMenuOpen = false; }
+  }
+  async function openFolderMenu(folder, overview) {
+    const members = overview ? folderMembers(allSets, folder) : sets;
+    const corpus = overview ? null : await getFolderJa(folder.id);
     if (revision !== routeRevision) return;
-    const action = await studioDialog(folder.name,
-      `<p class="small muted">英日対応データ ${corpus?.sections.length || 0}ファイル</p>`,
-      [['register','英日対応データを登録・追加・更新'],
-        ...(corpus?.sections.length && sets.length ? [['apply','日本語訳を一括照合'],['missing','未割当の訳だけ照合']] : []),
-        ...(sets.length ? [['review','照合結果を確認']] : []),
-        ...(HOST?.sendToLab && sets.length ? [['lab','一括教材化'],['newLab','未教材化のみ教材化']] : []),
-        ['rename','フォルダ名を変更'], ...(sets.length > 1 ? [['sort','教材を並べ替え'],['merge','このフォルダの音声をまとめて照合']] : []),
-        ['close','閉じる']]);
+    const publish = HOST?.sendToLab ? [['lab','一括教材化（新しい教材だけ追加）'],['labUpdate','登録済みも更新して教材化']] : [['folderPack','一括教材化（ZIPで書き出す）']];
+    const actions = overview ? [
+      ...(members.length ? publish : []),
+      ['open','フォルダを開く'],
+      ['rename','フォルダ名を変更'],
+    ] : [
+      ...(members.length ? publish : []),
+      ['io','教材パック（読み込み・書き出し）'],
+      ['register','英日対応データを登録・追加・更新'],
+      ...(corpus?.sections.length && members.length ? [['apply','日本語訳を一括照合'],['missing','未割当の訳だけ照合']] : []),
+      ...(members.length ? [['review','照合結果を確認']] : []),
+      ['rename','フォルダ名を変更'], ...(members.length > 1 ? [['sort','教材を並べ替え'],['merge','このフォルダの音声をまとめて照合']] : []),
+    ];
+    const summary = overview ? progress(members) : `${progress(members)}<br>英日対応データ ${corpus?.sections.length || 0}ファイル`;
+    const action = await studioDialog(folder.name, `<p class="small muted">${summary}</p>`, [...actions, ['close','閉じる']]);
     if (revision !== routeRevision) return;
-    const ids = sets.map(set => set.id);
+    const ids = members.map(set => set.id);
+    if (action === 'open') return nav(folderPath(folder));
+    if (action === 'io') return nav('io?folder=' + encodeURIComponent(folder.id));
     if (action === 'register') {
       nav(folderJaPath(folder));
     } else if (action === 'apply' || action === 'missing') {
       await applyStudioJa(ids, corpus.sections, refreshFolderProgress, { missingOnly: action === 'missing' });
     } else if (action === 'review') {
       await reviewFolderJa();
-    } else if (action === 'lab' || action === 'newLab') {
+    } else if (action === 'folderPack') {
+      const choice = await studioDialog('一括教材化（ZIP）', `<p>「${esc(folder.name)}」の ${members.length}件を1つのZIPに書き出します。</p>${contentsHTML()}`, [['start','書き出す'],['cancel','閉じる']]);
+      if (choice !== 'start' || revision !== routeRevision) return;
+      await exportFolderPack(folder, members, readContents());
+    } else if (action === 'lab' || action === 'labUpdate') {
+      // 1.19.28: 一括教材化 again after adding materials = only the new ones are added; the registered ones keep their
+      // subtitles and learning records (only the folder tag and order are refreshed)
       const actualLab = HOST.studioLabState ? await HOST.studioLabState() : lab;
-      const chosenIds = action === 'newLab' ? ids.filter(id => !actualLab?.has(id)) : ids;
-      const proceed = await studioDialog('フォルダを教材化', `<p>「${esc(folder.name)}」の ${chosenIds.length}件を確認します。登録済みの教材は字幕や音声を更新せず、フォルダと表示順だけを反映します。</p>`,
-        [['start','実行する'],['cancel','閉じる']]);
+      const fresh = ids.filter(id => !actualLab?.has(id)), known = ids.length - fresh.length;
+      const update = action === 'labUpdate', chosenIds = update ? ids : fresh;
+      const proceed = await studioDialog(update ? '登録済みも更新して教材化' : '一括教材化', `<p>「${esc(folder.name)}」：<b>新しく追加 ${fresh.length}件</b>${known ? `・登録済み ${known}件（${update ? '字幕・音声を更新' : 'そのまま。フォルダと順番だけ反映'}）` : ''}</p>${chosenIds.length ? contentsHTML() : ''}`,
+        chosenIds.length ? [['start','実行する'],['cancel','閉じる']] : [['start','フォルダと順番だけ反映'],['cancel','閉じる']]);
       if (proceed !== 'start' || revision !== routeRevision) return;
+      const contents = chosenIds.length ? readContents() : contentsPref();
       await HOST.syncStudioLabFolder?.(folder.name, ids);
       if (revision !== routeRevision) return;
-      await batchSendToLab(chosenIds, true, false);
-      if (!chosenIds.length) toast('未教材化の教材はありません');
+      if (chosenIds.length) await batchSendToLab(chosenIds, true, update, contents);
+      else toast('新しい教材はありません（フォルダと順番を反映しました）');
       if (revision === routeRevision) route();
     } else if (action === 'rename') {
       const name = (await askText('フォルダの名前を変更', folder.name))?.trim();
       if (!name || name === folder.name || revision !== routeRevision) return;
       await renameStudioFolder(folder.id, name);
-      route();
+      if (revision !== routeRevision) return;
+      for (const member of members) member.folder = name;
+      folder.name = name;
+      sortFolders();
+      draw();
     } else if (action === 'sort') {
       await sortFolder(folder);
     } else if (action === 'merge') {
@@ -1332,7 +1395,7 @@ async function editorScreen(el, params, revision) {
     return true;
   }
   function drawRelink() {
-    const need = [...new Set(blocks.flatMap((b) => b.segments.map((x) => x.sourceId)))].map((id) => srcs[id]).filter((s) => s && !s.stored && !sessionFiles.has(s.id));
+    const need = [...new Set(blocks.flatMap((b) => b.segments.map((x) => x.sourceId)))].map((id) => srcs[id]).filter((s) => s && !studioSourceFile(s));
     $('#relink', el).innerHTML = need.map((s) => `<div class="notice warn stack"><b>動画・音声ファイルが必要です</b><span class="small">${esc(s.name)}（${fmtSize(s.size)}・${fmt(s.duration)}）は端末に保存していません。同じファイルを選ぶと再生・分割ができます。文字の編集はこのままでもできます。</span>
       <label class="btn sm" for="rl_${s.id}">ファイルを選ぶ</label><input type="file" id="rl_${s.id}" data-src="${s.id}" hidden></div>`).join('');
     $$('#relink input[type=file]', el).forEach((inp) => (inp.onchange = async () => {
@@ -1660,12 +1723,14 @@ async function editorScreen(el, params, revision) {
     for (const b of blocks) for (const g of b.segments) if (!firstBySource.has(g.sourceId)) firstBySource.set(g.sourceId,b.id);
     list.innerHTML = shown.map((b) => (folds.has(b.id) ? foldHTML(folds.get(b.id)) : '') + (() => {
       const badges = [b.segments.length > 1 ? `<span class="tagp">${b.segments.length}区間</span>` : '', new Set(b.segments.map((s) => s.sourceId)).size > 1 ? '<span class="tagp">複数ファイル</span>' : '',
-        b.unconfirmed ? '<span class="tagp warn">一括仮割当・未確認</span>' : b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', overlap.has(b.id) ? `<span class="tagp warn" title="前の行と音声が重なっています。✎で開始を動かすと前の行の終わりも合わせて動きます">前と${overlap.get(b.id)}秒重なり</span>` : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', b.jaStatus === 'needsReview' ? '<span class="tagp warn">訳を確認</span>' : '', !b.segments.length && !isSymbolRow(b) ? '<span class="tagp">音声未割当</span>' : ''].join('');
+        b.unconfirmed ? '<span class="tagp warn">一括仮割当・未確認</span>' : b.sync === 'estimated' ? '<span class="tagp warn">時間は推定</span>' : '', overlap.has(b.id) ? `<span class="tagp warn" title="前の行と音声が重なっています。✎で開始を動かすと前の行の終わりも合わせて動きます">前と${overlap.get(b.id)}秒重なり</span>` : '', b.rep > 1 ? `<span class="tagp" title="音声では${b.rep}回読まれます（区間は${b.endEst ? '次の行まで・推定' : '確定'}）">×${b.rep}</span>` : '', b.asr && !b.aligned ? '<span class="tagp">自動起こし</span>' : '', b.aligned ? '<span class="tagp">スクリプト照合</span>' : '', b.trimNote ? `<span class="tagp">前後カット済み</span>` : '', !b.segments.length && !isSymbolRow(b) ? '<span class="tagp">音声未割当</span>' : ''].join('');
       const sourceStart = [...firstBySource].filter(([sid,id])=>id===b.id).map(([sid])=>`<div class="st-source-boundary">音声開始：${esc(srcs[sid]?.name||'音声ファイル')} <button type="button" class="btn sm ghost" data-source-row="${esc(sid)}" data-row="${esc(b.id)}">位置へ</button></div>`).join('');
       return `${sourceStart}<div class="st-row ${sel.has(b.id) ? 'sel' : ''} ${arrange ? 'jig' : ''}" data-id="${b.id}">
         ${selectMode ? `<span class="st-chk" data-chk="${b.id}">${sel.has(b.id) ? '☑' : '☐'}</span>` : ''}
         <span class="grow st-txt" data-play="${b.id}"><small class="muted">${b.segments.length ? `${fmt(b.segments[0]?.start)}–${fmt(b.segments.at(-1)?.end)}` : estMap.has(b.id) ? `≈${fmt(estMap.get(b.id).t)}（推定）` : '--:--'} ${badges}</small>
-          ${b.label ? `<b class="small">${esc(b.label)}</b>` : ''}<span class="st-en2">${holeHTML(b) || `<span class="muted">（英文なし${b.label ? '・✎で追加' : ''}）</span>`}</span><span class="st-ja2">${esc(jaView.value(b))}</span>${jaView.needsReview(b) ? '<span class="small warn-text">訳を要確認</span>' : ''}</span>
+          ${b.label ? `<b class="small">${esc(b.label)}</b>` : ''}<span class="st-en2">${holeHTML(b) || `<span class="muted">（英文なし${b.label ? '・✎で追加' : ''}）</span>`}</span><span class="st-ja2">${esc(jaView.value(b))}</span>${jaView.needsReview(b) ? (!arrange && !selectMode ?
+            `<button type="button" class="link small warn-text" data-ja-edit="${esc(b.id)}">訳を要確認</button>` :
+            '<span class="small warn-text">訳を要確認</span>') : ''}</span>
         ${arrange ? `<span class="st-grip" data-grip="${b.id}" aria-label="ドラッグ">≡</span>` : selectMode ? '' : `${!b.segments.length && b.text.trim() && !isSymbolRow(b) ? `<button type="button" class="btn xs ghost" data-rescue="${b.id}">音声を割当</button>` : ''}${(b.sync === 'estimated' || b.unconfirmed) && b.segments.length ? `<button type="button" class="btn xs ghost" data-confirm-row="${b.id}" title="試聴した時刻のまま確定">確定</button>` : ''}${b.sync === 'estimated' && b.segments.length && !b.unconfirmed ? `<button type="button" class="btn xs ghost" data-reestimate="${b.id}">前後から再推定</button>` : ''}<button class="icon-btn" data-edit="${b.id}" aria-label="編集">✎</button>`}</div>`;
     })()).join('') + (folds.has('__end') ? foldHTML(folds.get('__end')) : '') || `<p class="empty">${filtering ? (view === 'done' ? '照合済みの行はまだありません' : view === 'rest' ? '残っている文字起こしはありません' : '未照合の行はありません（すべて照合済み）') : '項目がありません'}</p>`;
     if (filtering && view === 'rest' && shown.length) {
@@ -1765,6 +1830,7 @@ async function editorScreen(el, params, revision) {
   list.addEventListener('touchend', () => { if (swipe) { swipe = null; drawList(); } });
   list.addEventListener('click', (e) => {
     const chk = e.target.closest('[data-chk]'); if (chk) { if (!('ontouchstart' in window)) tapRow(chk.dataset.chk); return; }
+    const ja = e.target.closest('[data-ja-edit]'); if (ja) return editStudioJa(byId[ja.dataset.jaEdit]);
     const ed = e.target.closest('[data-edit]'); if (ed) return editBlock(byId[ed.dataset.edit]);
     const row = e.target.closest('.st-row'); if (!row) return;
     if (arrange) { if (!e.target.closest('[data-grip]')) splitSheet(byId[row.dataset.id]); return; }
@@ -2927,8 +2993,61 @@ async function editorScreen(el, params, revision) {
       if (picking) { if (a0 == null || a1 != null) { a0 = id; a1 = null; } else a1 = id; mark2(); drawFB(); return; }
       dlg.close(); if (view !== 'all') setView('all'); setTimeout(() => goNear(id), 50); }));
   }
+  async function editStudioJa(row) {
+    if (!row) return;
+    vid.pause(); playing = null;
+    editorPlayback?.cleanup?.(); editorPlayback = null;
+    const guard = jaGuard(set);
+    let choices = [], sourceError = '';
+    try {
+      const folder = parentFolder && await getFolderJa(parentFolder.id);
+      if (folder?.sections.length) choices = studioJaChoices(set, folder.sections);
+    } catch (error) { sourceError = error.message; }
+    if (revision !== routeRevision) return;
+    const result = studioDialog('この行の和訳を確定', `
+      <div class="small">${esc(row.text)}</div>
+      <label class="field">和訳<textarea id="stJaFixText" rows="3">${esc(jaView.value(row))}</textarea></label>
+      ${choices.length ? `<label class="field">フォルダの英日データから探す<input id="stJaFixSearch" type="search" placeholder="英文の一部、または日本語"></label>
+        <div id="stJaFixChoices" class="stack" style="max-height:32dvh;overflow:auto"></div>` :
+        sourceError ? `<p class="small warn-text">候補を読み込めませんでした。和訳は直接入力できます。<br>${esc(sourceError)}</p>` : ''}`,
+      [['save','この和訳で確定'],['cancel','閉じる']]);
+    const dlg = $('#dialog'), text = $('#stJaFixText', dlg);
+    const save = $('button[value=save]', dlg);
+    const updateSave = () => { save.disabled = !text.value.trim(); };
+    text.oninput = updateSave;
+    updateSave();
+    if (choices.length) {
+      const search = $('#stJaFixSearch', dlg), list = $('#stJaFixChoices', dlg);
+      const at = blocks.findIndex(block => block.id === row.id);
+      const context = { before: blocks[at - 1]?.text, after: blocks[at + 1]?.text };
+      let candidates = [];
+      const render = () => {
+        candidates = findStudioJaChoices(choices, row.text, search.value, context);
+        list.innerHTML = candidates.length ? candidates.map((candidate, index) => `<div class="card stack small">
+          <b>${esc(candidate.en)}</b><span>${esc(candidate.ja)}</span>
+          <details><summary>${esc(candidate.name)}・前後の英文</summary>
+            ${candidate.before ? `<div>前　${esc(candidate.before)}</div>` : ''}
+            ${candidate.after ? `<div>次　${esc(candidate.after)}</div>` : ''}
+          </details><button type="button" class="btn sm" data-ja-choice="${index}">この訳を入力</button></div>`).join('') :
+          '<p class="small muted">候補が見つかりません。英文の一部で検索するか、和訳を入力してください。</p>';
+      };
+      search.oninput = render;
+      search.onkeydown = event => { if (event.key === 'Enter' && !event.isComposing) event.preventDefault(); };
+      list.onclick = event => {
+        const button = event.target.closest('[data-ja-choice]');
+        if (!button) return;
+        text.value = candidates[Number(button.dataset.jaChoice)].ja;
+        updateSave();
+      };
+      render();
+    }
+    if (await result !== 'save' || revision !== routeRevision || !text.value.trim()) return;
+    await run('和訳を確定', { blocks: [confirmStudioJa(row, text.value)], guardedSet: guard });
+  }
+
   async function editBlock(b, {protectNeighbours = false,onFinish = null} = {}) {
     if (!b) return;
+    const translationGuard = jaGuard(set);
     const shownJa = jaView.value(b);
     let displayedJa = shownJa;
     vid.pause(); playing = null; editorPlayback?.cleanup?.(); editorPlayback = null;
@@ -2951,6 +3070,7 @@ async function editorScreen(el, params, revision) {
           </div>
         </div>
         <label class="field"><span>和訳</span><textarea id="eJa" rows="2">${esc(displayedJa)}</textarea></label>
+        ${jaView.needsReview(b) ? '<button class="btn sm" value="ja-only">この和訳で確定</button>' : ''}
         <label class="field"><span>英文</span><textarea id="eEn" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false">${esc(work.text)}</textarea></label>
         <div class="stack">${work.segments.map((s, i) => `<div class="st-segrow"><b>区間${i + 1}</b> <small class="muted">${esc(srcs[s.sourceId]?.name || '')}</small>
           <div class="st-trim" data-trim="${i}"><div class="st-trk"><i class="st-origin"></i><i class="st-playhead"></i><i class="sel" data-slide="${i}" title="長さを固定して移動"></i><b class="h st-range-pointer st-range-start" data-h="start"></b><b class="h st-range-pointer st-range-end" data-h="end"></b></div><div class="row small muted"><span class="st-tl0"></span><span class="grow"></span><span>中央をドラッグ＝長さ固定で移動／薄枠＝元の位置</span><span class="grow"></span><span class="st-tl1"></span></div></div>
@@ -3128,7 +3248,8 @@ async function editorScreen(el, params, revision) {
       if (en == null) return;
       if (ja !== displayedJa) {
         displayedJa = ja;
-        work = { ...ops.editText(work, en, ja), jaOverride: true, jaReview: false };
+        if (en !== work.text) work = ops.editText(work, en, work.ja || '');
+        work = confirmStudioJa(work, ja);
       } else if (en !== work.text) work = ops.editText(work, en, work.ja || '');
     };
     // ---- 1.19.19: confirm in place / give a cut-off part to the neighbour / merge with the neighbour ----
@@ -3148,7 +3269,8 @@ async function editorScreen(el, params, revision) {
       form.insertAdjacentHTML('beforeend', `<div class="stack st-edextra">
         ${head && prevRow ? `<button class="btn sm" value="headPrev">切り離した冒頭（${fmt(head.start)}〜${fmt(head.end)}）を前の字幕へ</button>` : ''}
         ${tail && nextRow ? `<button class="btn sm" value="tailNext">切り離した末尾（${fmt(tail.start)}〜${fmt(tail.end)}）を次の字幕へ</button>` : ''}
-        <div class="row wrap">${prevRow ? '<button class="btn sm ghost" value="mergePrev">前の字幕と結合</button>' : ''}${nextRow ? '<button class="btn sm ghost" value="mergeNext">次の字幕と結合</button>' : ''}</div></div>`);
+        <div class="row wrap">${prevRow ? '<button class="btn sm ghost" value="mergePrev">前の字幕と結合</button>' : ''}${nextRow ? '<button class="btn sm ghost" value="mergeNext">次の字幕と結合</button>' : ''}</div>
+        <div class="row wrap small"><span class="muted">訳が1行ずれているとき：</span><button class="btn sm ghost" value="jaUp">この行から下の訳を1行上へ</button><button class="btn sm ghost" value="jaDown">1行下へ</button></div></div>`);
     };
     draw();
     dlg.returnValue = '';
@@ -3156,7 +3278,14 @@ async function editorScreen(el, params, revision) {
       if (editorPlayback?.dlg === dlg) { editorPlayback.cleanup?.(); editorPlayback = null; vid.pause(); playing = null; }
       try {
         const rv = dlg.returnValue;
+        if (rv === 'jaUp' || rv === 'jaDown') return await studioJaShift(b.id, rv === 'jaUp' ? 1 : -1);
         if (['headPrev','tailNext','mergePrev','mergeNext'].includes(rv)) { readText(); return await editNeighbourAction(rv, b, work, originalSegments, cutParts(), prevRow, nextRow); }
+        if (rv === 'ja-only') {
+          const ja = $('#eJa', dlg).value.trim();
+          if (!ja) return editStudioJa(b);
+          await run('和訳を確定', { blocks: [confirmStudioJa(b, ja)], guardedSet: translationGuard });
+          return;
+        }
         if (rv !== 'ok' && rv !== 'confirm') return;
         readText();
         if (rv === 'confirm') { if (!work.segments.length) return; delete work.unconfirmed; work.sync = 'manual'; }
@@ -3175,6 +3304,23 @@ async function editorScreen(el, params, revision) {
     dlg.showModal();
   }
 
+  // 1.19.28: English–Japanese pairs off by one line, from this line to the end: shift the translations (one save / undo).
+  // The translation that loses its English line is shown and discarded (never kept as text-only data).
+  async function studioJaShift(id, dir) {
+    await new Promise((r) => setTimeout(r, 60)); await reload();
+    const view = studioJaView(blocks);
+    const list = set.order.map((x) => byId[x]).filter((x) => x && (x.text || '').trim() && !isSymbolRow(x));
+    const k = list.findIndex((x) => x.id === id); if (k < 0) return;
+    const part = list.slice(k), old = part.map((x) => view.value(x) || '');
+    const next = dir === 1 ? [...old.slice(1), ''] : ['', ...old.slice(0, -1)], dropped = dir === 1 ? old[0] : old.at(-1);
+    const ok = await confirmDialog({ title: dir === 1 ? '訳を1行上へずらす' : '訳を1行下へずらす',
+      body: `<p>${part.length}行の訳を${dir === 1 ? '上' : '下'}へ1行ずらします（↶で戻せます）。</p>
+        <div class="stack small" style="max-height:40vh;overflow:auto">${part.slice(0, 4).map((x, i) => `<div><b>${esc(x.text.slice(0, 60))}</b><br><span class="muted">${esc(old[i].slice(0, 40)) || '（なし）'} → ${esc(next[i].slice(0, 40)) || '（なし）'}</span></div>`).join('')}${part.length > 4 ? '<div class="muted">…</div>' : ''}</div>
+        ${dropped ? `<p class="small">対応する英文がなくなる訳は保存しません：「${esc(dropped.slice(0, 60))}」</p>` : ''}`, okLabel: 'ずらす' });
+    if (!ok || revision !== routeRevision) return;
+    const ups = part.map((x, i) => (next[i] === old[i] ? null : confirmStudioJa(x, next[i]))).filter(Boolean);
+    if (ups.length) await run('訳を1行ずらす', { blocks: ups });
+  }
   // 1.19.19: from the edit screen — give the cut-off start / end to the neighbouring line, or merge with it (one save, one undo)
   async function editNeighbourAction(rv, b0, work, originalSegments, cuts, prevRow, nextRow) {
     await new Promise((r) => setTimeout(r, 60)); await reload();
@@ -4234,7 +4380,7 @@ async function editorScreen(el, params, revision) {
     if (revision !== routeRevision) return;
     history.replaceState(null, '', `#${BASE}set?id=${encodeURIComponent(set.id)}`);
     setView('all'); goNear(reviewRow);
-    editBlock(byId[reviewRow]);
+    editStudioJa(byId[reviewRow]);
   }, 0);
   $('#moreB', el).onclick = async () => {
     const dlg = $('#dialog');
@@ -4291,10 +4437,10 @@ async function editorScreen(el, params, revision) {
         else await applyStudioJa([set.id], corpus.sections, refreshJa);
       }
       if (v === 'stJaReview') showStudioJaReview(set, jaView.summary, row => {
-        setView('all'); goNear(row.id); return editBlock(byId[row.id]);
+        setView('all'); goNear(row.id); return editStudioJa(byId[row.id]);
       });
       if (v === 'ver') nav(`versions?id=${set.id}`);
-      if (v === 'exp') exportSet(set);
+      if (v === 'exp') await exportSet(set).catch(error => toast('書き出せませんでした：' + error.message, 6500));
       if (v === 'send') sendToLab(set).catch(error => toast(error.message, 5000));
       if (v === 'full') fullText();
       if (v === 'bulkGap') bulkGapTrial();
@@ -4529,7 +4675,7 @@ const jaCounts = ({ total, applied, review, missing }) =>
 
 function studioDialog(title, body, buttons) {
   const dlg = $('#dialog');
-  dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>${esc(title)}</h3>${body}<div class="row wrap end">
+  dlg.innerHTML = `<form method="dialog" class="dlg stack st-action-dialog"><h3>${esc(title)}</h3>${body}<div class="st-dialog-actions">
     ${buttons.map(([value, label]) => `<button class="btn sm" value="${value}">${esc(label)}</button>`).join('')}</div></form>`;
   dlg.returnValue = '';
   return new Promise(resolve => {
@@ -4681,10 +4827,16 @@ function materialMetadata(blocks, materialType) {
   }
   return map;
 }
-async function buildMaterial(set) {
+// 1.19.28: what a material carries. 'both' = sound + English + Japanese (each line keeps its own pair, so the Lab can
+// show English / Japanese / both); 'script' = sound + English only; 'audio' = sound with the sentence ranges, no text.
+const CONTENTS = { both: '音声＋英日字幕（英語・日本語訳）', script: '音声＋スクリプト（英語のみ）', audio: '音声のみ（文の区切りだけ）' };
+const contentsPref = () => { try { const v = localStorage.getItem('st-contents'); return CONTENTS[v] ? v : 'both'; } catch { return 'both'; } };
+const contentsHTML = (v = contentsPref()) => `<div class="stack small"><b>含める内容</b>${Object.entries(CONTENTS).map(([k, t]) => `<label class="chk"><input type="radio" name="stContents" value="${k}" ${k === v ? 'checked' : ''}> ${t}</label>`).join('')}</div>`;
+const readContents = () => { const v = document.querySelector('#dialog input[name=stContents]:checked')?.value || contentsPref(); try { localStorage.setItem('st-contents', v); } catch {} return v; };
+async function buildMaterial(set, { contents = 'both' } = {}) {
   const blocks = await liveBlocks(set);
   const media = [];
-  for (const id of new Set(blocks.filter(b => b.text || b.ja).flatMap(b => b.segments.map(s => s.sourceId)))) {
+  for (const id of new Set(blocks.filter(b => b.text || b.ja || (contents === 'audio' && b.segments.length)).flatMap(b => b.segments.map(s => s.sourceId)))) {
     const source = await sdb.get('sources', id);
     if (!source) throw Error('参照先の音声ファイル情報がありません');
     media.push(source);
@@ -4693,17 +4845,21 @@ async function buildMaterial(set) {
   const metadata = materialMetadata(blocks, set.materialType);
   const setFolder = set.folder && (await studioFolders([set])).find(folder => folder.name === set.folder);
   const folderOrder = setFolder ? folderMembers(await sdb.all('sets'), setFolder).findIndex(member => member.id === set.id) : -1;
-  const material = { jaSpans: studioJaView(blocks).spans, set: { id: set.id, title: set.title, folder: set.folder,
-    folderOrder: folderOrder >= 0 ? folderOrder : undefined, materialType: set.materialType, ...(set.splitRange ? { splitRange: structuredClone(set.splitRange) } : {}) },
-    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, jaRemoved: b.jaOverride && !b.ja, holes: b.holes, label: b.label, sync: b.sync, ...metadata.get(b.id) })),
-    media: media.map((m) => ({ id: m.id, kind: m.kind, name: m.name, size: m.size, mime: m.mime, duration: m.duration,
-      trackIndex: m.audio?.index, existingMediaKey: m.labRef?.videoId, included: !!(m.stored ? m.blob : sessionFiles.get(m.id)) })) };
+  const material = { jaSpans: contents === 'both' ? studioJaView(blocks).spans : [], set: { id: set.id, title: set.title, folder: set.folder,
+    folderOrder: folderOrder >= 0 ? folderOrder : undefined, materialType: set.materialType, ...(set.splitRange ? { splitRange: structuredClone(set.splitRange) } : {}),
+    contents, ...(setFolder ? { packId: setFolder.id, packName: setFolder.name } : {}) },
+    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })),
+      text: contents === 'audio' ? '' : b.text, ja: contents === 'both' ? b.ja : '', jaRemoved: contents === 'both' ? b.jaOverride && !b.ja : false,
+      holes: contents === 'audio' ? undefined : b.holes, label: b.label, sync: b.sync, ...metadata.get(b.id) }))
+      .filter((it) => contents !== 'audio' || it.segments.length),   // 音声のみ: lines without sound carry nothing
+    media: media.map((m) => ({ ...packMedia(m, studioSourceFile(m)), existingMediaKey: m.labRef?.videoId })) };
+  manifest.contents = { audio: true, text: contents !== 'audio', translation: contents === 'both', timestamps: true, kind: contents };
   return { manifest, material, media, blocks };
 }
-async function sendToLab(set, { batch = false, update = true } = {}) {
+async function sendToLab(set, { batch = false, update = true, contents = 'both' } = {}) {
   if (!HOST?.sendToLab) return null;
-  const { manifest, material, media, blocks } = await buildMaterial(set);
-  const n = blocks.filter(b => b.segments.length && (b.text || b.ja)).length;
+  const { manifest, material, media, blocks } = await buildMaterial(set, { contents });
+  const n = blocks.filter(b => b.segments.length && (b.text || b.ja || contents === 'audio')).length;
   if (!n) throw Object.assign(Error('音声区間が付いた字幕がありません'), { skip: true });
   const wait = blocks.filter(b => !b.segments.length && b.text).length;
   if (!batch && !(await confirmDialog({ title: '英語ラボに送る', body: `<p>音声の付いた ${n}行を入れます。
@@ -4712,8 +4868,7 @@ async function sendToLab(set, { batch = false, update = true } = {}) {
     <p class="hint">登録済みの教材は同じ教材を更新します。Video Labでの手動変更は保持します。</p>`, okLabel: '送る' }))) return null;
   const sources = new Map(media.map(source => [source.id, source]));
   const result = await HOST.sendToLab(manifest, material, m => {
-    const s = sources.get(m.id);
-    return s?.stored ? s.blob : sessionFiles.get(m.id);
+    return studioSourceFile(sources.get(m.id));
   }, { update });
   if (result?.skipped) return result;
   for (const source of media) {
@@ -4723,13 +4878,15 @@ async function sendToLab(set, { batch = false, update = true } = {}) {
   return result;
 }
 
-async function batchSendToLab(ids, retry = false, existingUpdate = false) {
+async function batchSendToLab(ids, retry = false, existingUpdate = false, contents = null) {
   if (!HOST?.sendToLab || !ids.length) return;
   const revision = routeRevision;
   const update = retry ? existingUpdate : (await studioDialog('一括教材化',
     `<p>${ids.length}件を独立した教材としてVideo Labに登録します。</p>
-      <p>更新を選ぶと、既存の教材も同じ登録先に反映します。</p>`,
+      <p>「新規のみ」は、まだ登録していない教材だけを追加します。「既存も更新」は登録済みの教材も上書きします。</p>${contentsHTML()}`,
     [['cancel','閉じる'],['new','新規のみ教材化'],['update','既存も更新']]));
+  if (!retry) contents = readContents();
+  contents ||= contentsPref();
   if (update === 'cancel' || update === '') return;
   const updateExisting = update === true || update === 'update';
   const registered = updateExisting ? null : await HOST.studioLabState?.();
@@ -4749,7 +4906,7 @@ async function batchSendToLab(ids, retry = false, existingUpdate = false) {
       if (!set) { report.push(['スキップ',id,'教材が見つかりません']); continue; }
       progress.textContent = `${i+1} / ${ids.length}　${set.title}`;
       if (registered?.has(id)) { report.push(['スキップ',set.title,'登録済み']); continue; }
-      const result = await sendToLab(set, { batch: true, update: updateExisting });
+      const result = await sendToLab(set, { batch: true, update: updateExisting, contents });
       if (!result?.id) report.push(['スキップ',set.title,result?.reason || '登録できません']);
       else report.push(['成功',set.title,'']);
     } catch (error) {
@@ -4770,50 +4927,137 @@ async function batchSendToLab(ids, retry = false, existingUpdate = false) {
   if (action === 'resume') return batchSendToLab(ids.slice(report.length), true, updateExisting);
 }
 
+async function exportFolderPack(folder, members, contents = 'both') {
+  const revision = routeRevision;
+  const ready = [], errors = [];
+  const progress = studioBatchProgress('一括教材パックの準備中');
+  try {
+    for (const [i, member] of members.entries()) {
+      if (progress.stopped || revision !== routeRevision) return;
+      progress.show(i, members.length, member.title);
+      try {
+        const set = await sdb.get('sets', member.id);
+        if (!set || set.folder !== folder.name) throw Error('フォルダ内に見つかりません');
+        const { manifest, material, media, blocks } = await buildMaterial(set, { contents });
+        if (!blocks.some(block => block.segments.length && (block.text?.trim() || block.ja?.trim() || contents === 'audio'))) {
+          throw Error('再生位置の付いた字幕がありません');
+        }
+        const missing = media.filter(source => !studioSourceFile(source)?.size);
+        if (missing.length) throw Error(`音声を選び直してください（${missing.map(source => source.name).join('、')}）`);
+        const files = new Map(media.map(source => [source.id, studioSourceFile(source)]));
+        manifest.contents = { ...manifest.contents, audioMode:'all' };
+        ready.push({ title:set.title, entries:materialPackEntries(manifest, material, files) });
+      } catch (error) { errors.push(`${member.title}：${error.message}`); }
+    }
+    if (progress.stopped) return;
+  } finally { await progress.close(); }
+  if (revision !== routeRevision) return;
+  if (errors.length) {
+    const proceed = await studioDialog('書き出せない教材があります', `<p>書き出し可能 ${ready.length} / ${members.length}件</p>
+      <div style="max-height:50dvh;overflow:auto">${errors.map(line => `<p>${esc(line)}</p>`).join('')}</div>`,
+      [...(ready.length ? [['save','準備できた教材を書き出す']] : []),['close','閉じる']]);
+    if (proceed !== 'save' || revision !== routeRevision) return;
+  }
+  let percent = -1;
+  const zip = await writeMaterialCollection(folder.name, ready, fraction => {
+    const step = Math.min(10, Math.floor(fraction * 10));
+    if (step === percent || revision !== routeRevision) return;
+    percent = step;
+    toast(`一括教材パックを作成中… ${step * 10}%`, 8000);
+  });
+  if (revision !== routeRevision) return;
+  const name = `${folder.name.replace(/[\\/:*?"<>|]/g, '_')}-一括教材.elpack.zip`;
+  await savePackZip(zip, name, folder.name, `教材 ${ready.length}件・音声付き`,
+    '<p class="small">保存したZIPを、Video Labの「パックを読み込む」で選んでください。</p>');
+}
+
 async function exportSet(set) {
+  const revision = routeRevision;
   let blocks = await liveBlocks(set);
-  const srcs = await sourcesMap(), tracks = await sdb.byIndex('tracks', 'setId', set.id);
-  const media = [...new Set(blocks.flatMap((b) => b.segments.map((s) => s.sourceId)))].map((id) => srcs[id]).filter(Boolean);
-  const canInclude = media.every((m) => m.stored || sessionFiles.has(m.id));
-  // English Labo already has the sound that was sent before: a later export can carry only the new sound (+ all subtitles)
-  const sent = new Set((set.exported?.media || []).filter((x) => media.some((m) => m.id === x.id && m.size === x.size)).map((x) => x.id));
-  const newOnes = media.filter((m) => !sent.has(m.id));
-  const nLines = blocks.filter((b) => b.segments.length && (b.text || b.ja)).length, nWait = blocks.filter((b) => !b.segments.length && b.text).length;
-  const dlg = document.querySelector('#dialog');
-  dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>英語ラボへ書き出す</h3>
-    <p class="small">音声の付いた ${nLines}行が教材になります。${nWait ? `（音声のないスクリプト ${nWait}行は、音声を足して照合したあとの書き出しで入ります）` : ''}</p>
+  const sourceIds = [...new Set(blocks.flatMap(block => block.segments.map(segment => segment.sourceId)))];
+  const media = [];
+  for (const id of sourceIds) media.push(await sdb.get('sources', id) || { id, name:id });
+  const available = new Map(media.map(source => [source.id, studioSourceFile(source)]).filter(([, blob]) => blob?.size > 0));
+  const missing = media.filter(source => !available.has(source.id));
+  const totalSize = sources => fmtSize(sources.reduce((sum, source) => sum + (available.get(source.id)?.size || 0), 0));
+  const sent = new Set((set.exported?.media || []).filter(previous =>
+    media.some(source => source.id === previous.id && (available.get(source.id)?.size ?? source.size) === previous.size)).map(source => source.id));
+  const newOnes = media.filter(source => !sent.has(source.id));
+  const nLines = blocks.filter(block => block.segments.length && (block.text?.trim() || block.ja?.trim())).length;
+  const nWait = blocks.filter(block => !block.segments.length && block.text).length;
+  const canInclude = nLines > 0 && media.length > 0 && !missing.length;
+  if (revision !== routeRevision) return;
+  const dlg = $('#dialog');
+  dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>教材パックを書き出す</h3>
+    <p class="small">再生できる字幕 ${nLines}行・音声／動画 ${media.length}件</p>
+    ${missing.length ? `<p class="small warn-text">音声を選び直してください。<br>${missing.map(source => esc(source.name)).join('、')}</p>` : ''}
+    ${!nLines ? '<p class="small warn-text">再生位置の付いた字幕が必要です。スタジオで音声を割り当ててから音声付きパックを作成できます。</p>' : ''}
     <div class="stack">
-      ${sent.size ? `<label class="chk"><input type="radio" name="em" value="new" checked> 字幕の更新（${newOnes.length ? `新しい音声 ${newOnes.length}件・${fmtSize(newOnes.reduce((a, m) => a + m.size, 0))}だけ含める` : '音声は含めない・とても小さい'}）</label>` : ''}
-      <label class="chk"><input type="radio" name="em" value="all" ${sent.size ? '' : 'checked'} ${canInclude ? '' : 'disabled'}> 音声もすべて含める（${fmtSize(media.reduce((a, m) => a + m.size, 0))}）</label>
-      <label class="chk"><input type="radio" name="em" value="none"> 音声を含めない（字幕だけ）</label></div>
-    <p class="hint">別のスタジオ（ホーム画面のスタジオ ⇄ 英語ラボ内のスタジオ）へ移すときは「音声もすべて含める」を選んでください。スタジオどうしは保存場所が別なので、前に送った音声は向こうにありません。</p>
-    ${nWait ? `<label class="chk"><input type="checkbox" id="onlyA"> 音声の付いた行だけ書き出す（音声のないスクリプト ${nWait}行は入れない）</label>` : ''}
-    <p class="hint">英語ラボで同じ教材を読み込むと、字幕だけ入れ替わります（学習記録は残ります）。前に送った音声は送り直さなくて大丈夫です。</p>
-    <div class="row end"><button class="btn ghost" value="cancel">やめる</button><button class="btn primary" value="ok">書き出す</button></div></form>`;
-  dlg.returnValue = ''; dlg.showModal(); await new Promise((q) => (dlg.onclose = q));
-  if (dlg.returnValue !== 'ok') return;
-  const em = dlg.querySelector('input[name=em]:checked')?.value || 'all';
-  if (dlg.querySelector('#onlyA')?.checked) blocks = blocks.filter((b) => b.segments.length);
-  const inc = new Set(em === 'all' ? media.map((m) => m.id) : em === 'new' ? newOnes.filter((m) => m.stored || sessionFiles.has(m.id)).map((m) => m.id) : []);
-  const withMedia = inc.size > 0;
-  const manifest = { format: 'elpack', formatVersion: 2, packId: newId('pk_'), materialId: set.id, materialVersion: (await sdb.byIndex('versions', 'setId', set.id)).length, title: set.title, lang: 'en', source: { app: 'Englabo Studio', appVersion: STUDIO_VERSION }, scope: 'collection', createdAt: new Date().toISOString(),
-    contents: { audio: withMedia, text: true, translation: true, timestamps: true, vocab: false } };
+      <label class="chk"><input type="radio" name="em" value="all" ${canInclude ? 'checked' : 'disabled'}> 音声もすべて含める（${totalSize(media)}）</label>
+      ${sent.size && nLines ? `<label class="chk"><input type="radio" name="em" value="new" ${newOnes.some(source => !available.has(source.id)) ? 'disabled' : ''}> 登録済み教材の字幕更新（${newOnes.length ? '新しい音声 ' + newOnes.length + '件' : '字幕のみ'}）</label>` : ''}
+      <label class="chk"><input type="radio" name="em" value="none"> 字幕だけ書き出す</label>
+    </div>
+    ${nWait ? `<label class="chk"><input type="checkbox" id="onlyA"> 再生位置の付いた行だけ含める（${nWait}行は音声未割当）</label>` : ''}
+    <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="ok">書き出す</button></div></form>`;
+  dlg.returnValue = ''; dlg.showModal(); await new Promise(resolve => { dlg.onclose = resolve; });
+  if (dlg.returnValue !== 'ok' || revision !== routeRevision) return;
+  const em = dlg.querySelector('input[name=em]:checked')?.value;
+  if (!em) throw Error('書き出し方法を選んでください');
+  if (dlg.querySelector('#onlyA')?.checked) blocks = blocks.filter(block => block.segments.length);
+  const files = new Map((em === 'all' ? media : em === 'new' ? newOnes : []).map(source => [source.id, available.get(source.id)]));
+  const manifest = { format: 'elpack', formatVersion: 2, packId: newId('pk_'), materialId: set.id,
+    materialVersion: (await sdb.byIndex('versions', 'setId', set.id)).length, title: set.title, lang: 'en',
+    source: { app: 'Englabo Studio', appVersion: STUDIO_VERSION }, scope: 'collection', createdAt: new Date().toISOString(),
+    contents: { audio: files.size > 0, audioMode: em, text: true, translation: true, timestamps: true, vocab: false } };
   const metadata = materialMetadata(blocks, set.materialType);
   const material = { jaSpans: studioJaView(blocks).spans, set: { id: set.id, title: set.title, folder: set.folder, display: set.display, materialType: set.materialType, splitRange: set.splitRange }, units: [{ id: set.id, title: set.title, items: blocks.map((b) => b.id) }],
     items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, jaRemoved: b.jaOverride && !b.ja, jaImport: b.jaImport, jaOverride: b.jaOverride, jaReview: b.jaReview, holes: b.holes, align: b.align, cueRefs: b.cueRefs, lineage: b.lineage, sync: b.sync, jaStatus: b.jaStatus, label: b.label, asr: b.asr, ...metadata.get(b.id) })),
-    media: media.map((m) => ({ id: m.id, kind: m.kind, name: m.name, size: m.size, mime: m.mime, duration: m.duration, head: m.head, tail: m.tail, included: inc.has(m.id), path: inc.has(m.id) ? `media/${m.id}${(m.name.match(/\.\w+$/) || [''])[0]}` : null })),
-    tracks: tracks.map((t) => ({ id: t.id, lang: t.lang, fileName: t.fileName, format: t.format, path: `subtitles/${t.id}-${t.fileName}` })) };
-  const files = [{ name: 'manifest.json', data: JSON.stringify(manifest, null, 1) }, { name: 'material.json', data: JSON.stringify(material, null, 1) }, ...tracks.map((t) => ({ name: `subtitles/${t.id}-${t.fileName}`, data: t.raw }))];
-  for (const m of media) if (inc.has(m.id)) files.push({ name: material.media.find((x) => x.id === m.id).path, data: m.stored ? m.blob : sessionFiles.get(m.id) });
-  toast('書き出しています…', 2000);
-  const zip = await zipWrite(files);
-  const name = `${set.title.replace(/[\\/:*?"<>|]/g, '_')}.elpack.zip`;
-  const file = new File([zip], name, { type: 'application/zip' });
-  const remember = async () => { const cur = await sdb.get('sets', set.id); if (!cur) return; const keep = (cur.exported?.media || []).filter((x) => !inc.has(x.id)); cur.exported = { at: Date.now(), media: [...keep, ...media.filter((m) => inc.has(m.id)).map((m) => ({ id: m.id, size: m.size }))] }; await sdb.put('sets', cur); set.exported = cur.exported; };
-  if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file], title: set.title }); await remember(); return; } catch (e) { if (e.name === 'AbortError') return; } }
-  await remember();
-  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+    media: media.map(source => packMedia(source, files.get(source.id))) };
+  toast('教材パックを作成中…', 10000);
+  const zip = await writeMaterialPack(manifest, material, files);
+  if (revision !== routeRevision) return;
+  const label = em === 'all' ? '音声付き' : em === 'new' ? '字幕更新' : '字幕のみ';
+  const name = `${set.title.replace(/[\\/:*?"<>|]/g, '_')}-${label}.elpack.zip`;
+  const remember = async () => {
+    if (!files.size) return;
+    const cur = await sdb.get('sets', set.id);
+    if (!cur) return;
+    const keep = (cur.exported?.media || []).filter(entry => !files.has(entry.id));
+    cur.exported = { at: Date.now(), media: [...keep, ...Array.from(files, ([id, media]) => ({ id, size:media.size }))] };
+    await sdb.put('sets', cur);
+    set.exported = cur.exported;
+  };
+  await savePackZip(zip, name, set.title, `音声／動画 ${files.size}件`, '', remember);
 }
+
+async function savePackZip(zip, name, title, summary, help, remember = async () => {}) {
+  const dlg = $('#dialog');
+  const file = new File([zip], name, { type: 'application/zip' });
+  const url = URL.createObjectURL(file);
+  try {
+    const share = navigator.canShare?.({ files: [file] });
+    const result = studioDialog('教材パックを保存', `<p>${esc(name)}</p><p class="small">${esc(summary)}・${fmtSize(file.size)}</p>${help}
+      <div class="row wrap">
+        ${share ? '<button type="button" class="btn primary" id="shareElPack">共有・ファイルに保存</button>' : ''}
+        <a class="btn" href="${esc(url)}" download="${esc(name)}" id="downloadElPack">ZIPをダウンロード</a>
+      </div><p class="small" role="status" id="saveElPackStatus"></p>`, [['close','閉じる']]);
+    const status = $('#saveElPackStatus', dlg);
+    const record = () => remember().catch(() => {});
+    $('#downloadElPack', dlg).onclick = () => { record(); };
+    const shareButton = $('#shareElPack', dlg);
+    if (shareButton) shareButton.onclick = async () => {
+      try {
+        await navigator.share({ files: [file], title });
+        await record();
+        status.textContent = '共有が完了しました';
+      } catch (error) {
+        if (error.name !== 'AbortError') status.textContent = '共有できませんでした。「ZIPをダウンロード」を使えます。';
+      }
+    };
+    await result;
+  } finally { setTimeout(() => URL.revokeObjectURL(url), 30000); }
+}
+
 async function ioScreen(el, params) {
   const destination = await importDestination(params);
   el.innerHTML = `${head('教材パックの読み込み', destination ? folderPath(destination) : 'sets')}
@@ -4823,29 +5067,27 @@ async function ioScreen(el, params) {
   $('#pk', el).onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return; e.target.value = '';
     try {
-      const z = await zipRead(f);
-      const manifest = JSON.parse(await z.text('manifest.json')), material = JSON.parse(await z.text('material.json'));
-      if (manifest.format !== 'elpack' || manifest.formatVersion > 2) throw new Error('対応していない教材パックです（アプリを更新してください）');
+      const { manifest, material, getFile } = await readMaterialPack(f);
       const exists = await sdb.get('sets', material.set.id);
       // 1.18.1: sound that is neither in the pack nor already in this studio → the lines would open without sound
       const missing = []; for (const m of material.media) { if (m.included) continue; const ex = await sdb.get('sources', m.id); if (!(ex?.stored && ex.blob)) missing.push(m.name || m.id); }
-      $('#out', el).innerHTML = `<div class="card stack"><b>${esc(manifest.title)}</b><span class="small">${material.items.length}項目・動画/音声 ${material.media.length}件（${manifest.contents.audio ? '含む' : '含まない＝あとで選び直し'}）</span>
+      $('#out', el).innerHTML = `<div class="card stack"><b>${esc(manifest.title)}</b><span class="small">${material.items.length}項目・動画/音声 ${material.media.length}件（${manifest.contents?.audio ? '含む' : '含まない＝あとで選び直し'}）</span>
         ${missing.length ? `<p class="warn-text small">このパックには音声が入っていないファイルが ${missing.length}件あります（${missing.slice(0, 3).map(esc).join('、')}${missing.length > 3 ? '…' : ''}）。読み込むと英文だけになり再生できません。書き出し側で「音声もすべて含める」を選んで書き出し直してください。（あとで教材の画面からファイルを選び直すこともできます）</p>` : ''}
         ${exists ? '<p class="warn-text small">同じセットがすでにあります。</p><button class="btn" id="asCopy">複製として追加</button><button class="btn primary" id="asUpdate">今のセットを更新（新しい版として）</button>' : '<button class="btn primary" id="asNew">登録する</button>'}</div>`;
-      const go = async (mode) => { const id = await importPack(z, manifest, material, mode); if (destination) await moveStudioSets([id], destination.id); toast('読み込みました'); nav(`set?id=${id}`); };
+      const go = async (mode) => { const id = await importPack(getFile, manifest, material, mode); if (destination) await moveStudioSets([id], destination.id); toast('読み込みました'); nav(`set?id=${id}`); };
       $('#asNew', el)?.addEventListener('click', () => go('new'));
       $('#asCopy', el)?.addEventListener('click', () => go('copy'));
       $('#asUpdate', el)?.addEventListener('click', () => go('update'));
     } catch (err) { $('#out', el).innerHTML = `<div class="card warn">読み込めませんでした：${esc(err.message)}</div>`; }
   };
 }
-async function importPack(z, manifest, material, mode) {
+async function importPack(getFile, manifest, material, mode) {
   const remap = mode === 'copy';
   const setId = remap ? newId('set_') : material.set.id;
   for (const m of material.media) {
     const exist = await sdb.get('sources', m.id);
     if (exist?.stored && exist.blob && !exist.labMissing) continue;
-    let blob = m.included ? await z.file(m.path) : null;
+    let blob = m.included ? await getFile(m) : null;
     // 1.18.1: copy the sound into memory first (as the 動画ラボ does). A piece of the chosen ZIP file stored as it is could be
     // unplayable on the iPhone: the material opened with its script only, without sound.
     if (blob) blob = new File([await blob.arrayBuffer()], m.name || 'audio', { type: m.mime || blob.type || (m.kind === 'audio' ? 'audio/mp4' : 'video/mp4') });
@@ -4869,7 +5111,8 @@ async function importPack(z, manifest, material, mode) {
     const live = await liveBlocks(set); const incoming = new Set(blocks.map((b) => b.id));
     blocks.push(...live.filter((b) => !incoming.has(b.id)).map((b) => ({ ...b, deleted: true })));
   }
-  if (material.set.folder != null) set.folder = material.set.folder;
+  if (material.set.packId) set.folder = await ensurePackFolder(material.set.packId, material.set.packName || material.set.folder);
+  else if (material.set.folder != null) set.folder = material.set.folder;
   if (material.set.materialType) set.materialType = material.set.materialType;
   if (material.set.splitRange && !remap) set.splitRange = material.set.splitRange;
   await commit(set, mode === 'update' ? '教材パックで更新' : '教材パックから登録', { blocks, order: material.units[0].items.map((id) => idMap[id] || id) });

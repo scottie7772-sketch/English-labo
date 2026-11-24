@@ -5,7 +5,7 @@ import { homeScreen, reviewScreen, grammarScreen, comingSoon } from './hub.js';
 import { loadLang, setLang, langSwitchHTML, enabledLangs, setEnabled, LANGS } from './langs.js';
 import { seedContent } from './content.js';
 import { icon } from './icons.js';
-import { showUpdate, initUpdate } from './update-manager.js';
+import { showUpdate, initUpdate, releaseLabel } from './update-manager.js';
 import { APP_VERSION, BUILD_LABEL } from './app-version.js';
 
 
@@ -118,7 +118,8 @@ screens.settings = async (el) => {
       <button class="btn danger" id="wipe">すべてのデータを削除</button>
     </div>
 
-    <p class="muted center small">Englabo v${APP_VERSION} · ${BUILD_LABEL} / DB schema v${DB_VERSION}</p>`;
+    <p class="muted center small">Englabo v${APP_VERSION} · ${BUILD_LABEL} / DB schema v${DB_VERSION}<br><span id="relInfo"></span></p>`;
+  releaseLabel().then((t) => { const n = $('#relInfo', el); if (n) n.textContent = t; });
 
   $('#appUpdate', el).onclick = showUpdate;
   $('#langs', el).onclick = async (e) => { const v = e.target.dataset.v; if (!v || v === 'en') return; const cur = enabledLangs().filter((c) => c !== 'en'); await setEnabled(cur.includes(v) ? cur.filter((c) => c !== v) : [...cur, v]); render(); };
@@ -257,6 +258,7 @@ async function render() {
   // Apply the destination palette before any asynchronous screen work. Otherwise
   // the old amber/blue palette can flash during navigation on slower iPads.
   document.body.dataset.zone = ['home', 'vocab', 'word', 'decks', 'vocab-bulk', 'vocab-csv', 'vocab-paste', 'datacheck', 'storage', 'review', 'log', 'settings'].includes(route) ? 'brown' : '';
+  document.body.classList.toggle('studio', route === 'studio');   // same layout rules as studio.html (body.studio in studio.css)
   document.body.classList.toggle('focus', ['session', 'quick-run', 'speaking-run', 'listening-run', 'lesson-run', 'game', 'course-puzzle', 'studio', 'video-play'].includes(route));
   try { await screens[route](main, currentParams()); }
   catch (e) { main.innerHTML = `<div class="card warn">エラー: ${esc(e.message)}</div>`; console.error(e); }

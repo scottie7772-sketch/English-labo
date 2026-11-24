@@ -1,4 +1,4 @@
-import { showUpdate } from './update-manager.js';
+import { showUpdate, releaseLabel } from './update-manager.js';
 import { ensurePackFolder, studioFolders, folderMembers, createStudioFolder, renameStudioFolder, moveStudioSets, saveStudioFolderOrder, getFolderJa, saveFolderJa } from './studio-folders.js';
 import { readStudioJaFiles, planStudioJa, studioJaView, confirmStudioJa, studioJaChoices, findStudioJaChoices, studioJaRows, studioJaEditBlocks } from './studio-ja.js';
 import { openJaPositionEditor } from './ja-position-ui.js';
@@ -25,7 +25,7 @@ import { probe, audioTracks, canExtract, extractTrack, extractPresentationRange,
 import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-audio.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.24';
+export const STUDIO_VERSION = '0.21.25';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -93,9 +93,11 @@ async function route() {
   try { await (screens[path] || setsScreen)(ROOT, params, revision); }
   catch (e) { if (revision !== routeRevision) return; console.error(e); ROOT.innerHTML = `<div class="card warn">エラー：${esc((e?.message || String(e)))}</div><a class="btn" href="#${BASE}sets">一覧に戻る</a>`; }
   if (revision === routeRevision) scrollTo(0, 0);
+  // which build is really serving this screen (same text in the standalone Studio and inside Englabo)
+  releaseLabel().then((text) => { if (revision === routeRevision) for (const n of ROOT.querySelectorAll('.st-relinfo')) n.textContent = text; }).catch(() => {});
 }
 const head = (title, backPath = null, right = '') => `
-  <div class="st-band">制作・教材スタジオ <small>v${STUDIO_VERSION} · 更新 ${STUDIO_UPDATED_JST}</small></div>
+  <div class="st-band">制作・教材スタジオ <small>v${STUDIO_VERSION} · 更新 ${STUDIO_UPDATED_JST} · <span class="st-relinfo"></span></small></div>
   <header class="top">${backPath != null ? `<a class="back" href="${backPath === '__exit' ? HOST?.exitHref || '#home' : `#${BASE}${backPath}`}" aria-label="戻る">${icon('back')}</a>` : ''}<h1 title="${esc(title)}">${esc(title)}</h1><span class="grow"></span>${right}</header>`;
 
 // 1.17.2: forget what was worked out from a source's OLD file (playback URL, track table) once its file is replaced
@@ -339,7 +341,9 @@ async function setsScreen(el, params, revision) {
     const members = overview ? folderMembers(allSets, folder) : sets;
     const corpus = overview ? null : await getFolderJa(folder.id);
     if (revision !== routeRevision) return;
-    const publish = HOST?.sendToLab ? [['lab','一括教材化（新しい教材だけ追加）'],['labUpdate','登録済みも更新して教材化']] : [['folderPack','一括教材化（ZIPで書き出す）']];
+    // 1.19.35: ZIP export is a Studio feature, offered from BOTH launch paths. Only "register in the Lab" needs the host.
+    const publish = [...(HOST?.sendToLab ? [['lab','一括教材化（新しい教材だけ追加）'],['labUpdate','登録済みも更新して教材化']] : []),
+      ['folderPack', HOST?.sendToLab ? 'ZIPで書き出す（一括教材パック）' : '一括教材化（ZIPで書き出す）']];
     const actions = overview ? [
       ...(members.length ? publish : []),
       ['open','フォルダを開く'],
@@ -4417,7 +4421,7 @@ async function editorScreen(el, params, revision) {
       <button class="btn" value="stJaFix">手動修正した訳の書き出し・取り込み</button>
       <button class="btn" value="ver">版（保存・復元）</button>
       ${HOST ? '<button class="btn primary" value="send">英語ラボに送る</button>' : ''}
-      <button class="btn" value="exp">教材パックとして書き出す${HOST ? '（ファイル）' : ''}</button>
+      <button class="btn" value="exp">教材パックとして書き出す</button>
       <button class="btn" value="autotrim">前後の画面収録音を自動カット</button>
       <button class="btn" value="trim">前後をカット（手動で調整）</button>
       <button class="btn" value="splitAudio">音声を実際に分割（前半・後半）</button>

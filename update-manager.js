@@ -9,13 +9,39 @@ async function check(force = false) {
   pending = release;
   return release;
 }
+// Which release is serving THIS page (the service worker's cache id) vs the newest one on the server.
+// The version numbers alone can say "latest" while an older set of files is running; the id is derived from the file hashes.
+export function loadedRelease() {
+  const sw = navigator.serviceWorker;
+  if (!sw?.controller) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const done = (v) => { clearTimeout(timer); sw.removeEventListener('message', onMessage); resolve(v); };
+    const onMessage = (e) => { if (e.data && typeof e.data.release === 'string') done(e.data.release); };
+    const timer = setTimeout(() => done(null), 1500);
+    sw.addEventListener('message', onMessage);
+    try { sw.controller.postMessage('release'); } catch { done(null); }
+  });
+}
+export async function releaseInfo() {
+  const [loaded, latest] = await Promise.all([loadedRelease(), check().catch(() => null)]);
+  const newest = latest?.id ?? null;
+  return { loaded, newest, version: latest?.version ?? null, current: loaded && newest ? loaded === newest : null };
+}
+export async function releaseLabel() {
+  try {
+    const i = await releaseInfo();
+    if (!i.loaded) return '配信ID：未適用（再起動後に有効）';
+    return `配信ID ${i.loaded.slice(0, 6)}${i.current === true ? ' · 最新' : i.current === false ? ' · 更新あり' : ''}`;
+  } catch { return ''; }
+}
 export function initUpdate() {
   if (initialized || !navigator.serviceWorker) return;
   initialized = true;
   registration = navigator.serviceWorker.register('./sw.js', {updateViaCache:'none'});
   registration.catch(console.warn);
-  const refresh = () => { if (!document.hidden) check().then(r => {
-    if (r && r.version !== APP_VERSION) document.title = '更新あり · Englabo';
+  const refresh = () => { if (!document.hidden) check().then(async r => {
+    const loaded = await loadedRelease();
+    if (r && (r.version !== APP_VERSION || (loaded && r.id && r.id !== loaded))) document.title = '更新あり · Englabo';
   }).catch(()=>{}); };
   refresh(); document.addEventListener('visibilitychange', refresh);
 }
@@ -27,7 +53,9 @@ export async function showUpdate() {
     const release = await check(true);
     const reg = await registration;
     if (!reg) throw Error('更新機能を利用できません');
-    if (release.version === APP_VERSION && !reg.waiting) { alert(`現在 ${APP_VERSION} / 最新 ${release.version}`); return; }
+    const loaded = await loadedRelease();
+    const same = release.version === APP_VERSION && (!loaded || !release.id || loaded === release.id);
+    if (same && !reg.waiting) { alert(`現在 ${APP_VERSION} / 最新 ${release.version}（配信ID ${loaded ? loaded.slice(0, 6) : '未適用'}）`); return; }
     if (!confirm(`現在 ${APP_VERSION} / 最新 ${release.version}\n更新しますか？ 他のEnglabo画面を閉じ、保存を完了してください。教材データは削除しません。`)) return;
     await reg.update();
     let worker = reg.waiting || reg.installing;

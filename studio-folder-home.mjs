@@ -124,6 +124,7 @@ assert.deepEqual(sync,[]);
 
 const batch = row().querySelector('.st-foldermenu').onclick();
 assert.match(dialog.innerHTML,/一括教材化/);
+assert.match(dialog.innerHTML,/value="folderPack"/);   // 1.19.35: ZIP export is offered inside Englabo too, not only in the standalone Studio
 dialog.close('lab');
 await wait(0);
 assert.match(dialog.innerHTML,/新しく追加 2件/);   // 1.19.28: the registered one is not sent again

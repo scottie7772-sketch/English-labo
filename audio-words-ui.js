@@ -1,8 +1,7 @@
 // 1.19.31: screens for word-card audio (references to existing recordings; nothing is copied).
 import { db } from './db.js';
 import { readVideoJa, videoJaView, compareVideoCues } from './video-ja.js';
-import { vocabItems } from './vocab-audio-core.js';
-import { planAudioWords, applyAudioWords, refBytes, labRows, studioRows, labEvidence, studioEvidence, pickReading, limitsFor, makeRef, studioConfirmed,
+import { labRows, studioRows, labEvidence, studioEvidence, pickReading, limitsFor, makeRef, studioConfirmed,
   referencedMedia, unusedRecordings, refBlob, sameText, usableRef } from './audio-refs.js';
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -64,77 +63,13 @@ export async function loadStudioMaterial(setId) {
   const rows = studioRows(blocks, sources, { isHead: isVocabHead, jaOf: b => view.value(b), explicitRoles });
   return { kind: 'studio', id: setId, title: set.title, lang: 'en', folder: set.folder || '', materialType: set.materialType || '', vocab: set.materialType === 'vocab', rows, evidence: studioEvidence(blocks, sources), set };
 }
-async function folderMembers(m) {
-  if (!m.folder) return [m.id];
-  // a joined material (kind multi) repeats the lines of its parts: the parts are used
-  if (m.kind === 'lab') return (await db.all('videos')).filter(v => v.folder === m.folder && v.kind !== 'multi').map(v => v.id);
-  const { sdb } = await import('./studio-db.js');
-  return (await sdb.all('sets')).filter(s => s.folder === m.folder).map(s => s.id);
+// ================= 音声付き単語帳を作成（入口は1つ: vocab-audio-wizard.js） =================
+// 以前の「金フレ型の一括登録」の画面はここで終わり。判定・照合・確認・登録は共通のパイプラインで行う。
+export async function openAudioWordBulk(target, { folder = false } = {}) {
+  const wizard = await import('./vocab-audio-wizard.js');
+  const targets = folder ? await wizard.folderTargets(target) : [{ kind: target.kind, id: target.id }];
+  return wizard.openVocabAudioWizard({ targets, folder });
 }
-const loader = kind => kind === 'lab' ? loadLabMaterial : loadStudioMaterial;
-const itemsOf = m => vocabItems(m.rows, { from: m.kind, materialId: m.id, title: m.title });
-
-// ================= bulk registration (one material, or every material of its folder) =================
-export async function openAudioWordBulk(target) {
-  let first;
-  try { first = await loader(target.kind)(target.id); } catch (error) { toast(error.message, 4000); return false; }
-  const pick = await sheet('音声付きで単語帳に登録', `<p class="small">金フレ型（単語・例文・復唱）の照合済みデータから、見出し語と例文を単語帳に登録し、元の録音の区間を参照として付けます（音声ファイルは複製しません）。</p>
-    ${first.vocab ? '' : '<p class="small warn-text">この教材は金フレ型（単語・例文）の教材ではありません。連続朗読などの文の音声を単語の音声として登録しないため、一括登録の対象外です。</p>'}
-    <fieldset class="stack small"><legend>対象</legend>
-      <label class="chk"><input type="radio" name="scope" value="one" checked> この教材（${esc(first.title)}）</label>
-      ${first.folder ? `<label class="chk"><input type="radio" name="scope" value="folder"> フォルダ「${esc(first.folder)}」の教材すべて</label>` : ''}</fieldset>
-    <fieldset class="stack small"><legend>登録のしかた</legend>
-      <label class="chk"><input type="radio" name="mode" value="merge" checked> 新しい語は追加、登録済みの語には音声だけ追加</label>
-      <label class="chk"><input type="radio" name="mode" value="audio"> 登録済みの語に音声だけ追加（新規登録しない）</label>
-      <label class="chk"><input type="checkbox" name="replace"> 登録済みの音声も差し替える</label></fieldset>`,
-    first.vocab || first.folder ? [['next', '件数を確認', 'primary'], ['close', '閉じる', 'ghost']] : [['close', '閉じる', 'ghost']]);
-  if (pick.value !== 'next') return false;
-  const scope = pick.dlg.querySelector('[name=scope]:checked')?.value || 'one';
-  const mode = pick.dlg.querySelector('[name=mode]:checked')?.value || 'merge';
-  const replace = Boolean(pick.dlg.querySelector('[name=replace]')?.checked);
-  await pause();
-  const ids = scope === 'folder' ? await folderMembers(first) : [first.id];
-  // preview: materials are read one by one; only the small item lists are kept
-  const existing = await db.all('words');
-  const sim = existing.slice(), per = [], total = { items: 0, wordAudio: 0, exampleAudio: 0, unconfirmed: 0, missing: 0, add: 0, update: 0, skip: 0, bytes: 0 }, dupes = [], skipped = [];
-  for (const id of ids) {
-    let m; try { m = id === first.id ? first : await loader(target.kind)(id); } catch { continue; }
-    if (!m.vocab) { skipped.push(m.title); continue; }
-    const items = itemsOf(m);
-    const plan = planAudioWords(items, sim, { mode, replace, lang: m.lang, tags: [m.title], source: sourceOf(m) });
-    for (const k of Object.keys(plan.counts)) total[k] += plan.counts[k];
-    total.add += plan.add.length; total.update += plan.update.length; total.skip += plan.skip.length; total.bytes += refBytes(plan);
-    dupes.push(...plan.dupes.map(d => ({ ...d, title: m.title })));
-    sim.push(...plan.add.map(x => x.word));
-    for (const u of plan.update) { const i = sim.findIndex(w => w.id === u.word.id); if (i >= 0) sim[i] = { ...sim[i], audio: u.audio }; }
-    per.push({ id, title: m.title, items: items.length, add: plan.add.length, update: plan.update.length });
-    await new Promise(r => setTimeout(r, 0));
-  }
-  const review = await sheet('登録内容の確認', `<div class="small stack">
-      <div>教材 ${per.length}件${skipped.length ? `（金フレ型でないため対象外 ${skipped.length}件）` : ''}・対象 <b>${total.items}</b>語</div>
-      <div>音声割当済み（確定）：単語 ${total.wordAudio}・例文 ${total.exampleAudio}</div>
-      <div>未割当 ${total.missing}・未確定 ${total.unconfirmed}（未確定の音声は登録しますがカードでは再生しません。単語の詳細で試聴して確定できます）</div>
-      <div>新規登録 <b>${total.add}</b>語・既存の語に音声を追加 <b>${total.update}</b>語・変更なし ${total.skip}語</div>
-      <div>重複候補（同じ見出し語の項目が複数）${dupes.length}件</div>
-      <div class="muted">追加される容量：単語データ 約${fmtSize(total.bytes)}（音声ファイルは既存の録音を参照するため 0 B）</div></div>
-    ${dupes.length ? `<details><summary>重複候補</summary><ul class="small">${dupes.slice(0, 40).map(d => `<li>${esc(d.item.head)}：${d.words.map(w => esc(clip((w.senses || []).flatMap(s => s.meanings || []).join('、') || '（意味なし）', 30))).join(' ／ ')}（${esc(d.title)}）</li>`).join('')}</ul><p class="small muted">いちばん音声のない項目に追加します。</p></details>` : ''}
-    ${per.length > 1 ? `<details><summary>教材ごと</summary><ul class="small">${per.map(p => `<li>${esc(p.title)}：${p.items}語（新規 ${p.add}・音声追加 ${p.update}）</li>`).join('')}</ul></details>` : ''}`,
-    total.add + total.update ? [['go', '登録する', 'primary'], ['close', 'キャンセル', 'ghost']] : [['close', '閉じる', 'ghost']]);
-  if (review.value !== 'go') return false;
-  await pause();
-  // write: material by material, planned again against the current word book (nothing is added twice)
-  let added = 0, updated = 0;
-  for (const p of per) {
-    toast(`登録中… ${p.title}`, 20000);
-    const m = p.id === first.id ? first : await loader(target.kind)(p.id);
-    const plan = planAudioWords(itemsOf(m), await db.all('words'), { mode, replace, lang: m.lang, tags: [m.title], source: sourceOf(m) });
-    const r = await applyAudioWords(plan);
-    added += r.added; updated += r.updated;
-  }
-  toast(`新規 ${added}語・音声を追加 ${updated}語`, 4000);
-  return true;
-}
-const sourceOf = m => m.kind === 'lab' ? { type: 'video', videoId: m.id, title: m.title } : { type: 'studio', setId: m.id, title: m.title };
 
 // ================= Video Lab: audio for one word registered from a subtitle =================
 // Word sound: only from a word line (金フレ見出し語) or a line that is exactly the word — never the whole sentence.
@@ -198,7 +133,8 @@ export function cueAudioSection(dlg, opts, getHead) {
     for (const kind of ['word', 'example']) {
       if (!st[kind] || !dlg.querySelector(`[data-wa-use="${kind}"]`)?.checked) continue;
       if (kind === 'word' && opts.word && !sameText(opts.word.text, getHead())) continue;   // the word line must be this headword
-      out[kind] = { ...st[kind], state: st.heard.has(kind) || st[kind].state === 'confirmed' ? 'confirmed' : 'unconfirmed', at: Date.now() };
+      const heard = st.heard.has(kind);
+      out[kind] = { ...st[kind], state: heard || st[kind].state === 'confirmed' ? 'confirmed' : 'unconfirmed', at: Date.now(), ...(heard ? { manual: true } : {}) };
     }
     return out;
   };
@@ -208,15 +144,16 @@ export function cueAudioSection(dlg, opts, getHead) {
 // ================= word detail: the word's sounds =================
 export function wordAudioHTML(w) {
   const a = w.audio || {};
-  if (!a.word && !a.example) return '';
+  if (!a.word && !a.example && !a.sentence) return '';
+  const LABEL = { word: '単語', example: '例文', sentence: '文全体' };
   const row = kind => {
     const ref = a[kind]; if (!ref) return '';
-    return `<div class="wa-row"><b>${kind === 'word' ? '単語' : '例文'}</b><span class="wa-tag ${ref.state === 'confirmed' ? '' : 'warn'}">${ref.state === 'confirmed' ? '確定' : '未確定'}</span>
-      <span class="grow small muted">${esc(clip(ref.origin?.title || '', 30))}・${fmtT(ref.start)}〜${fmtT(ref.end)}${kind === 'example' ? `<br>${esc(clip(ref.origin?.text, 60))}` : ''}</span></div>
+    return `<div class="wa-row"><b>${LABEL[kind]}</b>${ref.manual ? '<span class="wa-tag">手で確定</span>' : ''}<span class="wa-tag ${ref.state === 'confirmed' ? '' : 'warn'}">${ref.state === 'confirmed' ? '確定' : '未確定'}</span>
+      <span class="grow small muted">${esc(clip(ref.origin?.title || '', 30))}・${fmtT(ref.start)}〜${fmtT(ref.end)}${kind !== 'word' ? `<br>${esc(clip(ref.origin?.text, 60))}` : ''}</span></div>
       <div class="wa-grid"><button type="button" class="btn sm" data-wad-play="${kind}">▶ 再生</button><button type="button" class="btn sm" data-wad-adj="${kind}:start:-0.05">開始−</button><button type="button" class="btn sm" data-wad-adj="${kind}:start:0.05">開始＋</button><button type="button" class="btn sm" data-wad-adj="${kind}:end:-0.05">終了−</button>
         <button type="button" class="btn sm" data-wad-adj="${kind}:end:0.05">終了＋</button>${ref.state === 'confirmed' ? '<span></span>' : `<button type="button" class="btn sm" data-wad-ok="${kind}">確定にする</button>`}<span></span><button type="button" class="btn sm ghost" data-wad-del="${kind}">参照を外す</button></div>`;
   };
-  return `<h2 class="sec">音声</h2><div class="card wa-box">${row('word')}${row('example')}
+  return `<h2 class="sec">音声</h2><div class="card wa-box">${row('word')}${row('example')}${row('sentence')}
     <p class="hint">元の録音の区間を参照しています（音声はコピーしていません）。参照を外しても録音や教材は消えません。差し替えは動画ラボの字幕「＋語」から登録し直します。</p></div>`;
 }
 export function bindWordAudio(root, wordId, redraw) {
@@ -224,7 +161,7 @@ export function bindWordAudio(root, wordId, redraw) {
     const w = await db.get('words', wordId); if (!w) return;
     const audio = { ...(w.audio || {}) };
     if (fn(audio) === false) return;
-    for (const k of ['word', 'example']) if (!audio[k]) delete audio[k];
+    for (const k of ['word', 'example', 'sentence']) if (!audio[k]) delete audio[k];
     await db.put('words', { ...w, audio, updatedAt: Date.now() });
     redraw();
   };
@@ -237,9 +174,9 @@ export function bindWordAudio(root, wordId, redraw) {
     const [kind, edge, d] = b.dataset.wadAdj.split(':'), ref = a[kind]; if (!ref) return false;
     const v = Math.round((ref[edge] + Number(d)) * 1000) / 1000;
     if (edge === 'start' ? v < 0 || v >= ref.end - 0.1 : v <= ref.start + 0.1) return false;
-    a[kind] = { ...ref, [edge]: v, state: 'unconfirmed' };   // a moved range is checked again (▶ then 確定にする)
+    a[kind] = { ...ref, [edge]: v, state: 'unconfirmed', manual: true };   // a moved range is checked again (▶ then 確定にする); a person's edit is never replaced by a re-registration
   }));
-  root.querySelectorAll('[data-wad-ok]').forEach(b => b.onclick = () => update(a => { a[b.dataset.wadOk] = { ...a[b.dataset.wadOk], state: 'confirmed' }; }));
+  root.querySelectorAll('[data-wad-ok]').forEach(b => b.onclick = () => update(a => { a[b.dataset.wadOk] = { ...a[b.dataset.wadOk], state: 'confirmed', manual: true }; }));
   root.querySelectorAll('[data-wad-del]').forEach(b => b.onclick = () => update(a => { delete a[b.dataset.wadDel]; }));
 }
 
@@ -247,10 +184,11 @@ export function bindWordAudio(root, wordId, redraw) {
 export async function storageAudioHTML() {
   const words = await db.all('words');
   const refs = await referencedMedia(words);
-  const withAudio = words.filter(w => w.audio?.word || w.audio?.example).length;
+  const withAudio = words.filter(w => w.audio?.word || w.audio?.example || w.audio?.sentence).length;
+  const studioOnly = new Set(words.flatMap(w => ['word', 'example', 'sentence'].map(k => w.audio?.[k]).filter(r => r?.src?.store === 'studio').map(r => w.id))).size;
   const { kept, unused } = await unusedRecordings();
   let broken = 0;
-  for (const w of words) for (const k of ['word', 'example']) { const r = w.audio?.[k]; if (r?.src?.store === 'vblobs' && !(await db.get('vblobs', r.src.key))) broken++; }
+  for (const w of words) for (const k of ['word', 'example', 'sentence']) { const r = w.audio?.[k]; if (r?.src?.store === 'vblobs' && !(await db.get('vblobs', r.src.key))) broken++; }
   let keptSize = 0, unusedSize = 0;
   for (const k of kept) keptSize += await vblobSize(k) || 0;
   for (const k of unused) unusedSize += await vblobSize(k) || 0;
@@ -259,6 +197,7 @@ export async function storageAudioHTML() {
     <div>教材を削除した後も単語帳のために残している録音：${kept.length}件・${fmtSize(keptSize)}</div>
     <div>どの教材・単語にも使われていない録音：${unused.length}件・${fmtSize(unusedSize)} ${unused.length ? '<button class="btn sm" id="waDelUnused">削除</button>' : ''}</div>
     ${broken ? `<div>録音が見つからない参照：${broken}件（カードでは音声なしとして扱います） <button class="btn sm" id="waDropBroken">参照を外す</button></div>` : ''}
+    ${studioOnly ? `<div class="warn-text">${studioOnly}語の音声は、スタジオだけにある録音を参照しています。バックアップには入りません（教材をVideo Labに送ると、録音がバックアップの対象になります）。</div>` : ''}
     ${kept.length ? '<div class="muted">単語帳のために残している録音は、その単語の「参照を外す」か単語を削除すると、ここで削除できるようになります。</div>' : ''}</div>`;
 }
 export function bindStorageAudio(root, redraw) {
@@ -276,7 +215,7 @@ export function bindStorageAudio(root, redraw) {
     for (const w of await db.all('words')) {
       if (!w.audio) continue;
       const a = { ...w.audio };
-      for (const k of ['word', 'example']) if (a[k]?.src?.store === 'vblobs' && !(await db.get('vblobs', a[k].src.key))) { delete a[k]; n++; }
+      for (const k of ['word', 'example', 'sentence']) if (a[k]?.src?.store === 'vblobs' && !(await db.get('vblobs', a[k].src.key))) { delete a[k]; n++; }
       if (n && JSON.stringify(a) !== JSON.stringify(w.audio)) await db.put('words', { ...w, audio: a });
     }
     toast(`${n}件の参照を外しました`); redraw();

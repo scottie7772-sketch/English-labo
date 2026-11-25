@@ -474,7 +474,21 @@ export async function videoList(el) {
   // 1.19.28: a folder's ⋯: rename it (all its materials move with it; the Studio pack tag keeps them together)
   $$('[data-vfolder]', el).forEach((b) => b.addEventListener('click', async (e) => {
     e.preventDefault(); e.stopPropagation();
-    const old = b.dataset.vfolder, name = await askName('フォルダの名前', old);
+    const old = b.dataset.vfolder;
+    // 1.19.42: a folder's ⋯ also builds the audio word book for every material of the folder
+    const pick = await new Promise((resolve) => {
+      const dlg = $('#dialog');
+      dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>📁 ${esc(old)}</h3><p class="small muted">${vids.filter((x) => x.folder === old).length}教材</p>
+        <button class="btn" value="vocab">音声付き単語帳を作成（フォルダ全体）</button><button class="btn" value="rename">フォルダ名を変更</button><button class="btn ghost" value="cancel">閉じる</button></form>`;
+      dlg.returnValue = ''; dlg.onclose = () => resolve(dlg.returnValue); dlg.showModal();
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    if (pick === 'vocab') {
+      const targets = vids.filter((x) => x.folder === old && x.kind !== 'multi').map((x) => ({ kind: 'lab', id: x.id, title: x.name }));
+      return (await import('./vocab-audio-wizard.js')).openVocabAudioWizard({ targets, folder: true });
+    }
+    if (pick !== 'rename') return;
+    const name = await askName('フォルダの名前', old);
     if (!name || name === old) return;
     for (const v of vids.filter((x) => x.folder === old)) { const cur = await db.get('videos', v.id); if (cur) { cur.folder = name; await saveVideoMeta(cur); } }
     toast('フォルダの名前を変えました'); videoList(el);
@@ -1711,7 +1725,7 @@ export async function videoPlay(el, params) {
       <button class="btn" value="pen">${esc(TL)}字幕を貼り付け</button>
       <button class="btn" value="pja">日本語訳を貼り付け</button>
       <button class="btn" value="copy" ${cues.some((c) => c.en) ? '' : 'disabled'}>${esc(TL)}字幕ID・英文・表示順を書き出す</button>
-      ${cues.some((c) => c.studySet && c.role) ? '<button class="btn" value="audioWords">音声付きで単語帳に登録（金フレ型）</button>' : ''}
+      ${cues.some((c) => c.en) ? '<button class="btn" value="audioWords">音声付き単語帳を作成</button>' : ''}
       <button class="btn" value="rename">名前を変更</button>
       <button class="btn danger" value="del">動画を削除</button>
       <button class="btn ghost" value="cancel">閉じる</button></form>`;

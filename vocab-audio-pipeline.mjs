@@ -127,4 +127,28 @@ assert.equal(rec.items[0].state, 'broken');
 
 // ---- 単語リスト（会話・朗読の対象フレーズ）の読み取り ----
 assert.deepEqual(P.parseWordList('figure out\t理解する\nhand in,提出する\n\ntake over\n  \n'), [{ head: 'figure out', ja: '理解する' }, { head: 'hand in', ja: '提出する' }, { head: 'take over' }]);
+// ---- 教材の境界をあとから直したとき: 自動で登録した音声は新しい範囲に合わせる。手で直した音声は変えない ----
+await db.clear('words');
+const NB = (id, text, segs, x) => newBlock('S2', { id, text, segments: segs, aligned: true, sync: 'auto', ...x });
+const b2 = [NB('d1', 'allocate', [seg(1, 1.6)], { kind: 'word' }), NB('d2', 'We allocate funds.', [seg(2, 4)], { kind: 'example' }), NB('d3', 'refund', [seg(8, 8.5)], { kind: 'word' })];
+const set2 = { id: 'S2', title: 'Drift', order: b2.map(b => b.id), undo: [], redo: [], updatedAt: 1, materialType: 'vocab' };
+await sdb.put('sets', set2); await commit(set2, '作成', { blocks: b2 });
+await P.runPipeline({ kind: 'studio', id: 'S2' }, {}, {}); await P.registerRecord('studio', 'S2');
+const startOf = async head => (await db.all('words')).find(w => w.headword === head).audio.word.start;
+assert.equal(await startOf('allocate'), 1);
+const move = async (id, a, b) => { const s2 = await sdb.get('sets', 'S2'); const cur = await sdb.get('blocks', id); await commit(s2, '境界を直す', { blocks: [{ ...cur, segments: [seg(a, b)] }] }); };
+await move('d1', .9, 1.6);
+await P.runPipeline({ kind: 'studio', id: 'S2' }, {}, {});
+const again2 = await P.registerRecord('studio', 'S2');
+assert.equal(await startOf('allocate'), .9, '教材の境界を直したら、自動で登録した音声も新しい範囲に合わせる');
+assert.equal(again2.added, 0);
+// 手で直した音声は、教材側の変更で上書きしない
+const w9 = (await db.all('words')).find(w => w.headword === 'allocate');
+await db.put('words', { ...w9, audio: { ...w9.audio, word: { ...w9.audio.word, start: .95, manual: true } } });
+await move('d1', .85, 1.6);
+await P.runPipeline({ kind: 'studio', id: 'S2' }, {}, {});
+await P.registerRecord('studio', 'S2');
+assert.equal(await startOf('allocate'), .95, '手で直した音声は、再登録でも変わらない');
+assert.equal(await startOf('refund'), 8, '境界を変えていない語は、そのまま');
+
 console.log('vocab-audio-pipeline: detect / extract / grade / re-check, reuse, resume, hand-confirmed carry-over, head-first registration, idempotent re-registration, later addition, broken refs pass');

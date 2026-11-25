@@ -21,6 +21,7 @@ import { round, normEn, sameText, pickReading, limitsFor, makeRef } from './audi
 // the same headword with another meaning and another example is a different entry (added separately).
 // A reference that a person adjusted or confirmed by hand (ref.manual) is never replaced.
 const KINDS = [['word', 'word'], ['example', 'ex'], ['sentence', 'sentence']];
+const sameOrigin = (a, b) => Boolean(a.origin && b.origin && a.origin.materialId === b.origin.materialId && (a.origin.cueId ?? a.origin.itemId) === (b.origin.cueId ?? b.origin.itemId));
 export function planAudioWords(items, existing, { mode = 'merge', replace = false, lang = 'en', tags = [], source = {}, onlyConfirmed = true, primary = 'word' } = {}) {
   const byHead = new Map();
   for (const w of existing) { if ((w.lang || 'en') !== lang) continue; const k = headKey(w.headword); if (!byHead.has(k)) byHead.set(k, []); byHead.get(k).push(w); }
@@ -53,7 +54,9 @@ export function planAudioWords(items, existing, { mode = 'merge', replace = fals
         if (!ref) continue;
         const old = audio[kind];
         if (old?.manual) continue;                                                    // 手で直した・確定した音声は置き換えない
-        if (old && !replace && !(old.state !== 'confirmed' && ref.state === 'confirmed')) continue;
+        // 同じ教材の同じ行の境界があとから直されたときは、自動で登録した音声を新しい範囲に合わせる（手で直したものは対象外）
+        const moved = old && sameOrigin(old, ref) && ref.state === 'confirmed' && (Math.abs(old.start - ref.start) > .05 || Math.abs(old.end - ref.end) > .05 || old.src.key !== ref.src.key);
+        if (old && !replace && !moved && !(old.state !== 'confirmed' && ref.state === 'confirmed')) continue;
         if (kind === 'example' && !exOf(target).some(en => sameText(en, ref.origin.text))) continue;   // only the example the entry has
         audio[kind] = ref; changed = true;
       }

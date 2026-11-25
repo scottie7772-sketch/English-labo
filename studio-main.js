@@ -346,13 +346,16 @@ async function setsScreen(el, params, revision) {
     // 1.19.35: ZIP export is a Studio feature, offered from BOTH launch paths. Only "register in the Lab" needs the host.
     const publish = [...(HOST?.sendToLab ? [['lab','一括教材化（新しい教材だけ追加）'],['labUpdate','登録済みも更新して教材化']] : []),
       ['folderPack', HOST?.sendToLab ? 'ZIPで書き出す（一括教材パック）' : '一括教材化（ZIPで書き出す）']];
+    const vocabAction = members.length ? [['vocabAudio','音声付き単語帳を作成（フォルダ全体）']] : [];   // 1.19.42
     const actions = overview ? [
       ...(members.length ? publish : []),
       ['open','フォルダを開く'],
+      ...vocabAction,
       ['rename','フォルダ名を変更'],
     ] : [
       ...(members.length ? publish : []),
       ['io','教材パック（読み込み・書き出し）'],
+      ...vocabAction,
       ['register','英日対応データを登録・追加・更新'],
       ['kfScript','金フレ全体スクリプトを登録・差し替え'],
       ...(members.length ? [['kfLocate','金フレ範囲を自動特定（フォルダ内すべて）']] : []),
@@ -364,6 +367,10 @@ async function setsScreen(el, params, revision) {
     const action = await studioDialog(folder.name, `<p class="small muted">${summary}</p>`, [...actions, ['close','閉じる']]);
     if (revision !== routeRevision) return;
     const ids = members.map(set => set.id);
+    if (action === 'vocabAudio') {
+      const wizard = await import('./vocab-audio-wizard.js');
+      return wizard.openVocabAudioWizard({ targets: members.map(set => ({ kind: 'studio', id: set.id, title: set.title })), folder: true });
+    }
     if (action === 'open') return nav(folderPath(folder));
     if (action === 'io') return nav('io?folder=' + encodeURIComponent(folder.id));
     if (action === 'kfScript') {
@@ -4493,7 +4500,7 @@ async function editorScreen(el, params, revision) {
       <button class="btn" value="mergeset">別の教材をこの教材にまとめる</button>
       <button class="btn" value="names">固有名詞をまとめて直す</button>
       <button class="btn" value="words">単語リストを作る</button>
-      ${set.materialType === 'vocab' ? '<button class="btn" value="audioWords">音声付きで単語帳に登録（金フレ型）</button>' : ''}
+      ${blocks.some((b) => b.segments.length) ? '<button class="btn" value="audioWords">音声付き単語帳を作成</button>' : ''}
       <button class="btn" value="txt">テキストを書き出す</button>
       <button class="btn" value="diag">照合・重複の診断データを書き出す（変更なし）</button>
       ${Object.values(srcs).some((x) => x.audio?.count > 1 && x.derived !== 'audio16k') ? '<button class="btn" value="track">使う音声トラックを選ぶ</button>' : ''}

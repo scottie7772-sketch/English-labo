@@ -284,9 +284,16 @@ async function addMenu() {
       <a class="btn" href="#vocab-paste">英文を貼り付けて選ぶ</a>
       <a class="btn" href="#vocab-csv">CSVファイルから</a>
       <a class="btn" href="#ma-phrases">MAフレーズを登録</a>
+      <button class="btn primary" value="vocabAudio">音声付き単語帳を作成（教材の音声から）</button>
       <button class="btn ghost" value="cancel">閉じる</button>
     </form>`;
   dlg.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => dlg.close()));
+  dlg.returnValue = '';
+  dlg.onclose = async () => {
+    if (dlg.returnValue !== 'vocabAudio') return;
+    await new Promise((r) => setTimeout(r, 60));
+    (await import('./vocab-audio-wizard.js')).openVocabAudioWizard();
+  };
   dlg.showModal();
 }
 

@@ -1392,3 +1392,12 @@ dialog:has(.jp-form) { width: min(96vw, 560px); max-width: 96vw; overflow-x: hid
 .ma-mark { display: inline; padding: 0; border: 0; border-radius: .15em; background: #ffe099; color: #332304; font: inherit; cursor: pointer; }
 .ma-mark:focus-visible { outline: 2px solid currentColor; }
 [data-ma-edge] input { max-width: 8rem; }
+
+/* 1.19.42: 音声付き単語帳を作成（確認画面） */
+dialog:has(.vw-form) { width: min(96vw, 560px); max-width: 96vw; overflow-x: hidden; }
+.vw-form { box-sizing: border-box; width: 100%; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.vw-form * { box-sizing: border-box; max-width: 100%; }
+.vw-counts { overflow-wrap: anywhere; line-height: 1.6; }
+.vw-list { gap: 8px; }
+.vw-row { overflow-wrap: anywhere; }
+.vw-foot { position: sticky; bottom: 0; z-index: 3; background: var(--surface); border-top: 1px solid var(--line); padding: 8px 0 10px; }

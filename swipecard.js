@@ -260,7 +260,8 @@ export function fc2Voice(root, speakFn) {
   let pending = null, unlocked = false, wa = null, seq = 0;
   // 1.17.10: the original recording first (when the same word / sentence is in a matched material), else the synthetic voice
   // 1.19.31: a word that has its own registered sound (word.audio) plays exactly that range first
-  import('./word-audio.js').then((m) => { wa = m; return m.prepare(true); }).catch(() => {});
+  // 1.19.42: 保存済みの参照がある単語は、全教材の索引を作らずに直接鳴らす。索引は、参照のない単語を鳴らすときに初めて作る（下の ready() の分岐）。
+  import('./word-audio.js').then((m) => { wa = m; }).catch(() => {});
   const tell = (m) => { if (m) import('./ui.js').then((u) => u.toast(m, 3500)).catch(() => {}); };   // 1.19.36: say why the synthetic voice is used
   const tts = (text, onEnd) => {
     try { const u = speakFn(text); if (u) { u.onstart = () => { unlocked = true; pending = null; }; if (onEnd) { u.onend = onEnd; u.onerror = onEnd; } } else onEnd?.(); }

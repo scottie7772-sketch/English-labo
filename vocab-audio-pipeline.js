@@ -136,12 +136,16 @@ async function finish(rec, opts, reused, stopped) {
 // ---- 参照切れ: 録音が見つからない項目（教材や録音が消された・復元で録音が戻っていない） ----
 export async function markBroken(rec) {
   const vblobs = new Set(await db.keys('vblobs').catch(() => []));
-  let studioIds = null, n = 0;
+  const cache = new Map();   // 録音ごとに1回だけ調べる（スタジオの全ファイルを読み込まない）
+  let n = 0;
   const exists = async (src) => {
     if (src.store === 'vblobs') return vblobs.has(src.key);
-    if (!studioIds) { const { sdb } = await import('./studio-db.js'); studioIds = new Map((await sdb.all('sources')).map(s => [s.id, s])); }
-    const s = studioIds.get(src.key);
-    return Boolean(s && (s.blob || (s.labRef && vblobs.has(s.labRef.videoId ?? s.labRef))));
+    if (!cache.has(src.key)) {
+      const { sdb } = await import('./studio-db.js');
+      const s = await sdb.get('sources', src.key);
+      cache.set(src.key, Boolean(s && (s.blob || (s.labRef && vblobs.has(s.labRef.videoId ?? s.labRef)))));
+    }
+    return cache.get(src.key);
   };
   for (const it of rec.items) for (const kind of ['word', 'example', 'sentence']) {
     const ri = it.refs[kind]; if (!ri) continue;

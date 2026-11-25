@@ -459,7 +459,9 @@ export function recheckItems(items, ctx = {}) {
         outcome = near && near.textScore >= .85 && !manyHits ? 'agree' : best && !near ? 'differs' : 'no-support';
       } else if (best) outcome = mine && best.cueId === cues[ai].id && unique && best.textScore >= .85 && !best.est ? 'found' : 'candidates';
       result.push({ key: it.key, outcome, candidates: top });
-      it.candidates = top.filter(c => !cur || iou({ start: cur.ref.start, end: cur.ref.end }, c) < .5);
+      // 抽出のときに付いた「文字数からの推定」の候補は、再照合で消さない（文中の位置を試聴して確定するための唯一の手がかり）
+      const estimates = (it.candidates || []).filter(c => c.source === 'estimate');
+      it.candidates = [...estimates, ...top.filter(c => !cur || iou({ start: cur.ref.start, end: cur.ref.end }, c) < .5)];
       it.recheck = { at: ctx.now ?? 0, outcome, windowed: [round(Math.max(0, lo)), Number.isFinite(hi) ? round(hi) : null], cues: cues.length, pending: n };
       if (outcome === 'agree' && cur) {
         // 既存の範囲を文字起こしが裏付けた。発話の境界があれば欠け・混入も直す。

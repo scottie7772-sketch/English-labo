@@ -27,7 +27,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.27';
+export const STUDIO_VERSION = '0.21.28';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -2273,6 +2273,29 @@ async function editorScreen(el, params, revision) {
       registerFrom: set, onDone: async () => { await reload(); drawList(); drawSub(); } });
   }
 
+  // 音声付き単語帳の作成の下ごしらえ（新しく取り込んだ教材）: 文字のない音声があれば文字起こし → 音声のないスクリプト行のうち、
+  // 文字起こしと完全に一致して順序も合うものだけを自動で割り当てる。あいまいなものは割り当てず、このあとの確認画面に候補として出す。
+  async function vocabPrepare({ onStep = () => {} } = {}) {
+    await reload();
+    const out = { asr: 0, assigned: 0 };
+    if (blocks.some((b) => !b.text.trim() && b.segments.length === 1)) {
+      onStep('文字起こし');
+      const r = await runAsr({ auto: true });
+      out.asr = r?.lines || 0;
+      await reload();
+    }
+    if (blocks.some((b) => !b.segments.length && b.text.trim() && !b.asr)) {
+      onStep('スクリプトと音声の照合');
+      const { rows, occupied, evidence } = vocabInputs();
+      const exact = planVocabAlignment(rows, evidence, occupied).filter((p) => !p.estimated);
+      if (exact.length) { await saveVocabProposals(exact); out.assigned = exact.length; await reload(); }
+    }
+    return out;
+  }
+  // 下ごしらえが要る教材: 文字のない音声がある／音声のないスクリプト行があって、音声のある行もある
+  const vocabNeedsPrepare = () => blocks.some((b) => !b.text.trim() && b.segments.length === 1) ||
+    (blocks.some((b) => !b.segments.length && b.text.trim() && !b.asr) && blocks.some((b) => b.segments.length));
+
   async function previewVocabAlignment(targets = null, local = null) {
     if (revision !== routeRevision) return;
     await reload();
@@ -2320,6 +2343,10 @@ async function editorScreen(el, params, revision) {
     playing = null;
     vid.pause();
     if (!selected.length) return;
+    return saveVocabProposals(selected);
+  }
+  // 候補（確認画面で選んだもの、または音声付き単語帳の作成で自動に選んだ確実なもの）を教材に保存する。1回の操作として ↶ で戻せる。
+  async function saveVocabProposals(selected) {
     await reload();
     if (revision !== routeRevision) return;
     const now = vocabInputs();
@@ -4014,8 +4041,9 @@ async function editorScreen(el, params, revision) {
   // ---------- transcription (Whisper in the browser; audio never leaves the device) ----------
   // Pieces of ~2 min are transcribed one by one and saved as they finish. The block that still has no text keeps the rest,
   // so if iOS reloads the page, running it again continues from where it stopped.
-  async function runAsr() {
-    const pool = sel.size ? ordered() : blocks;
+  // auto: 音声付き単語帳の作成から呼ぶとき。確認・精度の選択・文字起こし後の照合は出さない（精度は前回の選択、なければ標準）。
+  async function runAsr({ auto = false } = {}) {
+    const pool = !auto && sel.size ? ordered() : blocks;
     const targets = pool.filter((b) => !b.text.trim() && b.segments.length === 1);
     if (!targets.length) {
       // 1.18.2: everything has text already — offer to transcribe the left-over lines again (another accuracy) and match again
@@ -4028,12 +4056,13 @@ async function editorScreen(el, params, revision) {
     if ([...bySrc.keys()].some((id) => !(srcs[id]?.stored ? srcs[id].blob : sessionFiles.get(id)))) return toast('動画・音声ファイルを選び直してから実行してください', 4000);
     const total = targets.reduce((a, b) => a + blockDur(b), 0);
     const big = [...bySrc.keys()].map((id) => srcs[id]).filter((x) => x.kind === 'video' && x.size > 150 * 1024 * 1024);
-    if (!(await confirmDialog({ title: '文字起こし（試験的）', body: `<p>${targets.length}項目（合計 ${fmtMin(total)}）を、この端末の中で英語の文字に起こします。</p>${big.length ? `<p class="warn-text small">大きな動画（${fmtSize(big[0].size)}）はメモリ不足で途中で止まることがあります。先に「⋯」→「容量を減らす」をすると安定します。</p>` : ''}
+    if (!auto && !(await confirmDialog({ title: '文字起こし（試験的）', body: `<p>${targets.length}項目（合計 ${fmtMin(total)}）を、この端末の中で英語の文字に起こします。</p>${big.length ? `<p class="warn-text small">大きな動画（${fmtSize(big[0].size)}）はメモリ不足で途中で止まることがあります。先に「⋯」→「容量を減らす」をすると安定します。</p>` : ''}
       <div class="stack">${Object.entries(QUALITY).map(([k, t]) => `<label class="chk"><input type="radio" name="asrq" value="${k}" ${(QUALITY[localStorage.getItem('st-asrq2')] ? localStorage.getItem('st-asrq2') : 'acc') === k ? 'checked' : ''}> ${t}</label>`).join('')}</div>
       <label class="chk"><input type="checkbox" id="asrVocab"> 文字起こし後に金フレ型で照合する</label>
       <p class="hint">・最初の1回だけモデルをダウンロードします（無料・Wi-Fi推奨）。音声は外部に送りません。<br>・無音の部分は飛ばし、話している部分を少しずつ処理して、終わった分から保存します。止まっても、もう一度実行すると続きから。<br>・画面は開いたままにしてください。結果は自動の下書きです。</p>`, okLabel: '始める' }))) return;
-    const quality = $('#dialog input[name=asrq]:checked')?.value || 'acc';
-    const vocabAfterAsr = $('#asrVocab')?.checked;
+    const saved = (() => { try { return localStorage.getItem('st-asrq2'); } catch { return null; } })();
+    const quality = auto ? (QUALITY[saved] ? saved : 'acc') : ($('#dialog input[name=asrq]:checked')?.value || 'acc');
+    const vocabAfterAsr = !auto && $('#asrVocab')?.checked;
     try { localStorage.setItem('st-asrq2', quality); } catch {}
     let cancelled = false, done = 0, lines = 0, speed = 0; const speedSamples = [], noSpeech = [], rawAll = []; let emptyPieces = 0;
     const dlg = $('#dialog');
@@ -4123,7 +4152,8 @@ async function editorScreen(el, params, revision) {
       return confirmDialog({ title: '文字起こしが止まりました', body: `<p class="small">${esc((e?.message || String(e)))}</p><p class="hint">${lines ? `${lines}行は保存済みです。もう一度実行すると続きから始まります。` : '初回はネット接続が必要です（モデルのダウンロード）。'}</p>`, okLabel: '閉じる', cancelLabel: null });
     }
     running(null); lock?.release?.(); tr?.close(); const wasCancelled = cancelled; if (dlg.open) { dlg.onclose = null; dlg.close(); }
-    if (!lines) return wasCancelled ? toast('中止しました') : confirmDialog({ title: '文字にできませんでした', body: noSpeech.length ? `<p class="small">${noSpeech.map(esc).join('<br>')}</p><p>音声が見つかりませんでした（無音のまま取り出された可能性）。編集した動画は音声を取り出せないことがあります。写真アプリで「ビデオを複製」または「ファイルに保存」で書き出したものを取り込み直してください。</p>` : `<p>音声認識は動きましたが、文字にできる英語がありませんでした。</p><p class="small">認識された内容：${esc(rawAll.join(' ').trim().slice(0, 200) || '（何も認識されませんでした）')}</p><p class="hint">［Music］のような表示だけなら、音楽や効果音と判定されています。何も認識されない場合は、音声が英語として聞き取れていません。</p>`, okLabel: '閉じる', cancelLabel: null });
+    if (!lines) return auto ? { lines: 0, cancelled: wasCancelled } : wasCancelled ? toast('中止しました') : confirmDialog({ title: '文字にできませんでした', body: noSpeech.length ? `<p class="small">${noSpeech.map(esc).join('<br>')}</p><p>音声が見つかりませんでした（無音のまま取り出された可能性）。編集した動画は音声を取り出せないことがあります。写真アプリで「ビデオを複製」または「ファイルに保存」で書き出したものを取り込み直してください。</p>` : `<p>音声認識は動きましたが、文字にできる英語がありませんでした。</p><p class="small">認識された内容：${esc(rawAll.join(' ').trim().slice(0, 200) || '（何も認識されませんでした）')}</p><p class="hint">［Music］のような表示だけなら、音楽や効果音と判定されています。何も認識されない場合は、音声が英語として聞き取れていません。</p>`, okLabel: '閉じる', cancelLabel: null });
+    if (auto) return { lines, cancelled: wasCancelled };
     if (!wasCancelled && scriptLines().length) return vocabAfterAsr ? previewVocabAlignment() : runAlign({ afterAsr: lines });
     const ok = await confirmDialog({ title: wasCancelled ? `${lines}行で中止しました` : `文字起こしが終わりました（${lines}行）`,
       body: `<p>結果は、この画面の一覧（動画の下）に「自動起こし」の印つきで並んでいます。行をタップすると、その部分を再生します。✎で直せます。</p>${wasCancelled ? '<p class="hint">もう一度実行すると続きから始まります。</p>' : ''}${emptyPieces ? `<p class="warn-text small">${emptyPieces}か所は文字にできませんでした（一覧に「文字にできなかった部分」として残しています）。「標準」「最高」の精度で、もう一度「文字起こし」を実行すると、その部分だけやり直します。</p>` : ''}<p class="hint">テキストだけ使いたいときは「⋯」→「テキストを書き出す」。単語帳に入れるときは「⋯」→「単語リストを作る」。</p>`,
@@ -4547,7 +4577,7 @@ async function editorScreen(el, params, revision) {
       if (v === 'splitAudio') splitAudioRange();
       if (v === 'asr') runAsr();
       if (v === 'words') nav(`words?id=${set.id}`);
-      if (v === 'audioWords') { ++playbackRequest; vid.pause(); playing = null; (await import('./audio-words-ui.js')).openAudioWordBulk({ kind: 'studio', id: set.id }); }
+      if (v === 'audioWords') { ++playbackRequest; vid.pause(); playing = null; (await import('./vocab-audio-wizard.js')).openVocabAudioWizard({ targets: [{ kind: 'studio', id: set.id, title: set.title }], prepare: vocabNeedsPrepare() ? { run: vocabPrepare, note: `音声が割り当てられていないスクリプト行、または文字のない音声があります。開始すると、先に${blocks.some((b) => !b.text.trim() && b.segments.length === 1) ? '文字起こし（この端末の中・無料。初回のみモデルをダウンロード）と' : ''}確実な照合を自動で行います。` } : null }); }
       if (v === 'names') fixNames();
       if (v === 'add') nav(`import?to=${set.id}&script=1`);
       if (v === 'addMedia') nav(`import?to=${set.id}`);

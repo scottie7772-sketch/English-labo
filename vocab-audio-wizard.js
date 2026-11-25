@@ -63,7 +63,8 @@ export async function folderTargets(target) {
 }
 
 // ---------- 開始 ----------
-export async function openVocabAudioWizard({ targets = null, folder = false } = {}) {
+// prepare: { run({onStep}), note } — スタジオの教材で、文字起こしや確実な照合がまだのとき、開始と同時に先に行う下ごしらえ
+export async function openVocabAudioWizard({ targets = null, folder = false, prepare = null } = {}) {
   if (!targets?.length) targets = await pickTargets();
   if (!targets.length) return false;
   await pause();
@@ -73,6 +74,7 @@ export async function openVocabAudioWizard({ targets = null, folder = false } = 
     <fieldset class="stack small"><legend>登録する内容</legend>
       ${Object.entries(MODES).map(([k, t]) => `<label class="chk"><input type="radio" name="mode" value="${k}" ${k === (rec0?.mode || 'head') ? 'checked' : ''}> ${esc(t)}</label>`).join('')}
       <span class="muted">標準は見出し語の元音声を優先します。例文の音声が見つからなくても、見出し語が確定していれば登録できます。</span></fieldset>
+    ${prepare?.note ? `<p class="small">${esc(prepare.note)}</p>` : ''}
     ${rec0 ? `<p class="small muted">前回の作成の記録があります（${rec0.items.length}項目）。入力が変わっていなければ、前回の結果をそのまま使います。</p>` : ''}
     <details><summary class="small">詳細設定</summary><div class="stack small">
       <label class="field"><span>教材の種類</span><select name="profile"><option value="auto">自動で判定（標準）</option>${Object.entries(PROFILES).map(([k, t]) => `<option value="${k}" ${rec0?.profileSetting === k ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
@@ -84,6 +86,11 @@ export async function openVocabAudioWizard({ targets = null, folder = false } = 
   const q = n => r.dlg.querySelector(`[name=${n}]`);
   const options = { mode: r.dlg.querySelector('[name=mode]:checked')?.value || 'head', profile: q('profile').value, wordList: parseWordList(q('words').value), refine: q('refine').checked, force: q('force').checked };
   await pause();
+  if (prepare?.run) {
+    // 文字起こしは自分の進み具合の画面を持つ。終わったら続けて作成に進む（途中で止めても、済んだ分は教材に残っている）。
+    try { await prepare.run({ onStep: t => toast(t + '…', 4000) }); } catch (error) { toast('下ごしらえを完了できませんでした：' + error.message, 6000); }
+    await pause();
+  }
   return runAndReview(targets, options);
 }
 

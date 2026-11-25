@@ -1,7 +1,8 @@
 // 1.19.31: screens for word-card audio (references to existing recordings; nothing is copied).
 import { db } from './db.js';
 import { readVideoJa, videoJaView, compareVideoCues } from './video-ja.js';
-import { vocabItems, planAudioWords, applyAudioWords, refBytes, labRows, studioRows, pickReading, limitsFor, makeRef, studioConfirmed,
+import { vocabItems } from './vocab-audio-core.js';
+import { planAudioWords, applyAudioWords, refBytes, labRows, studioRows, labEvidence, studioEvidence, pickReading, limitsFor, makeRef, studioConfirmed,
   referencedMedia, unusedRecordings, refBlob, sameText, usableRef } from './audio-refs.js';
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -38,7 +39,7 @@ export async function loadLabMaterial(videoId) {
   } catch { /* no Studio data on this device */ }
   const view = videoJaView(cues, await readVideoJa(videoId));
   const rows = labRows(meta, cues, { parts, sizes, studio, jaOf: c => view.get(c) });
-  return { kind: 'lab', id: videoId, title: meta.name, lang: meta.lang || 'en', folder: meta.folder || '', vocab: cues.some(c => c.studySet && c.role), rows, video: meta, cues };
+  return { kind: 'lab', id: videoId, title: meta.name, lang: meta.lang || 'en', folder: meta.folder || '', materialType: meta.materialType || '', vocab: cues.some(c => c.studySet && c.role), rows, evidence: labEvidence(meta, cues, { sizes }), video: meta, cues };
 }
 export async function loadStudioMaterial(setId) {
   const { sdb, liveBlocks } = await import('./studio-db.js');
@@ -58,8 +59,10 @@ export async function loadStudioMaterial(setId) {
     if (lab) { const key = lab.mediaRef || lab.id, size = await vblobSize(key); if (size && (!s.size || size === s.size)) s.labRef = { videoId: key }; }
   }
   const view = studioJaView(blocks);
-  const rows = studioRows(blocks, sources, { isHead: isVocabHead, jaOf: b => view.value(b) });
-  return { kind: 'studio', id: setId, title: set.title, lang: 'en', folder: set.folder || '', vocab: set.materialType === 'vocab', rows, set };
+  // roles (見出し語 / 例文) only for a material that declares them; for the others the structure is read from the text
+  const explicitRoles = set.materialType === 'vocab' || blocks.some(b => b.kind === 'word' || b.kind === 'example');
+  const rows = studioRows(blocks, sources, { isHead: isVocabHead, jaOf: b => view.value(b), explicitRoles });
+  return { kind: 'studio', id: setId, title: set.title, lang: 'en', folder: set.folder || '', materialType: set.materialType || '', vocab: set.materialType === 'vocab', rows, evidence: studioEvidence(blocks, sources), set };
 }
 async function folderMembers(m) {
   if (!m.folder) return [m.id];

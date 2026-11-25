@@ -12,7 +12,7 @@
 // 外部通信・課金なし。認識アルゴリズムは置き換えず、既存の照合結果と文字起こしを「証拠」として使う。
 import { words } from './studio-align.js';
 import { similarity } from './studio-import-align.js';
-import { pickReading, limitsFor, makeRef, sameText } from './audio-refs.js';
+import { pickReading, limitsFor, makeRef, sameText } from './audio-ref-model.js';
 
 const round = t => Math.round(t * 1000) / 1000;
 export const keyOf = text => words(text).map(w => w.w).join(' ');
@@ -107,9 +107,20 @@ export function phraseRange(row, head) {
   return null;
 }
 
+// 見出し語・例文の区別が教材に書かれていないとき、文の構造から付ける（短く文末記号のない行 = 見出し語、その後ろの文 = 例文）。
+export function assignRoles(rows) {
+  let group = '', n = 0;
+  return rows.map(r => {
+    const head = r.role === 'word' || (r.role !== 'example' && headLike(r.text));
+    if (head) group = 'auto' + (++n);
+    return { ...r, role: head ? 'word' : 'example', group: group || null };
+  });
+}
+
 export function extractItems(rows, profile, { mode = 'head', wordList = [], from = 'studio', materialId = '', title = '' } = {}) {
   const ctx = { from, materialId, title }, all = allSegments(rows);
-  const script = rows.filter(r => !r.asr && (r.text || '').trim());
+  let script = rows.filter(r => !r.asr && (r.text || '').trim());
+  if (profile === 'kinfure' && mode !== 'sentence' && !script.some(r => r.group)) script = assignRoles(script);
   const notes = [];
   let items = [];
   if (mode === 'sentence') {
@@ -175,7 +186,7 @@ export function extractItems(rows, profile, { mode = 'head', wordList = [], from
         // 語ごとの時刻がない: 位置は文字数からの推定にすぎない。候補として示すだけで、確定にはしない。
         const k = findPhrase(row.text, t.head), ts = words(row.text), n = ts.length, hn = words(t.head).length;
         const d = g.end - g.start;
-        it.candidates = [{ start: round(g.start + d * k / n), end: round(g.start + d * (k + hn) / n), score: .3, source: 'estimate', est: true, text: it.head }];
+        it.candidates = [{ start: round(g.start + d * k / n), end: round(g.start + d * (k + hn) / n), score: .3, source: 'estimate', est: true, text: it.head, src: { store: g.store, key: g.key, size: g.size }, sourceKey: g.sourceKey }];
         it.issues.push('文中の位置は推定のみ（試聴して確定してください）');
       }
       items.push(it);
@@ -255,7 +266,7 @@ export function gradeItems(items, rows, ctx = {}) {
   for (const it of items) {
     for (const kind of ['word', 'example', 'sentence']) {
       const ri = it.refs[kind];
-      if (!ri) continue;
+      if (!ri || ri.manualConfirmed) continue;   // 手で確定した参照は、再計算で変えない
       it.refs[kind] = gradeRef(ri, byId.get(ri.rowId), it, gctx);
     }
     if (it.refs.sentence && it.refs.example && it.rows.sentence === it.rows.example) it.refs.example = { ...it.refs.sentence, kind: 'example' };
@@ -436,7 +447,7 @@ export function recheckItems(items, ctx = {}) {
         const structure = ci === ai ? 1 : .4, around = (idx, ref) => (cues[idx] && ref ? matchCue(ref, cues[idx]).score : 0);
         const context = Math.min(1, (around(ci - 1, items[i + gi - 1]?.head) >= .6 ? .5 : 0) + (around(ci + 1, items[i + gi + 1]?.head) >= .6 ? .5 : 0));
         const score = x.score < .4 ? Math.min(.3, .5 * x.score) : .45 * x.score + .2 * structure + .15 * context + .1 * boundary + .1 * (ci === ai ? 1 : .5);
-        return { start: round(range.start), end: round(range.end), score: +score.toFixed(3), textScore: x.score, structure, source: 'asr', est, why: x.why, text: cue.text, cueId: cue.id };
+        return { start: round(range.start), end: round(range.end), score: +score.toFixed(3), textScore: x.score, structure, source: 'asr', est, why: x.why, text: cue.text, cueId: cue.id, src: { store: cue.store, key: cue.key, size: cue.size }, sourceKey: cue.sourceKey };
       };
       const top = rank.sort((p, q) => (q.ci === ai) - (p.ci === ai) || q.x.score - p.x.score).slice(0, 3).map(toCand);
       const best = top[0];
@@ -468,5 +479,56 @@ export function recheckItems(items, ctx = {}) {
     i = j;
   }
   return result;
+}
+// ================= 5b. 人が確定する（候補の選択・開始終了の修正） =================
+// 手で確定した参照は ref.manual = true。自動の再照合・再登録・差し替えで上書きしない。
+export function confirmRef(item, kind, { src, start, end }, { origin = null, mode = 'head' } = {}) {
+  const base = item.refs[kind]?.ref;
+  const from = src || base?.src;
+  if (!from?.key || !(end > start)) throw new Error('音声の範囲を確認してください');
+  const ref = makeRef({ store: from.store, key: from.key, size: from.size, start, end, limit: base?.limit || null,
+    origin: origin || base?.origin || { text: item.head }, state: 'confirmed' });
+  ref.manual = true;
+  item.refs[kind] = { ref, rowId: item.rows[kind] ?? base?.rowId ?? null, tier: 'high', score: 1, reasons: ['手で確定'], repeats: 1, kind, manualConfirmed: true };
+  if (kind === 'sentence' && item.refs.example && item.rows.example === item.rows.sentence) item.refs.example = { ...item.refs[kind], kind: 'example' };
+  item.state = deriveState(item, mode);
+  return item;
+}
+export function clearRef(item, kind, mode = 'head') {
+  item.refs[kind] = null;
+  if (kind === 'sentence' && item.refs.example && item.rows.example === item.rows.sentence) item.refs.example = null;
+  item.state = deriveState(item, mode);
+  return item;
+}
+// 再実行しても、手で確定した参照と登録済みの印は引き継ぐ（項目は key で対応づける）
+export function carryOver(oldItems, newItems, mode = 'head') {
+  const old = new Map((oldItems || []).map(i => [i.key, i]));
+  for (const it of newItems) {
+    const o = old.get(it.key);
+    if (!o) continue;
+    for (const kind of ['word', 'example', 'sentence']) if (o.refs[kind]?.manualConfirmed) it.refs[kind] = o.refs[kind];
+    if (o.registeredId) it.registeredId = o.registeredId;
+    if (o.tries) it.tries = o.tries;
+    it.state = deriveState(it, mode);
+  }
+  return newItems;
+}
+
+// ================= 6. 登録・既存形式への橋渡し =================
+// 項目 → 登録計画（audio-refs.planAudioWords）が受け取る形。確定した音声だけを ref.state 'confirmed' として渡す。
+export function toRegistration(items, mode = 'head') {
+  return items.map(it => ({
+    key: it.key, head: it.head, ja: it.ja, example: it.example, exampleJa: it.exampleJa,
+    word: mode === 'sentence' ? null : it.refs.word?.ref || null,
+    ex: mode === 'sentence' ? null : it.refs.example?.ref || null,
+    sentence: it.profile === 'sentence' || mode === 'sentence' || it.profile === 'dialogue' || it.profile === 'prose' ? it.refs.sentence?.ref || null : null,
+    repeats: it.refs.example?.repeats || 0, issues: it.issues,
+  }));
+}
+// 旧形式（金フレ型の1教材を、確信度の判定つきで項目にする）。画面と登録の入口が1つになるまでの互換用。
+export function vocabItems(rows, { from, materialId, title = '', regions = null, evidence = null }) {
+  const { items } = extractItems(rows, 'kinfure', { from, materialId, title });
+  gradeItems(items, rows, { regions, evidence });
+  return toRegistration(items, 'head').map((r, i) => ({ ...r, group: items[i].key, issues: items[i].issues.concat(items[i].refs.word && items[i].refs.word.tier !== 'high' ? [`単語の音声位置が未確定（${items[i].refs.word.reasons.join('・')}）`] : []) }));
 }
 export { sameText };

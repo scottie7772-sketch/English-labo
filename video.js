@@ -61,6 +61,8 @@ function studioCue(it, start, offset = 0) {
     segments, sourceSegments: it.segments, studySet: it.studySet, role: it.role, sync: it.sync, ...(it.jaRemoved ? { jaRemoved: true } : {}),
     ...(it.holes?.length ? { holes: it.holes } : {}),
     ...(it.maAligned ? { maAligned: true } : {}),
+    // 1.19.42: aligned script line / raw recognition, as decided in the Studio (the Lab cannot tell by itself)
+    ...(it.confirmed ? { confirmed: true } : {}), ...(it.asr && !it.confirmed ? { asr: true } : {}),
     ...(segments.length === 1 && Array.isArray(it.wordTimings) ? {
       wordTimings: it.wordTimings.map(w => ({ text: w.text, start: w.start + offset, end: w.end + offset }))
     } : {}),

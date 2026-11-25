@@ -1,5 +1,6 @@
 import { showUpdate, releaseLabel } from './update-manager.js';
 import { ensurePackFolder, studioFolders, folderMembers, createStudioFolder, renameStudioFolder, moveStudioSets, saveStudioFolderOrder, getFolderJa, saveFolderJa } from './studio-folders.js';
+import { studioConfirmed } from './audio-refs.js';
 import { readStudioJaFiles, planStudioJa, studioJaView, confirmStudioJa, studioJaChoices, findStudioJaChoices, studioJaRows, studioJaEditBlocks } from './studio-ja.js';
 import { openJaPositionEditor } from './ja-position-ui.js';
 // 教材スタジオ（制作）: standalone page studio.html now; later mounted inside Englabo with mount(el, { base: 'studio/' }).
@@ -4920,6 +4921,9 @@ function notCopiedYet(parentBlocks, b) {
   const keys = new Set(parentBlocks.map(itemKey)), from = new Set(parentBlocks.flatMap((x) => (x.lineage?.from || []).map((f) => String(f).split('@')[0])));
   return !keys.has(itemKey(b)) && !from.has(b.id) && !parentBlocks.some((x) => x.id === b.id);
 }
+// 1.19.42: what the Lab cannot work out by itself — is this line an aligned script line (音声が確定) or raw recognition (文字起こしのまま)?
+// Carried with every line of a transfer / pack, so audio-bearing word cards can be built from the Lab alone.
+const transferFlags = (b) => (studioConfirmed(b) ? { confirmed: true } : b.asr && !b.aligned ? { asr: true } : {});
 function materialMetadata(blocks, materialType) {
   const map = new Map();
   let studySet = '';
@@ -4961,7 +4965,7 @@ export async function buildMaterial(set, { contents = 'both' } = {}) {
     contents, ...(setFolder ? { packId: setFolder.id, packName: setFolder.name } : {}) },
     items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })),
       text: contents === 'audio' ? '' : b.text, ja: contents === 'both' ? b.ja : '', jaRemoved: contents === 'both' ? b.jaOverride && !b.ja : false,
-      holes: contents === 'audio' ? undefined : b.holes, label: b.label, sync: b.sync, ...metadata.get(b.id) }))
+      holes: contents === 'audio' ? undefined : b.holes, label: b.label, sync: b.sync, ...transferFlags(b), ...metadata.get(b.id) }))
       .filter((it) => contents !== 'audio' || it.segments.length),   // 音声のみ: lines without sound carry nothing
     media: media.map((m) => ({ ...packMedia(m, studioSourceFile(m)), existingMediaKey: m.labRef?.videoId })) };
   manifest.contents = { audio: true, text: contents !== 'audio', translation: contents === 'both', timestamps: true, kind: contents };
@@ -5122,7 +5126,7 @@ async function exportSet(set) {
     contents: { audio: files.size > 0, audioMode: em, text: true, translation: true, timestamps: true, vocab: false } };
   const metadata = materialMetadata(blocks, set.materialType);
   const material = { jaSpans: studioJaView(blocks).spans, set: { id: set.id, title: set.title, folder: set.folder, display: set.display, materialType: set.materialType, splitRange: set.splitRange }, units: [{ id: set.id, title: set.title, items: blocks.map((b) => b.id) }],
-    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, jaRemoved: b.jaOverride && !b.ja, jaImport: b.jaImport, jaOverride: b.jaOverride, jaReview: b.jaReview, holes: b.holes, align: b.align, cueRefs: b.cueRefs, lineage: b.lineage, sync: b.sync, jaStatus: b.jaStatus, label: b.label, asr: b.asr, ...metadata.get(b.id) })),
+    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, jaRemoved: b.jaOverride && !b.ja, jaImport: b.jaImport, jaOverride: b.jaOverride, jaReview: b.jaReview, holes: b.holes, align: b.align, cueRefs: b.cueRefs, lineage: b.lineage, sync: b.sync, jaStatus: b.jaStatus, label: b.label, asr: b.asr, ...transferFlags(b), ...metadata.get(b.id) })),
     media: media.map(source => packMedia(source, files.get(source.id))) };
   toast('教材パックを作成中…', 10000);
   const zip = await writeMaterialPack(manifest, material, files);

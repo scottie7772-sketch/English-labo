@@ -108,6 +108,21 @@ with ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, dir
         lab_audio.get_by_role("button", name="境界を確定").click()
         lab_audio.get_by_role("button", name="▶ フレーズ").click()
         page.wait_for_function("clips.some(x => x.start >= 1.09 && x.start < 1.3)")
+        page.evaluate("""async () => {
+          const { db } = await import('./db.js');
+          const { makeRef } = await import('./audio-refs.js');
+          const v = await db.get('videos', videoId);
+          const key = v.mediaRef || v.id;
+          const text = 'A synthetic example with an explicit recording.';
+          const clip = makeRef({ store: 'vblobs', key, start: 2.2, end: 2.8,
+            limit: { min: 2.2, max: 2.8 }, state: 'confirmed', origin: { from: 'lab', text } });
+          await db.put('words', { id: 'example-only-qa', lang: 'en', headword: 'example-only-qa',
+            senses: [{ meanings: ['fixture'], examples: [{ en: text }] }], audio: { example: clip }, createdAt: Date.now() });
+          clips.length = 0;
+        }""")
+        page.goto(base + "#vocab")
+        page.locator('[data-id="example-only-qa"] [data-say]').click()
+        page.wait_for_function("clips.some(x => x.start >= 2.19 && x.start < 2.4)")
         assert not errors, errors
         print("PASS MA import, Studio ZIP transfer, highlight controls, original example and phrase playback")
         browser.close()

@@ -1,9 +1,9 @@
 {
-  "version": "1.19.40",
+  "version": "1.19.41",
   "studio": "0.21.27",
-  "id": "6ba4ccc4a9d4",
+  "id": "faf0ad480667",
   "files": {
-    "app-version.js": "75447b9f26753418873520b33ca52b0085b338ebc0c2d572d6d5236aa455bcbd",
+    "app-version.js": "972c3bebee4623d9578da14a4e8397b9fdf0f199552a6ae97685bd5ce03be270",
     "app.css": "47a26103740a84ee20c8674dcf1af8d9ec89c0ed71d65cd26d06d39144c77377",
     "app.js": "c7084b061cc080556860ff6343bfa6115455075a696e97fb5ab372f4fd25a994",
     "asr.js": "46f48d92bfa90703e29b27d93efd6383fbd140bda1d7ed79b64f27e3f0ba2166",
@@ -94,7 +94,7 @@
     "video-script-ja.js": "06d9709019dcae7a3d44ba0b77cc5e2309b42bdbd6f87332e474f1ad655540f1",
     "video-translations.js": "5405af7c4d6a53e163506df36e90583c1731bec8ce2e715d7598c6abec5dc1d4",
     "video.js": "98732d743b01b53a8258b839d8b29fa45c59485e3c3e679d62df6fb4e4327e9f",
-    "vocab.js": "ea43bac374f4478d50a7ded5d5743a29f4c035dd6bb4e0838b4abb16fe156ee3",
+    "vocab.js": "7720c810a033d49cf10f09c3edf9ecb9d668ee197d14a277c37408c5493e107d",
     "word-audio.js": "a48f7a416e2e5bc7ea84c7597332bd609092bf8a0a95fa95cdb7720b3051e2e4",
     "words.js": "1e5cf49bf0bc1522b29b50b279754908fb6b1b58ec8eefea94ec426ed4157e6b"
   }

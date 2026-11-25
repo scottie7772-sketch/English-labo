@@ -1,7 +1,8 @@
 // Phase 2: Vocabulary Manager screens
 import { maStatus, mountMAAudio, showMAPhrase } from './ma-phrases-ui.js';
 import { maLinks, playMA } from './ma-phrases.js';
-import { unlock } from './word-audio.js';
+import { unlock, playWord } from './word-audio.js';
+import { wordAudio } from './audio-refs.js';
 import { db, uid, getSetting, setSetting } from './db.js';
 import { $, $$, esc, toast, confirmDialog, go, speak, fmtDate } from './ui.js';
 import { SKILLS, SKILL_LABELS, LEVEL_LABELS, effLevel, status, source, overall, filterLevel, levelText, loadAllMastery, loadWordMastery, setManual, setLock, resetToAuto } from './mastery.js';
@@ -76,6 +77,8 @@ export async function vocabList(el) {
   const headCount = {};
   words.forEach((w) => { const k = headKey(w.headword); headCount[k] = (headCount[k] || 0) + 1; });
   const listEl = $('#list', el);
+  const hasOriginal = w => w.ma ? maLinks(w).length > 0 :
+    Boolean(wordAudio(w, 'word') || wordAudio(w, 'example') || wa?.has(w.headword));
   function draw(keep) {
     const q = f.q.trim().toLowerCase();
     let rows = words.filter((w) => {
@@ -89,7 +92,7 @@ export async function vocabList(el) {
       if (f.deck && !(w.deckIds || []).includes(f.deck)) return false;
       if (f.levels.length && !f.levels.includes(filterLevel(lvOf(mastery[w.id], f.skill)))) return false;
       if (f.src && srcKey(w) !== f.src) return false;
-      const hasA = (w.ma ? maLinks(w).length > 0 : Boolean(w.audio?.word?.state === 'confirmed') || wa?.has(w.headword));   // 1.19.31: a registered sound counts too
+      const hasA = hasOriginal(w);
       if (f.au === 'yes' && !hasA) return false;
       if (f.au === 'no' && hasA) return false;
       if (f.au === 'bad' && !['broken', 'unsure'].includes(wa?.status?.(w.headword, w))) return false;   // 1.19.36
@@ -121,10 +124,10 @@ export async function vocabList(el) {
         ${sel ? `<input type="checkbox" class="wsel" data-sel="${w.id}" ${sel.has(w.id) ? 'checked' : ''} aria-label="選ぶ">` : ''}
         <a class="wmain" href="#word?id=${encodeURIComponent(w.id)}">
           <b class="tl">${esc(w.headword)}</b>${w.ipa && isZh(langOf(w)) ? `<span class="small muted"> ${esc(numToMarks(w.ipa))}</span>` : ''}${w.review === 'unverified' ? '<span class="tagp ai">未検証</span>' : ''}${w.isPhrase ? '<span class="tagp">熟語</span>' : ''}${headCount[headKey(w.headword)] > 1 ? '<span class="tagp">多義</span>' : ''}${w.slim ? '<span class="tagp slim">軽量</span>' : ''}
-          <span class="mean">${w.ma ? `<small>優先度 ${w.ma.priority}・${maStatus(w)}</small><br>` : ''}${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>${f.sort === 'src' || f.src || f.au !== 'all' ? `<small class="muted wsrc">${w.audio?.word?.state === 'confirmed' || wa?.has(w.headword) ? '🔊 ' : ''}${['broken', 'unsure'].includes(wa?.status?.(w.headword, w)) ? `⚠${wa.STATE_LABEL[wa.status(w.headword, w)]} ` : ''}${esc(srcText(srcKey(w)))}</small>` : ''}
+          <span class="mean">${w.ma ? `<small>優先度 ${w.ma.priority}・${maStatus(w)}</small><br>` : ''}${esc((w.senses || []).flatMap((s) => s.meanings || []).join('、') || '（意味未入力）')}</span>${f.sort === 'src' || f.src || f.au !== 'all' ? `<small class="muted wsrc">${hasOriginal(w) ? '🔊 ' : ''}${['broken', 'unsure'].includes(wa?.status?.(w.headword, w)) ? `⚠${wa.STATE_LABEL[wa.status(w.headword, w)]} ` : ''}${esc(srcText(srcKey(w)))}</small>` : ''}
         </a>
         <div class="wact">
-          <button class="icon-btn spk" data-say="${esc(w.headword)}" aria-label="発音">${icon('speaker', 22)}</button>
+          <button class="icon-btn spk" data-say="${esc(w.headword)}" aria-label="単語または例文を再生">${icon('speaker', 22)}</button>
           <span class="grow"></span>
           <label class="lvsel">${chip(lv, mastery[w.id])}
             <select data-lv="${w.id}" aria-label="習得度">
@@ -208,10 +211,14 @@ export async function vocabList(el) {
     const spk = e.target.closest('[data-say]');
     if (!spk) return;
     const w = words.find(x => x.id === spk.closest('.wcard').dataset.id);
-    if (w?.ma) {
-      unlock();
+    if (!w) return;
+    unlock();
+    if (w.ma) {
       if (!(await playMA(w)) && !(await playMA(w, 'example'))) await showMAPhrase(w.id);
-    } else sayOrig(spk.dataset.say);
+      return;
+    }
+    if (await playWord(w) || await playWord(w, 'example')) return;
+    await sayOrig(w.headword);
   });
   listEl.addEventListener('change', async (e) => {
     const s = e.target.closest('select[data-lv]'); if (!s) return;

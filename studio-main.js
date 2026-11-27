@@ -16,7 +16,7 @@ import { extractPhrases, extractWords } from './studio-words.js';
 import { findCandidates, applySpans } from './studio-names.js';
 import { alignScript, scriptToLines, hasReplacementAudio } from './studio-align.js';
 import { speechRegions, regionStatistics, snapCueToRegion } from './studio-structure.js';
-import { alignByStructure } from './kinfure-structure-align.js';
+import { alignByStructure, parseUnits } from './kinfure-structure-align.js';
 import { joinShortGaps } from './vocab-audio-core.js';
 import { speechFirstPlaybackRange, nextSourceSegment } from './studio-playback-boundary.js';
 import { planVocabAlignment, isVocabTarget, unassignedVocabRanges, vocabKey, isVocabHead } from './studio-vocab-align.js';
@@ -29,7 +29,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.30';
+export const STUDIO_VERSION = '0.21.31';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -3929,7 +3929,8 @@ async function editorScreen(el, params, revision) {
   // 1.19.43: 金フレ型の音声を、発話区間の構造（見出し語 → 例文 → 例文の繰り返し → 無音）で台本に割り当てる。
   // 文字起こしの時刻は粗い（1秒前後）ので、境界には使わない。境界は発話区間から取り、文字起こしは「どの項目か」の手がかりにだけ使う。
   // 音声1本ごとに、全体の発話区間を調べ、台本の項目と順序を保って対応づける。手がかりが弱い音声には何も割り当てない。プレビューで確認してから保存（↶で戻せる）。
-  async function sourceSpeechRegions(chosen, { say, cancelled }) {
+  // 音声1本を、必要な範囲だけ読む（AACは区間抽出、小さな音声は全体を1回だけ）。全体をPCMに展開しない。
+  async function sourceAudioReader(chosen, say) {
     const blob = chosen.stored ? chosen.blob : sessionFiles.get(chosen.id);
     const container = isContainer(chosen, blob) && chosen.derived !== 'audio16k';
     if (container && !chosen.audio) { chosen.audio = await decideTrack(chosen, blob); await sdb.put('sources', chosen); }
@@ -3943,12 +3944,21 @@ async function editorScreen(el, params, revision) {
       whole = (await sourceAudio16k(chosen, blob, { say })).audio; highPass(whole);
     }
     const end = track?.duration || chosen.duration || (whole?.length || 0) / 16000;
-    const out = []; let cursor = 0;
+    // read(a, b) → { audio, offset }: audio は offset 秒から始まる16kHzのPCM
+    const read = async (a, b) => {
+      if (!ranged) return { audio: whole, offset: 0 };
+      const extracted = await extractTrack(blob, track, Math.max(0, a), Math.min(end, b));
+      const audio = (await decodeTo16k(extracted.blob)).audio; highPass(audio);
+      return { audio, offset: extracted.start };
+    };
+    return { end, read };
+  }
+  async function sourceSpeechRegions(reader, label, { say, cancelled }) {
+    const { end } = reader, out = []; let cursor = 0;
     while (cursor < end && !cancelled()) {
       let stop = Math.min(end, cursor + 24);
-      say(`${chosen.name || '音声'}　${Math.floor(100 * cursor / end)}%`);
-      let offset = 0, audio = whole;
-      if (ranged) { const extracted = await extractTrack(blob, track, Math.max(0, cursor - .5), Math.min(end, stop + 1.5)); offset = extracted.start; audio = (await decodeTo16k(extracted.blob)).audio; highPass(audio); }
+      say(`${label}　発話区間 ${Math.floor(100 * cursor / end)}%`);
+      const { audio, offset } = await reader.read(cursor - .5, stop + 1.5);
       const from = Math.max(0, Math.floor((Math.max(0, cursor - .25) - offset) * 16000)), to = Math.min(audio.length, Math.ceil((Math.min(end, stop + 1.25) - offset) * 16000));
       const origin = from / 16000 + offset, regs = speechRegions(audio.subarray(from, to), 16000);
       if (stop < end) {
@@ -3962,6 +3972,28 @@ async function editorScreen(el, params, revision) {
     }
     return out;
   }
+  // 例文（繰り返される発話）の1回目だけを文字起こしする。見出し語と繰り返し（2回目）は文字起こししない（全体の約1/3）。時刻は発話区間そのもの。
+  async function recogniseExampleUnits(reader, label, units, { say, cancelled }) {
+    const targets = units.filter(u => u.reads.length > 1).map(u => u.span), hints = [];
+    let tr = null, i = 0;
+    try {
+      while (i < targets.length && !cancelled()) {
+        const first = targets[i]; let j = i;
+        while (j + 1 < targets.length && targets[j + 1][1] - first[0] <= 22) j++;   // 1回の読み込みに収まる例文をまとめる
+        const { audio, offset } = await reader.read(first[0] - .5, targets[j][1] + .5);
+        tr ||= openTranscriber('en', say, { quality: 'acc' });
+        for (let k = i; k <= j && !cancelled(); k++) {
+          const [a, z] = targets[k];
+          say(`${label}　例文を文字起こし ${k + 1}/${targets.length}`);
+          const cues = await recognisePiece(tr, audio, Math.max(0, a - .1 - offset), Math.min(audio.length / 16000, z + .1 - offset));
+          const text = (cues.raw || cues.map(x => x.text).join(' ')).trim();
+          if (text) hints.push({ text, start: a, end: z });
+        }
+        i = j + 1;
+      }
+    } finally { tr?.close(); }
+    return hints;
+  }
   async function assignByKinfureStructure() {
     await reload();
     if (revision !== routeRevision) return;
@@ -3971,8 +4003,8 @@ async function editorScreen(el, params, revision) {
     if (lines.length < 6) return toast('見出し語と例文を含むスクリプトを先に取り込んでください', 4500);
     const hintsBy = new Map();
     for (const b of set.order.map(id => byId[id]).filter(Boolean)) if (b.asr && b.text.trim() && b.segments.length === 1) { const g = b.segments[0]; if (!hintsBy.has(g.sourceId)) hintsBy.set(g.sourceId, []); hintsBy.get(g.sourceId).push({ text: b.text, start: g.start, end: g.end, id: b.id }); }
-    const sources = materialSourceIds().map(id => srcs[id]).filter(x => x && (x.stored ? x.blob : sessionFiles.get(x.id)) && (hintsBy.get(x.id)?.length || 0) >= 3);
-    if (!sources.length) return toast('文字起こし（ASR）のある音声がありません。先に「文字起こし」を実行してください', 5000);
+    const sources = materialSourceIds().map(id => srcs[id]).filter(x => x && (x.stored ? x.blob : sessionFiles.get(x.id)));
+    if (!sources.length) return toast('音声ファイルを選び直してください', 4500);
     const dlg = $('#dialog'); if (dlg.open) { dlg.onclose = null; dlg.close(); await new Promise(r => setTimeout(r, 60)); }
     let cancelled = false;
     dlg.innerHTML = '<form method="dialog" class="dlg stack"><h3>発話区間の構造で割り当て</h3><p id="saMsg" class="small">音声を準備しています…</p><button class="btn ghost" value="cancel">中止</button></form>';
@@ -3985,11 +4017,25 @@ async function editorScreen(el, params, revision) {
     try {
       for (const src of sources) {
         if (cancelled || revision !== routeRevision) break;
-        let regions;
-        try { regions = await sourceSpeechRegions(src, { say, cancelled: () => cancelled || revision !== routeRevision }); } catch (e) { notes.push(`${src.name}: ${e?.message || e}`); continue; }
+        const label = src.name || '音声';
+        let reader, regions;
+        try { reader = await sourceAudioReader(src, say); regions = joinShortGaps(await sourceSpeechRegions(reader, label, { say, cancelled: () => cancelled || revision !== routeRevision })); } catch (e) { notes.push(`${src.name}: ${e?.message || e}`); continue; }
         if (cancelled) break;
-        say(`${src.name || '音声'}　台本と対応づけています…`);
-        const res = alignByStructure(lines.map(l => ({ text: l.text, kind: l.kind })), regions, hintsBy.get(src.id));
+        say(`${label}　台本と対応づけています…`);
+        const rowsIn = lines.map(l => ({ text: l.text, kind: l.kind }));
+        // まず既存の文字起こし（速い）。例文の半分以上を対応づけられなければ、例文だけを文字起こしして（約1/3の量）やり直す
+        let res = alignByStructure(rowsIn, regions, hintsBy.get(src.id) || []);
+        const exampleRows = lines.filter(l => l.kind === 'example').length, repeatedUnits = res.repeated || 0;
+        const covered = r => r.pairs.filter(p => lines[p.row].kind === 'example').length;
+        if (repeatedUnits >= 3 && (!res.ok || covered(res) < .6 * Math.min(repeatedUnits, exampleRows))) {
+          try {
+            const extra = await recogniseExampleUnits(reader, label, parseUnits(regions), { say, cancelled: () => cancelled || revision !== routeRevision });
+            if (cancelled) break;
+            const second = alignByStructure(rowsIn, regions, [...(hintsBy.get(src.id) || []), ...extra]);
+            if (second.ok && (!res.ok || second.pairs.length >= res.pairs.length)) res = second;
+            notes.push(`${label}: 例文 ${extra.length} 件を文字起こしして照合しました`);
+          } catch (e) { notes.push(`${label}: 例文の文字起こしを実行できませんでした（${e?.message || e}）`); }
+        }
         if (!res.ok) { notes.push(`${src.name}: ${WHY[res.why] || '割り当てできません'}（発話 ${res.units}・繰り返し ${res.repeated}）`); continue; }
         let used = 0;
         for (const p of res.pairs) { if (taken.has(p.row)) continue; taken.add(p.row); used++; found.push({ ...p, src, line: lines[p.row] }); }

@@ -78,6 +78,20 @@ for (const [label, nEx, opts] of cases) {
   assert(c.repOk >= c.pairs - c.wrong, label + ': 例文の繰り返しの回数を保つ');
   assert(c.pairs >= data.audio.length * (opts.dropRate || opts.exNoise ? .45 : .75), label + ': ' + c.pairs + '/' + data.audio.length);
 }
+// 例文だけを文字起こしした場合（見出し語・繰り返しは文字起こししない。時刻は発話区間そのもの、語は一部聞き間違い）: 見出し語も順序から補われる
+for (const [label, noise] of [['例文だけ文字起こし（語の誤り15%）', .15], ['例文だけ文字起こし（語の誤り30%）', .3]]) {
+  const data = make(60, e => 1 + (e * 7) % 3), r = rnd(21);
+  const hints = data.audio.filter(a => a.reads === 2).map(a => ({ text: data.script[a.row].text.split(' ').map(w => (r() < noise ? 'xq' + Math.floor(r() * 1e4) : w)).join(' '), start: a.start, end: a.end }));
+  const pre = Array.from({ length: 10 }, (_, i) => ({ text: i % 3 ? `Extra ${nm(900 + i)} sentence here today.` : nm(900 + i), kind: i % 3 ? 'example' : 'head' }));
+  const res = alignByStructure([...pre, ...data.script], data.regions, hints);
+  assert(res.ok, label + ' ' + res.why);
+  const c = evaluate(res, data, 10); out.push({ label, ...c });
+  const heads = res.pairs.filter(p => data.script[p.row - 10]?.kind === 'head').length;
+  assert(c.wrong <= Math.ceil(c.pairs * .03), label + ': 誤り ' + c.wrong);
+  assert.equal(c.clip, 0, label + ': 語頭・語尾が欠けない');
+  assert(c.pairs >= data.audio.length * (noise > .2 ? .55 : .8), label + ': ' + c.pairs + '/' + data.audio.length);
+  assert(heads >= (noise > .2 ? 5 : 25), label + ': 見出し語も順序から補われる ' + heads);
+}
 // 台本が音声と同じ範囲
 { const data = make(40, e => 1 + e % 2), res = alignByStructure(data.script, data.regions, mkHints(data)); const c = evaluate(res, data, 0); out.push({ label: '同じ範囲', ...c }); assert.equal(c.wrong, 0); assert(c.pairs >= 60); }
 // 台本にない発話が音声の途中に入っている（台本の1行が音声にない）→ 後続がずれない

@@ -1,9 +1,9 @@
 {
-  "version": "1.19.46",
-  "studio": "0.21.32",
-  "id": "c0c8aa7f9219",
+  "version": "1.19.47",
+  "studio": "0.21.33",
+  "id": "77cfb006fcc4",
   "files": {
-    "app-version.js": "1772d98ff4184f811ffb558da5c421b5b42ff7ce1205e5f76edbc576dbc1295f",
+    "app-version.js": "5e2ec423c2660b48ce03df692b3da7011b350d7b880c197e42f7febb9c835770",
     "app.css": "d1adba5c48fbd43196e9f9cf9d2ff3d0cbe85acaa9c1f3e650e8da326a21aded",
     "app.js": "c7084b061cc080556860ff6343bfa6115455075a696e97fb5ab372f4fd25a994",
     "asr.js": "46f48d92bfa90703e29b27d93efd6383fbd140bda1d7ed79b64f27e3f0ba2166",
@@ -76,7 +76,7 @@
     "studio-ma-audit.js": "0bf00b47b86afa7211b726f60c176a357331fc1eb9defa3e34a266a520ea57dc",
     "studio-ma-boundary.js": "43468bb9b9a8651c541537b9cdf4188f4eb7c521bbb686936e231a4a4d5daf4c",
     "studio-ma-tools.js": "6fa1d05c631c8de343873bb6786347730eff7d7e5bcf275626403b432f497eaf",
-    "studio-main.js": "989ca11ccdc0bc94d8c488cac878a3b0814d921ed1f2c41778fabd86014b3317",
+    "studio-main.js": "8d51033a93650f3d5d3292302c90f520aac392128ec3ed3a5d50e0742f28ec80",
     "studio-names.js": "a9fa05915d07722dd9a06b490e4c2d6677246a344b0d91c474491211c98e1e60",
     "studio-ops.js": "9409f5637d360eb6b27b615c05d6895123e25cb5d86abeda103f56e6f32db6d4",
     "studio-playback-boundary.js": "2aa7fd203c2e92fd2e463e853d568ddae785835651eaa0106dc124b83c7648a3",

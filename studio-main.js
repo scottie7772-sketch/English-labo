@@ -31,7 +31,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.32';
+export const STUDIO_VERSION = '0.21.33';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -4166,23 +4166,29 @@ async function editorScreen(el, params, revision) {
     if (cancelled || revision !== routeRevision) return;
     if (!found.length) return confirmDialog({ title: '割り当てできませんでした', body: `<p>字幕は変更していません。</p><ul class="small">${notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`, okLabel: '閉じる', cancelLabel: null });
     found.sort((a, b) => a.row - b.row);
+    // 確実度: 文字起こしの一致が強く（一致度0.6以上）、隣り合う行と区別できるものは「確実」。順序から補ったもの・弱い手がかりのもの・行の追加は「要確認」。
+    const isHigh = p => p.kind === 'supported' && p.sim >= .6;
     const extraItems = [];   // 提案のうち保存できるもの（行の割り当て・行の追加）
     extras.forEach(x => { if (x.type !== 'unknown') x.items.forEach(it => { if (it.row != null && (lines[it.row].row.sync === 'manual' || lines[it.row].row.manual || taken.has(it.row))) return; extraItems.push({ ...it, src: x.src, after: x.after, kind: it.kind ?? lines[it.row]?.kind }); }); });
     const unknowns = extras.filter(x => x.type === 'unknown');
     const mm = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
     const locked = p => p.line.row.sync === 'manual' || p.line.row.manual;
+    let again = true, savedHigh = 0;
+    while (again) {   // 「確実な分を保存→残りを確認」のとき、残りで画面をもう一度出す
+    again = false;
     const rowsHtml = found.slice(0, 80).map((p, i) => `<div class="row wrap"><label class="grow"><input type="checkbox" data-sa="${i}" ${locked(p) ? 'disabled' : 'checked'}> ${p.line.kind === 'head' ? '【見出し語】' : ''}${esc(p.line.text)}${p.kind === 'inferred' ? '（順序から補完）' : ''}${locked(p) ? '（手動のため変更しません）' : ''}</label>
       <button type="button" class="btn sm ghost" data-sa-play="${i}">▶ ${fmt(p.segments[0].start)}${p.segments.length > 1 ? `（×${p.segments.length}）` : ''}</button></div>`).join('');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>発話区間の構造で割り当て</h3>
       <ul class="small">${notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>
-      <p class="small">${found.length}行${found.length > 80 ? '（先頭80行を表示。保存はすべて）' : ''}。境界は発話区間から取り、繰り返される例文は反復として保持します。聴いて確認してから保存してください。保存は1回の操作として ↶ で戻せます。</p>
+      <p class="small">${found.length}行${found.length > 80 ? '（先頭80行を表示。保存はすべて）' : ''}（確実 <b>${found.filter(p => isHigh(p) && !locked(p)).length}</b>・要確認 <b>${found.filter(p => !isHigh(p) && !locked(p)).length}</b>${extraItems.length ? `・台本にない発話 <b>${extraItems.length}</b>` : ''}）。境界は発話区間から取り、繰り返される例文は反復として保持します。聴いて確認してから保存してください。保存は1回の操作として ↶ で戻せます。</p>
       <div class="stack" style="max-height:50vh;overflow:auto">${rowsHtml}${extraItems.length ? `<b class="small">台本にない発話（行の割り当て・追加の提案：${extraItems.length}件）</b><p class="small muted">前後の行と、数・種類（見出し語は1回・例文は繰り返し）が合うものだけを提案します。行の追加は、フォルダの全体スクリプトの行です。</p>${extraItems.map((it, i) => `<div class="row wrap"><label class="grow"><input type="checkbox" data-sx="${i}" checked> ${it.row != null ? '' : '【追加】'}${it.kind === 'head' ? '【見出し語】' : ''}${esc(it.row != null ? lines[it.row].text : it.text)}</label><button type="button" class="btn sm ghost" data-sx-play="${i}">▶ ${mm(it.segments[0].start)}${it.segments.length > 1 ? `（×${it.segments.length}）` : ''}</button></div>`).join('')}` : ''}${unknowns.length ? `<p class="small muted">説明できない発話：${unknowns.reduce((n, x) => n + x.items.length, 0)}件（${unknowns.slice(0, 6).map(x => mm(x.items[0].segments[0].start)).join('・')}${unknowns.length > 6 ? '…' : ''} など）。台本の行が足りないか、全体スクリプトの登録が必要です。</p>` : ''}</div>
-      <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="apply">保存（チェックした行）</button></div></form>`;
+      <div class="row end"><button class="btn ghost" value="cancel">閉じる</button>${found.some(p => isHigh(p) && !locked(p)) && (found.some(p => !isHigh(p) && !locked(p)) || extraItems.length) ? `<button class="btn" value="auto">確実な${found.filter(p => isHigh(p) && !locked(p)).length}件を保存して、残りを確認</button>` : ''}<button class="btn primary" value="apply">保存（チェックした行）</button></div></form>`;
     $$('[data-sx-play]', dlg).forEach(btn => btn.onclick = () => { const it = extraItems[Number(btn.dataset.sxPlay)]; playBlock({ segments: it.segments.map(g => ({ sourceId: it.src.id, start: g.start, end: g.end })) }); });
     $$('[data-sa-play]', dlg).forEach(btn => btn.onclick = () => { const p = found[Number(btn.dataset.saPlay)]; playBlock({ segments: p.segments.map(g => ({ sourceId: p.src.id, start: g.start, end: g.end })) }); });
     dlg.returnValue = '';
     let chosenExtras = [];
-    const chosen = await new Promise(resolve => { dlg.onclose = () => { if (dlg.returnValue === 'apply') chosenExtras = extraItems.filter((it, i) => dlg.querySelector(`[data-sx="${i}"]`)?.checked); resolve(dlg.returnValue === 'apply' ? found.filter((p, i) => i >= 80 ? !locked(p) : dlg.querySelector(`[data-sa="${i}"]`)?.checked) : []); }; dlg.showModal(); });
+    let autoMode = false;
+    const chosen = await new Promise(resolve => { dlg.onclose = () => { if (dlg.returnValue === 'auto') { autoMode = true; resolve(found.filter(p => isHigh(p) && !locked(p))); return; } if (dlg.returnValue === 'apply') chosenExtras = extraItems.filter((it, i) => dlg.querySelector(`[data-sx="${i}"]`)?.checked); resolve(dlg.returnValue === 'apply' ? found.filter((p, i) => i >= 80 ? !locked(p) : dlg.querySelector(`[data-sa="${i}"]`)?.checked) : []); }; dlg.showModal(); });
     if (revision !== routeRevision) return;
     ++playbackRequest; pendingSegmentSeek = null; playing = null; vid.pause();
     if (!chosen.length && !chosenExtras.length) return;
@@ -4231,6 +4237,13 @@ async function editorScreen(el, params, revision) {
     for (const id of set.order) { if (drop.some(b => b.id === id)) continue; baseOrder.push(id); for (const nb of insertAfter.get(id) || []) baseOrder.push(nb.id); }
     if (!(await run('金フレ型：構造で割り当て', { blocks: [...changes, ...added, ...drop.map(b => ({ ...b, deleted: true }))], order: baseOrder, guardedSet }))) return;   // 失敗したときは、run がエラーの内容を表示している
     toast(`${changes.length}行を割り当て${added.length ? `、${added.length}行を追加` : ''}しました（重なっていた文字起こし ${drop.length}行を整理）。↶で戻せます`, 6000);
+    if (autoMode) {   // 確実な分を保存した。残り（要確認・台本にない発話）で、もう一度確認画面を出す
+      savedHigh += changes.length;
+      const done = new Set(chosen.map(p => p.row));
+      for (let k = found.length - 1; k >= 0; k--) if (done.has(found[k].row)) found.splice(k, 1);
+      if (found.length || extraItems.length) { await new Promise(r => setTimeout(r, 400)); again = true; }
+    }
+    }
   }
 
   // Virtual split: both halves refer to the same stored source and original timestamps.

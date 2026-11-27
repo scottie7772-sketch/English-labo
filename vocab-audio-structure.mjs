@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { extractItems, confirmRef, structureRescue, parseEntryGroups, readGap, summarize, deriveState } from '../vocab-audio-core.js';
 
-const REG = JSON.parse(fs.readFileSync(new URL('../vocab-audio-structure-fixture.json', import.meta.url)));
+const REG = JSON.parse(fs.readFileSync(new URL('../vocab-audio-structure-fixture.txt', import.meta.url)));
 assert.equal(REG.length, 300);
 const SRC = { store: 'vblobs', key: 'unit1', size: 6e6 }, KEY = 'vblobs:unit1';
 const name = i => 'w' + [...String(i + 100)].map(c => 'abcdefghij'[+c]).join('');   // 重ならない擬似単語

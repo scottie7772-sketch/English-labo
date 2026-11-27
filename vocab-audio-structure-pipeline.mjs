@@ -6,7 +6,7 @@ import './fake-idb.mjs';
 const { db } = await import('../db.js');
 const { sdb, commit, newBlock } = await import('../studio-db.js');
 const P = await import('../vocab-audio-pipeline.js');
-const REG = JSON.parse(fs.readFileSync(new URL('../vocab-audio-structure-fixture.json', import.meta.url)));
+const REG = JSON.parse(fs.readFileSync(new URL('../vocab-audio-structure-fixture.txt', import.meta.url)));
 
 await sdb.put('sources', { id: 'src1', name: 'unit1.m4a', kind: 'audio', size: 4000, blob: new Blob([new Uint8Array(4000)]) });
 const seg = (a, b) => ({ sourceId: 'src1', start: a, end: b });

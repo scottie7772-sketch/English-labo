@@ -61,6 +61,8 @@ function studioCue(it, start, offset = 0) {
     segments, sourceSegments: it.segments, studySet: it.studySet, role: it.role, sync: it.sync, ...(it.jaRemoved ? { jaRemoved: true } : {}),
     ...(it.holes?.length ? { holes: it.holes } : {}),
     ...(it.maAligned ? { maAligned: true } : {}),
+    // 1.19.42: aligned script line / raw recognition, as decided in the Studio (the Lab cannot tell by itself)
+    ...(it.confirmed ? { confirmed: true } : {}), ...(it.asr && !it.confirmed ? { asr: true } : {}),
     ...(segments.length === 1 && Array.isArray(it.wordTimings) ? {
       wordTimings: it.wordTimings.map(w => ({ text: w.text, start: w.start + offset, end: w.end + offset }))
     } : {}),
@@ -470,9 +472,27 @@ export async function videoList(el) {
         (a.folderOrder ?? Infinity) - (b.folderOrder ?? Infinity) || recent(b) - recent(a)).map(renderMaterial).join('')}</details>` :
       materials.map(renderMaterial).join('')).join('') || '<div class="card center muted">まだ教材がありません。「教材を作る」から作れます。</div>'}</div>`;
   // 1.19.28: a folder's ⋯: rename it (all its materials move with it; the Studio pack tag keeps them together)
+  // 1.19.31: …or apply English–Japanese data (JSON / ZIP) to every material of the folder
   $$('[data-vfolder]', el).forEach((b) => b.addEventListener('click', async (e) => {
     e.preventDefault(); e.stopPropagation();
-    const old = b.dataset.vfolder, name = await askName('フォルダの名前', old);
+    const old = b.dataset.vfolder, members = vids.filter((x) => x.folder === old);
+    // 1.19.42: a folder's ⋯ also builds the audio word book for every material of the folder; 1.19.32: English–Japanese data
+    const pick = await new Promise((resolve) => {
+      const dlg = $('#dialog');
+      dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>📁 ${esc(old)}</h3><p class="small muted">${members.length}教材</p>
+        <button class="btn" value="vocab">音声付き単語帳を作成（フォルダ全体）</button>
+        <button class="btn" value="ja">英日データで日本語訳を反映（JSON/ZIP・未割当／再照合／上書き）</button>
+        <button class="btn" value="rename">フォルダ名を変更</button><button class="btn ghost" value="cancel">閉じる</button></form>`;
+      dlg.returnValue = ''; dlg.onclose = () => resolve(dlg.returnValue); dlg.showModal();
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    if (pick === 'vocab') {
+      const targets = members.filter((x) => x.kind !== 'multi').map((x) => ({ kind: 'lab', id: x.id, title: x.name }));
+      return (await import('./vocab-audio-wizard.js')).openVocabAudioWizard({ targets, folder: true });
+    }
+    if (pick === 'ja') { if (await (await import('./lab-ja-batch.js')).openLabJaBatch(members.map((x) => x.id), `📁 ${old}`)) videoList(el); return; }
+    if (pick !== 'rename') return;
+    const name = await askName('フォルダの名前', old);
     if (!name || name === old) return;
     for (const v of vids.filter((x) => x.folder === old)) { const cur = await db.get('videos', v.id); if (cur) { cur.folder = name; await saveVideoMeta(cur); } }
     toast('フォルダの名前を変えました'); videoList(el);
@@ -1709,7 +1729,8 @@ export async function videoPlay(el, params) {
       <button class="btn" value="pen">${esc(TL)}字幕を貼り付け</button>
       <button class="btn" value="pja">日本語訳を貼り付け</button>
       <button class="btn" value="copy" ${cues.some((c) => c.en) ? '' : 'disabled'}>${esc(TL)}字幕ID・英文・表示順を書き出す</button>
-      ${cues.some((c) => c.studySet && c.role) ? '<button class="btn" value="audioWords">音声付きで単語帳に登録（金フレ型）</button>' : ''}
+      <button class="btn" value="jaBatch" ${cues.some((c) => c.en) ? '' : 'disabled'}>英日データで日本語訳を反映（JSON/ZIP・上書きも可）</button>
+      ${cues.some((c) => c.en) ? '<button class="btn" value="audioWords">音声付き単語帳を作成</button>' : ''}
       <button class="btn" value="rename">名前を変更</button>
       <button class="btn danger" value="del">動画を削除</button>
       <button class="btn ghost" value="cancel">閉じる</button></form>`;
@@ -1718,6 +1739,7 @@ export async function videoPlay(el, params) {
     dlg.onclose = async () => {
       const r = dlg.returnValue;
       if (r === 'pen' || r === 'pja') pasteDialog(r === 'pen' ? 'en' : 'ja');
+      else if (r === 'jaBatch') { await new Promise((ok) => setTimeout(ok, 60)); vid?.pause(); if (await (await import('./lab-ja-batch.js')).openLabJaBatch([v.id], v.name)) { await refreshJa(); } }
       else if (r === 'audioWords') { await new Promise((ok) => setTimeout(ok, 60)); vid?.pause(); (await import('./audio-words-ui.js')).openAudioWordBulk({ kind: 'lab', id: v.id }); }
       else if (r === 'copy') exportJaSource(); else if (r === 'rename') {
         const name = await askName('動画の名前', v.name);

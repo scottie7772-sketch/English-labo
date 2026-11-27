@@ -161,9 +161,9 @@ export async function playWord(w, kind = 'word', opts = {}) {
     unlock();
     return (await import('./ma-phrases.js')).playMA(w, kind, opts);
   }
-  const { wordAudio } = await import('./audio-refs.js');
-  const ref = wordAudio(w, kind);
-  return ref ? playRef(ref, opts) : false;
+  const { resolveRef } = await import('./audio-ref-model.js');
+  const found = resolveRef(w, kind);
+  return found ? playRef(found.ref, opts) : false;
 }
 async function entryBlob(e) {
   if (e.from === 'studio') {
@@ -230,6 +230,13 @@ async function partsOf(e) {
   if (on >= 0) parts.push([on, rms.length]);
   const out = parts.filter(([a, b]) => b - a >= 4).map(([a, b]) => [+(e.line.start + a * 0.02).toFixed(2), +(e.line.start + b * 0.02).toFixed(2)]);
   refMem[key] = out; refSave(); return out;
+}
+// 1.19.42: where speech starts and stops inside [start, end) of a recording, as [[s, e], …] in the recording's own seconds.
+// Only that window is read (an AAC file is cut to the window; only a small file is decoded whole) — never the whole recording.
+// The result is remembered per window, so asking again costs nothing.
+export async function speechRegionsIn(src, start, end) {
+  if (!src?.key || !(end > start) || end - start > 90) return [];
+  return (await partsOf({ from: src.store === 'studio' ? 'studio' : 'lab', id: src.key, line: { start, end } })) || [];
 }
 async function refine(e) {
   try {

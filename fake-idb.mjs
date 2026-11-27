@@ -27,16 +27,23 @@ class FakeKeyRange {
 const copyStores = stores => new Map([...stores].map(([n, s]) => [n, { ...s, indexes: new Map(s.indexes), data: new Map([...s.data].map(([k, v]) => [JSON.stringify(k), v])) }]));
 
 class Request { constructor(tx) { this.transaction = tx; this.result = undefined; this.error = null; this.onsuccess = null; this.onerror = null; } }
+// Like real IndexedDB, transactions run in the order they were created: a transaction starts only after the earlier
+// readwrite transactions finished (so a read right after a write sees it, and two writes never lose each other).
 class Tx {
   constructor(db, names, mode, upgrade = false) {
     this.db = db; this.mode = mode; this.names = names; this.queue = []; this.done = false; this.error = null;
     this.oncomplete = this.onerror = this.onabort = null;
-    this.work = copyStores(db.info.stores); this.upgrade = upgrade;
+    this.upgrade = upgrade; this.started = false; this.work = null;
+    if (upgrade) { this.work = copyStores(db.info.stores); this.started = true; }
+    else {
+      this.after = db.info.chain || null;
+      if (mode !== 'readonly') db.info.chain = new Promise((resolve) => { this.release = resolve; });
+    }
     this.schedule();
   }
   objectStore(name) {
     if (!this.upgrade && !this.names.includes(name)) throw new Error('NotFoundError: ' + name);
-    if (!this.work.has(name)) throw new Error('NotFoundError: ' + name);
+    if (!(this.work || this.db.info.stores).has(name)) throw new Error('NotFoundError: ' + name);
     return new Store(this, name);
   }
   request(run) {
@@ -52,6 +59,10 @@ class Tx {
   }
   step() {
     if (this.done) return;
+    if (!this.started) {
+      if (this.after) { const a = this.after; this.after = null; a.then(() => this.schedule()); return; }
+      this.work = copyStores(this.db.info.stores); this.started = true;   // a snapshot taken when the transaction starts (after earlier writes)
+    }
     if (this.queue.length) {
       const { req, run } = this.queue.shift();
       try { req.result = run(); } catch (error) { req.error = error; this.abort(error); req.onerror?.({ target: req }); return; }
@@ -65,18 +76,19 @@ class Tx {
       if (this.queue.length) return this.schedule();
       this.done = true;
       if (this.mode !== 'readonly') this.db.info.stores = new Map([...this.work].map(([n, s]) => [n, { ...s, data: new Map([...s.data].map(([k, v]) => [JSON.parse(k), v])) }]));
+      this.release?.();
       this.oncomplete?.({ target: this });
     }, 0);
   }
   abort(error = null) {
     if (this.done) return;
-    this.done = true; this.queue = []; this.error = error;
+    this.done = true; this.queue = []; this.error = error; this.release?.();
     setTimeout(() => this.onabort?.({ target: this }), 0);
   }
 }
 class Store {
   constructor(tx, name) { this.tx = tx; this.name = name; }
-  get s() { return this.tx.work.get(this.name); }
+  get s() { return (this.tx.work || this.tx.db.info.stores).get(this.name); }   // before the transaction starts only the schema (indexes) is read
   get keyPath() { return this.s.keyPath; }
   createIndex(name, keyPath, opts = {}) { this.s.indexes.set(name, { keyPath, multiEntry: Boolean(opts.multiEntry) }); return {}; }
   write(value, key, add) {

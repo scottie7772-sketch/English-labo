@@ -301,6 +301,7 @@ export function applyJaChanges(materialId, changes, expected, { label = '訳の�
       const prior = old?.base ?? (old?.studio ? oldText(old) : undefined);
       const agreed = base?.get(cueId);
       if (mode === 'studio') return { studio: true, base: agreed ?? entriesText(patch.get(cueId)) };
+      if (mode === 'import') return {};   // 1.19.31: data applied from an English–Japanese file (not a hand correction)
       const keep = agreed ?? prior;
       return { ...(mode === 'manual' || old?.manual ? { manual: true } : {}), ...(old?.studio && mode === 'base' ? { studio: true } : {}), ...(keep != null ? { base: keep } : {}) };
     };

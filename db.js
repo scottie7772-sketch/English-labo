@@ -76,8 +76,10 @@ async function tx(stores, mode, fn) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const t = db.transaction(stores, mode);
-    let out;
-    Promise.resolve(fn(t)).then((v) => { out = v; }, (err) => { try { t.abort(); } catch {} reject(err); });
+    let out, started;
+    // A callback that throws right away (after queueing a write) must abort the transaction too, or the write would still be committed.
+    try { started = fn(t); } catch (err) { try { t.abort(); } catch {} reject(err); return; }
+    Promise.resolve(started).then((v) => { out = v; }, (err) => { try { t.abort(); } catch {} reject(err); });
     t.oncomplete = () => resolve(out);
     t.onerror = () => reject(t.error);
     t.onabort = () => reject(t.error || new Error('transaction aborted'));

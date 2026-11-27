@@ -1,6 +1,7 @@
 import { showUpdate, releaseLabel } from './update-manager.js';
 import { ensurePackFolder, studioFolders, folderMembers, createStudioFolder, renameStudioFolder, moveStudioSets, saveStudioFolderOrder, getFolderJa, saveFolderJa } from './studio-folders.js';
-import { readStudioJaFiles, planStudioJa, studioJaView, confirmStudioJa, studioJaChoices, findStudioJaChoices, studioJaRows, studioJaEditBlocks } from './studio-ja.js';
+import { studioConfirmed } from './audio-refs.js';
+import { readStudioJaFiles, readStudioJaText, planStudioJa, studioJaView, confirmStudioJa, studioJaChoices, findStudioJaChoices, studioJaRows, studioJaEditBlocks } from './studio-ja.js';
 import { openJaPositionEditor } from './ja-position-ui.js';
 // 教材スタジオ（制作）: standalone page studio.html now; later mounted inside Englabo with mount(el, { base: 'studio/' }).
 // Rules: does not import learning modules and never touches the learning database (ell-db).
@@ -26,7 +27,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.27';
+export const STUDIO_VERSION = '0.21.29';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -145,13 +146,18 @@ async function folderJaScreen(el, params, revision) {
     <section class="card stack">
       <strong>📁 ${esc(folder.name)}</strong>
       <p class="small" id="folderJaSaved">登録済み ${saved?.sections.length || 0}件</p>
-      <label class="field">ZIPまたはJSONファイル（複数選択可）
-        <input type="file" id="folderJaFiles" multiple>
+      <label class="field">ZIPまたはJSONファイル（複数選択可・1つのJSONに複数章も可）
+        <input type="file" id="folderJaFiles" accept=".json,.zip,application/json,application/zip" multiple>
       </label>
+      <details><summary class="small">JSONを貼り付けて追加</summary>
+        <textarea id="folderJaText" rows="6" placeholder='{"chapter": 3, "items": [{"en": "…", "ja": "…"}]}' autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+        <button type="button" class="btn sm" id="folderJaRead">貼り付けたJSONを読み込む</button>
+      </details>
       <p class="small" id="folderJaStatus" role="status"></p>
       <div class="row wrap">
         <button type="button" class="btn primary" id="folderJaSave" disabled>フォルダに登録</button>
         <button type="button" class="btn" id="folderJaReplace" hidden disabled>登録データを入れ替える</button>
+        <button type="button" class="btn" id="folderJaApply" ${saved?.sections.length ? '' : 'hidden'}>登録済みのデータをフォルダの教材に反映</button>
       </div>
     </section>`;
   const input = $('#folderJaFiles', el), status = $('#folderJaStatus', el);
@@ -168,6 +174,23 @@ async function folderJaScreen(el, params, revision) {
     status.classList.toggle('warn-text', error);
   };
   setButtons();
+  $('#folderJaRead', el).onclick = async () => {
+    setButtons(true);
+    try {
+      sections = await readStudioJaText($('#folderJaText', el).value);
+      setStatus(`貼り付けたJSON：取り込み可能な英日データ ${sections.length}件`);
+    } catch (error) { sections = []; setStatus(error.message, true); }
+    finally { setButtons(); }
+  };
+  // 1.19.31: register, then apply to the folder's materials right away (single or all; how = missing / re-match / overwrite)
+  const applyToFolder = async () => {
+    const corpus = await getFolderJa(folder.id);
+    if (!corpus?.sections.length || revision !== routeRevision) return;
+    const ids = (await sdb.all('sets')).filter(set => set.folder === folder.name).map(set => set.id);
+    if (!ids.length) return setStatus('このフォルダにはまだ教材がありません');
+    await applyStudioJa(ids, corpus.sections, null);
+  };
+  $('#folderJaApply', el).onclick = applyToFolder;
   input.onchange = async () => {
     sections = [];
     const files = Array.from(input.files);
@@ -194,7 +217,10 @@ async function folderJaScreen(el, params, revision) {
       count = await saveFolderJa(folder.id, sections, append);
       sections = [];
       $('#folderJaSaved', el).textContent = `登録済み ${count}件`;
-      setStatus(`フォルダに保存しました。日本語訳を反映するには、フォルダの「⋯」から「日本語訳を一括照合」を選んでください。`);
+      $('#folderJaText', el).value = '';
+      $('#folderJaApply', el).hidden = false;
+      setStatus(`フォルダに保存しました（同じ名前・同じ章のデータは更新）。`);
+      if (revision === routeRevision && await confirmDialog({ title: 'フォルダの教材に反映', body: '<p>登録したデータを、このフォルダの教材の日本語訳に反映しますか？（反映のしかたを次に選びます。英日対応済みの訳を置き換える「上書き」も選べます）</p>', okLabel: '反映へ進む', cancelLabel: 'あとで' })) await applyToFolder();
     } catch (error) {
       setStatus(`フォルダに保存できませんでした（${error.message || error.name}）`, true);
     } finally { setButtons(); }
@@ -340,22 +366,29 @@ async function setsScreen(el, params, revision) {
   }
   async function openFolderMenu(folder, overview) {
     const members = overview ? folderMembers(allSets, folder) : sets;
-    const corpus = overview ? null : await getFolderJa(folder.id);
+    // the home list opens its menu at once; the registered data is read when an English–Japanese action is chosen
+    let corpus = overview ? null : await getFolderJa(folder.id);
     if (revision !== routeRevision) return;
     // 1.19.35: ZIP export is a Studio feature, offered from BOTH launch paths. Only "register in the Lab" needs the host.
     const publish = [...(HOST?.sendToLab ? [['lab','一括教材化（新しい教材だけ追加）'],['labUpdate','登録済みも更新して教材化']] : []),
       ['folderPack', HOST?.sendToLab ? 'ZIPで書き出す（一括教材パック）' : '一括教材化（ZIPで書き出す）']];
+    const vocabAction = members.length ? [['vocabAudio','音声付き単語帳を作成（フォルダ全体）']] : [];   // 1.19.42
+    const jaActions = [['register','英日対応データを登録・追加・更新（JSON/ZIP）'],
+      ...((overview || corpus?.sections.length) && members.length ? [['apply','日本語訳を一括反映（未割当・再照合・上書き）']] : [])];
     const actions = overview ? [
       ...(members.length ? publish : []),
       ['open','フォルダを開く'],
+      ...vocabAction,
+      ...jaActions,
       ['rename','フォルダ名を変更'],
     ] : [
       ...(members.length ? publish : []),
       ['io','教材パック（読み込み・書き出し）'],
-      ['register','英日対応データを登録・追加・更新'],
+      ...vocabAction,
+      ...jaActions,
       ['kfScript','金フレ全体スクリプトを登録・差し替え'],
       ...(members.length ? [['kfLocate','金フレ範囲を自動特定（フォルダ内すべて）']] : []),
-      ...(corpus?.sections.length && members.length ? [['apply','日本語訳を一括照合'],['missing','未割当の訳だけ照合']] : []),
+      ...(corpus?.sections.length && members.length ? [['missing','未割当の訳だけ照合']] : []),
       ...(members.length ? [['review','照合結果を確認']] : []),
       ['rename','フォルダ名を変更'], ...(members.length > 1 ? [['sort','教材を並べ替え'],['merge','このフォルダの音声をまとめて照合']] : []),
     ];
@@ -363,6 +396,10 @@ async function setsScreen(el, params, revision) {
     const action = await studioDialog(folder.name, `<p class="small muted">${summary}</p>`, [...actions, ['close','閉じる']]);
     if (revision !== routeRevision) return;
     const ids = members.map(set => set.id);
+    if (action === 'vocabAudio') {
+      const wizard = await import('./vocab-audio-wizard.js');
+      return wizard.openVocabAudioWizard({ targets: members.map(set => ({ kind: 'studio', id: set.id, title: set.title })), folder: true });
+    }
     if (action === 'open') return nav(folderPath(folder));
     if (action === 'io') return nav('io?folder=' + encodeURIComponent(folder.id));
     if (action === 'kfScript') {
@@ -372,7 +409,10 @@ async function setsScreen(el, params, revision) {
     } else if (action === 'register') {
       nav(folderJaPath(folder));
     } else if (action === 'apply' || action === 'missing') {
-      await applyStudioJa(ids, corpus.sections, refreshFolderProgress, { missingOnly: action === 'missing' });
+      corpus ||= await getFolderJa(folder.id);
+      if (!corpus?.sections.length) { toast('このフォルダには英日対応データがまだありません。登録画面を開きます', 3500); return nav(folderJaPath(folder)); }
+      await applyStudioJa(ids, corpus.sections, overview ? null : refreshFolderProgress, { missingOnly: action === 'missing' });
+      if (overview && revision === routeRevision) route();
     } else if (action === 'review') {
       await reviewFolderJa();
     } else if (action === 'folderPack') {
@@ -2265,6 +2305,29 @@ async function editorScreen(el, params, revision) {
       registerFrom: set, onDone: async () => { await reload(); drawList(); drawSub(); } });
   }
 
+  // 音声付き単語帳の作成の下ごしらえ（新しく取り込んだ教材）: 文字のない音声があれば文字起こし → 音声のないスクリプト行のうち、
+  // 文字起こしと完全に一致して順序も合うものだけを自動で割り当てる。あいまいなものは割り当てず、このあとの確認画面に候補として出す。
+  async function vocabPrepare({ onStep = () => {} } = {}) {
+    await reload();
+    const out = { asr: 0, assigned: 0 };
+    if (blocks.some((b) => !b.text.trim() && b.segments.length === 1)) {
+      onStep('文字起こし');
+      const r = await runAsr({ auto: true });
+      out.asr = r?.lines || 0;
+      await reload();
+    }
+    if (blocks.some((b) => !b.segments.length && b.text.trim() && !b.asr)) {
+      onStep('スクリプトと音声の照合');
+      const { rows, occupied, evidence } = vocabInputs();
+      const exact = planVocabAlignment(rows, evidence, occupied).filter((p) => !p.estimated);
+      if (exact.length) { await saveVocabProposals(exact); out.assigned = exact.length; await reload(); }
+    }
+    return out;
+  }
+  // 下ごしらえが要る教材: 文字のない音声がある／音声のないスクリプト行があって、音声のある行もある
+  const vocabNeedsPrepare = () => blocks.some((b) => !b.text.trim() && b.segments.length === 1) ||
+    (blocks.some((b) => !b.segments.length && b.text.trim() && !b.asr) && blocks.some((b) => b.segments.length));
+
   async function previewVocabAlignment(targets = null, local = null) {
     if (revision !== routeRevision) return;
     await reload();
@@ -2312,6 +2375,10 @@ async function editorScreen(el, params, revision) {
     playing = null;
     vid.pause();
     if (!selected.length) return;
+    return saveVocabProposals(selected);
+  }
+  // 候補（確認画面で選んだもの、または音声付き単語帳の作成で自動に選んだ確実なもの）を教材に保存する。1回の操作として ↶ で戻せる。
+  async function saveVocabProposals(selected) {
     await reload();
     if (revision !== routeRevision) return;
     const now = vocabInputs();
@@ -4006,8 +4073,9 @@ async function editorScreen(el, params, revision) {
   // ---------- transcription (Whisper in the browser; audio never leaves the device) ----------
   // Pieces of ~2 min are transcribed one by one and saved as they finish. The block that still has no text keeps the rest,
   // so if iOS reloads the page, running it again continues from where it stopped.
-  async function runAsr() {
-    const pool = sel.size ? ordered() : blocks;
+  // auto: 音声付き単語帳の作成から呼ぶとき。確認・精度の選択・文字起こし後の照合は出さない（精度は前回の選択、なければ標準）。
+  async function runAsr({ auto = false } = {}) {
+    const pool = !auto && sel.size ? ordered() : blocks;
     const targets = pool.filter((b) => !b.text.trim() && b.segments.length === 1);
     if (!targets.length) {
       // 1.18.2: everything has text already — offer to transcribe the left-over lines again (another accuracy) and match again
@@ -4020,12 +4088,13 @@ async function editorScreen(el, params, revision) {
     if ([...bySrc.keys()].some((id) => !(srcs[id]?.stored ? srcs[id].blob : sessionFiles.get(id)))) return toast('動画・音声ファイルを選び直してから実行してください', 4000);
     const total = targets.reduce((a, b) => a + blockDur(b), 0);
     const big = [...bySrc.keys()].map((id) => srcs[id]).filter((x) => x.kind === 'video' && x.size > 150 * 1024 * 1024);
-    if (!(await confirmDialog({ title: '文字起こし（試験的）', body: `<p>${targets.length}項目（合計 ${fmtMin(total)}）を、この端末の中で英語の文字に起こします。</p>${big.length ? `<p class="warn-text small">大きな動画（${fmtSize(big[0].size)}）はメモリ不足で途中で止まることがあります。先に「⋯」→「容量を減らす」をすると安定します。</p>` : ''}
+    if (!auto && !(await confirmDialog({ title: '文字起こし（試験的）', body: `<p>${targets.length}項目（合計 ${fmtMin(total)}）を、この端末の中で英語の文字に起こします。</p>${big.length ? `<p class="warn-text small">大きな動画（${fmtSize(big[0].size)}）はメモリ不足で途中で止まることがあります。先に「⋯」→「容量を減らす」をすると安定します。</p>` : ''}
       <div class="stack">${Object.entries(QUALITY).map(([k, t]) => `<label class="chk"><input type="radio" name="asrq" value="${k}" ${(QUALITY[localStorage.getItem('st-asrq2')] ? localStorage.getItem('st-asrq2') : 'acc') === k ? 'checked' : ''}> ${t}</label>`).join('')}</div>
       <label class="chk"><input type="checkbox" id="asrVocab"> 文字起こし後に金フレ型で照合する</label>
       <p class="hint">・最初の1回だけモデルをダウンロードします（無料・Wi-Fi推奨）。音声は外部に送りません。<br>・無音の部分は飛ばし、話している部分を少しずつ処理して、終わった分から保存します。止まっても、もう一度実行すると続きから。<br>・画面は開いたままにしてください。結果は自動の下書きです。</p>`, okLabel: '始める' }))) return;
-    const quality = $('#dialog input[name=asrq]:checked')?.value || 'acc';
-    const vocabAfterAsr = $('#asrVocab')?.checked;
+    const saved = (() => { try { return localStorage.getItem('st-asrq2'); } catch { return null; } })();
+    const quality = auto ? (QUALITY[saved] ? saved : 'acc') : ($('#dialog input[name=asrq]:checked')?.value || 'acc');
+    const vocabAfterAsr = !auto && $('#asrVocab')?.checked;
     try { localStorage.setItem('st-asrq2', quality); } catch {}
     let cancelled = false, done = 0, lines = 0, speed = 0; const speedSamples = [], noSpeech = [], rawAll = []; let emptyPieces = 0;
     const dlg = $('#dialog');
@@ -4115,7 +4184,8 @@ async function editorScreen(el, params, revision) {
       return confirmDialog({ title: '文字起こしが止まりました', body: `<p class="small">${esc((e?.message || String(e)))}</p><p class="hint">${lines ? `${lines}行は保存済みです。もう一度実行すると続きから始まります。` : '初回はネット接続が必要です（モデルのダウンロード）。'}</p>`, okLabel: '閉じる', cancelLabel: null });
     }
     running(null); lock?.release?.(); tr?.close(); const wasCancelled = cancelled; if (dlg.open) { dlg.onclose = null; dlg.close(); }
-    if (!lines) return wasCancelled ? toast('中止しました') : confirmDialog({ title: '文字にできませんでした', body: noSpeech.length ? `<p class="small">${noSpeech.map(esc).join('<br>')}</p><p>音声が見つかりませんでした（無音のまま取り出された可能性）。編集した動画は音声を取り出せないことがあります。写真アプリで「ビデオを複製」または「ファイルに保存」で書き出したものを取り込み直してください。</p>` : `<p>音声認識は動きましたが、文字にできる英語がありませんでした。</p><p class="small">認識された内容：${esc(rawAll.join(' ').trim().slice(0, 200) || '（何も認識されませんでした）')}</p><p class="hint">［Music］のような表示だけなら、音楽や効果音と判定されています。何も認識されない場合は、音声が英語として聞き取れていません。</p>`, okLabel: '閉じる', cancelLabel: null });
+    if (!lines) return auto ? { lines: 0, cancelled: wasCancelled } : wasCancelled ? toast('中止しました') : confirmDialog({ title: '文字にできませんでした', body: noSpeech.length ? `<p class="small">${noSpeech.map(esc).join('<br>')}</p><p>音声が見つかりませんでした（無音のまま取り出された可能性）。編集した動画は音声を取り出せないことがあります。写真アプリで「ビデオを複製」または「ファイルに保存」で書き出したものを取り込み直してください。</p>` : `<p>音声認識は動きましたが、文字にできる英語がありませんでした。</p><p class="small">認識された内容：${esc(rawAll.join(' ').trim().slice(0, 200) || '（何も認識されませんでした）')}</p><p class="hint">［Music］のような表示だけなら、音楽や効果音と判定されています。何も認識されない場合は、音声が英語として聞き取れていません。</p>`, okLabel: '閉じる', cancelLabel: null });
+    if (auto) return { lines, cancelled: wasCancelled };
     if (!wasCancelled && scriptLines().length) return vocabAfterAsr ? previewVocabAlignment() : runAlign({ afterAsr: lines });
     const ok = await confirmDialog({ title: wasCancelled ? `${lines}行で中止しました` : `文字起こしが終わりました（${lines}行）`,
       body: `<p>結果は、この画面の一覧（動画の下）に「自動起こし」の印つきで並んでいます。行をタップすると、その部分を再生します。✎で直せます。</p>${wasCancelled ? '<p class="hint">もう一度実行すると続きから始まります。</p>' : ''}${emptyPieces ? `<p class="warn-text small">${emptyPieces}か所は文字にできませんでした（一覧に「文字にできなかった部分」として残しています）。「標準」「最高」の精度で、もう一度「文字起こし」を実行すると、その部分だけやり直します。</p>` : ''}<p class="hint">テキストだけ使いたいときは「⋯」→「テキストを書き出す」。単語帳に入れるときは「⋯」→「単語リストを作る」。</p>`,
@@ -4492,7 +4562,7 @@ async function editorScreen(el, params, revision) {
       <button class="btn" value="mergeset">別の教材をこの教材にまとめる</button>
       <button class="btn" value="names">固有名詞をまとめて直す</button>
       <button class="btn" value="words">単語リストを作る</button>
-      ${set.materialType === 'vocab' ? '<button class="btn" value="audioWords">音声付きで単語帳に登録（金フレ型）</button>' : ''}
+      ${blocks.some((b) => b.segments.length) ? '<button class="btn" value="audioWords">音声付き単語帳を作成</button>' : ''}
       <button class="btn" value="txt">テキストを書き出す</button>
       <button class="btn" value="diag">照合・重複の診断データを書き出す（変更なし）</button>
       ${Object.values(srcs).some((x) => x.audio?.count > 1 && x.derived !== 'audio16k') ? '<button class="btn" value="track">使う音声トラックを選ぶ</button>' : ''}
@@ -4539,7 +4609,7 @@ async function editorScreen(el, params, revision) {
       if (v === 'splitAudio') splitAudioRange();
       if (v === 'asr') runAsr();
       if (v === 'words') nav(`words?id=${set.id}`);
-      if (v === 'audioWords') { ++playbackRequest; vid.pause(); playing = null; (await import('./audio-words-ui.js')).openAudioWordBulk({ kind: 'studio', id: set.id }); }
+      if (v === 'audioWords') { ++playbackRequest; vid.pause(); playing = null; (await import('./vocab-audio-wizard.js')).openVocabAudioWizard({ targets: [{ kind: 'studio', id: set.id, title: set.title }], prepare: vocabNeedsPrepare() ? { run: vocabPrepare, note: `音声が割り当てられていないスクリプト行、または文字のない音声があります。開始すると、先に${blocks.some((b) => !b.text.trim() && b.segments.length === 1) ? '文字起こし（この端末の中・無料。初回のみモデルをダウンロード）と' : ''}確実な照合を自動で行います。` } : null }); }
       if (v === 'names') fixNames();
       if (v === 'add') nav(`import?to=${set.id}&script=1`);
       if (v === 'addMedia') nav(`import?to=${set.id}`);
@@ -4798,22 +4868,27 @@ async function showStudioJaReview(set, summary, edit) {
 
 async function chooseStudioJaFiles() {
   const picker = studioDialog('英日対応データを選ぶ',
-    '<label class="btn primary" for="stJaFiles">JSONまたはZIPを選ぶ</label><input type="file" id="stJaFiles" accept=".json,.zip,application/json,application/zip" multiple hidden>',
+    `<label class="btn primary" for="stJaFiles">JSONまたはZIPを選ぶ（複数可）</label><input type="file" id="stJaFiles" accept=".json,.zip,application/json,application/zip" multiple hidden>
+    <details><summary class="small">JSONを貼り付ける（1つのJSONに複数章も可）</summary><textarea id="stJaText" rows="6" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+    <button class="btn sm" value="text">貼り付けたJSONを使う</button></details>`,
     [['cancel','閉じる']]);
   const dlg = $('#dialog'), input = $('#stJaFiles', dlg);
-  let files = [];
+  let files = [], text = '';
   input.onchange = () => {
     files = [...input.files];
     if (files.length) dlg.close('files');
   };
-  return await picker === 'files' ? files : [];
+  const result = await picker;
+  if (result === 'text') text = $('#stJaText', dlg)?.value || '';
+  return result === 'files' ? files : result === 'text' ? { text } : [];
 }
 
 async function pickStudioJa(ids, onSaved) {
   const start = routeRevision;
-  const files = await chooseStudioJaFiles();
-  if (!files.length || start !== routeRevision) return;
-  try { await applyStudioJa(ids, await readStudioJaFiles(files), onSaved, { offerLab: true }); }
+  const picked = await chooseStudioJaFiles();
+  if ((Array.isArray(picked) ? !picked.length : !picked.text?.trim()) || start !== routeRevision) return;
+  await new Promise(resolve => setTimeout(resolve, 60));
+  try { await applyStudioJa(ids, Array.isArray(picked) ? await readStudioJaFiles(picked) : await readStudioJaText(picked.text), onSaved, { offerLab: true }); }
   catch (error) { toast(error.message, 5500); }
 }
 
@@ -4833,7 +4908,27 @@ function studioBatchProgress(title) {
   };
 }
 
-async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offerLab = false } = {}) {
+// 1.19.31: how the English–Japanese data is applied (one choice for one material, chosen materials or a whole folder)
+async function chooseJaMode(initial = 'rematch') {
+  const modes = [
+    ['missing', '未割当の行だけ', '訳のない行だけに入れます。既存の訳はそのまま。'],
+    ['rematch', '再照合（照合結果を更新）', '以前この方法で照合した訳を新しいデータで更新します。教材に元からあった訳と手で直した訳はそのまま。'],
+    ['overwrite', '上書き（英日対応済みの訳も置き換え）', '新しいデータに一致した行は、教材に元からあった訳や以前の照合結果も置き換えます。一致しない行はそのまま。'],
+  ];
+  const choice = await studioDialog('英日データの反映のしかた', `<div class="stack small">${modes.map(([v, t, d]) =>
+    `<label class="chk"><input type="radio" name="stJaMode" value="${v}" ${v === initial ? 'checked' : ''}> <span><b>${t}</b><br><span class="muted">${d}</span></span></label>`).join('')}
+    <label class="chk"><input type="checkbox" id="stJaHand"> 手で直した訳（和訳の確定・位置調整）も上書きする</label>
+    <span class="muted">どの方法でも、反映後に ↶ または「今回の反映を戻す」で元に戻せます。</span></div>`, [['next','候補を確認'],['cancel','閉じる']]);
+  if (choice !== 'next') return null;
+  const dlg = $('#dialog'), mode = dlg.querySelector('[name=stJaMode]:checked')?.value || initial, all = dlg.querySelector('#stJaHand')?.checked;
+  await new Promise(resolve => setTimeout(resolve, 60));
+  return { missingOnly: mode === 'missing', overwrite: all ? 'all' : mode === 'overwrite' ? 'imported' : false, mode, all };
+}
+async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offerLab = false, how = null } = {}) {
+  how ||= await chooseJaMode(missingOnly ? 'missing' : 'rematch');
+  if (!how) return;
+  ({ missingOnly } = how);
+  const overwrite = how.overwrite;
   const start = routeRevision, plans = [];
   const planning = studioBatchProgress('日本語訳の候補を照合中');
   let scanned = 0;
@@ -4844,7 +4939,7 @@ async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offe
       scanned++;
       if (!set) continue;
       planning.show(scanned - 1, ids.length, set.title);
-      const blocks = await liveBlocks(set), plan = planStudioJa(set, blocks, sections, { missingOnly });
+      const blocks = await liveBlocks(set), plan = planStudioJa(set, blocks, sections, { missingOnly, overwrite });
       const updated = new Map(plan.changes.map(row => [row.id,row]));
       const view = studioJaView(blocks.map(row => updated.get(row.id) || row));
       const sample = plan.changes.filter(row => view.value(row)).slice(0, 3)
@@ -4857,15 +4952,11 @@ async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offe
   const preview = `${scanned < ids.length ? `<p>未照合 ${ids.length-scanned}教材</p>` : ''}` +
     plans.map(plan => `<details><summary>${esc(plan.title)}　${plan.summary}</summary>${plan.sample}</details>`).join('');
   const choices = [['cancel','閉じる']];
-  if (plans.some(plan => plan.count) || scanned < ids.length) {
-    // 1.19.30: an explicit re-match and "only rows without a translation" are separate choices; hand corrections are kept in both
-    if (!missingOnly) choices.push(['saveMissing', '未割当の行だけ反映']);
-    choices.push(['save', scanned < ids.length ? '照合済みの候補を反映' : missingOnly ? '未割当の行に反映' : '再照合して反映（手動修正は保護）']);
-  }
+  if (plans.some(plan => plan.count) || scanned < ids.length) choices.push(['save', scanned < ids.length ? '照合済みの候補を反映' : '日本語訳を反映']);
   if (offerLab && HOST?.sendToLab && plans.length && scanned === ids.length) choices.push(['send','反映して一括教材化へ']);
-  const action = await studioDialog('日本語訳の反映を確認', preview + '<p class="small muted">手動で修正・確定した訳は、どちらの方法でも上書きしません。</p>', choices);
-  if (!['save','saveMissing','send'].includes(action) || start !== routeRevision) return;
-  if (action === 'saveMissing') missingOnly = true;
+  const modeText = how.mode === 'missing' ? '未割当の行だけ' : how.mode === 'overwrite' ? '上書き（英日対応済みの訳も置き換え）' : '再照合';
+  const action = await studioDialog('日本語訳の反映を確認', `<p class="small">方法：<b>${modeText}</b>・手で直した訳は${how.all ? '<b>上書きします</b>' : '保持します'}</p>` + preview, choices);
+  if (!['save','send'].includes(action) || start !== routeRevision) return;
   const applied = [], errors = new Map();
   const saving = studioBatchProgress('日本語訳を反映中');
   let saved = 0;
@@ -4877,7 +4968,7 @@ async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offe
       try {
         const set = await sdb.get('sets', plan.id);
         if (!set || JSON.stringify(jaGuard(set)) !== JSON.stringify(plan.guard)) throw Error('教材が変更されました');
-        const current = planStudioJa(set, await liveBlocks(set), sections, { missingOnly });
+        const current = planStudioJa(set, await liveBlocks(set), sections, { missingOnly, overwrite });
         if (!current.changes.length) continue;
         const op = await commit(set, '日本語訳を反映', { blocks: current.changes, guardedSet: plan.guard });
         applied.push({ id: set.id, opId: op.opId });
@@ -4904,7 +4995,7 @@ async function applyStudioJa(ids, sections, onSaved, { missingOnly = false, offe
     }
     await onSaved?.();
     toast(skipped ? `${skipped}教材には後から編集が入っています` : '日本語訳の反映を戻しました');
-  } else if (next === 'resume') await applyStudioJa(rest, sections, onSaved, { missingOnly, offerLab });
+  } else if (next === 'resume') await applyStudioJa(rest, sections, onSaved, { missingOnly, offerLab, how });
   else if (next === 'send') await batchSendToLab(done.filter(plan => !errors.has(plan.id)).map(plan => plan.id));
   else if (/^review\d+$/.test(next)) {
     const set = await sdb.get('sets', done[Number(next.slice(6))].id);
@@ -4920,6 +5011,9 @@ function notCopiedYet(parentBlocks, b) {
   const keys = new Set(parentBlocks.map(itemKey)), from = new Set(parentBlocks.flatMap((x) => (x.lineage?.from || []).map((f) => String(f).split('@')[0])));
   return !keys.has(itemKey(b)) && !from.has(b.id) && !parentBlocks.some((x) => x.id === b.id);
 }
+// 1.19.42: what the Lab cannot work out by itself — is this line an aligned script line (音声が確定) or raw recognition (文字起こしのまま)?
+// Carried with every line of a transfer / pack, so audio-bearing word cards can be built from the Lab alone.
+const transferFlags = (b) => (studioConfirmed(b) ? { confirmed: true } : b.asr && !b.aligned ? { asr: true } : {});
 function materialMetadata(blocks, materialType) {
   const map = new Map();
   let studySet = '';
@@ -4961,7 +5055,7 @@ export async function buildMaterial(set, { contents = 'both' } = {}) {
     contents, ...(setFolder ? { packId: setFolder.id, packName: setFolder.name } : {}) },
     items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })),
       text: contents === 'audio' ? '' : b.text, ja: contents === 'both' ? b.ja : '', jaRemoved: contents === 'both' ? b.jaOverride && !b.ja : false,
-      holes: contents === 'audio' ? undefined : b.holes, label: b.label, sync: b.sync, ...metadata.get(b.id) }))
+      holes: contents === 'audio' ? undefined : b.holes, label: b.label, sync: b.sync, ...transferFlags(b), ...metadata.get(b.id) }))
       .filter((it) => contents !== 'audio' || it.segments.length),   // 音声のみ: lines without sound carry nothing
     media: media.map((m) => ({ ...packMedia(m, studioSourceFile(m)), existingMediaKey: m.labRef?.videoId })) };
   manifest.contents = { audio: true, text: contents !== 'audio', translation: contents === 'both', timestamps: true, kind: contents };
@@ -5122,7 +5216,7 @@ async function exportSet(set) {
     contents: { audio: files.size > 0, audioMode: em, text: true, translation: true, timestamps: true, vocab: false } };
   const metadata = materialMetadata(blocks, set.materialType);
   const material = { jaSpans: studioJaView(blocks).spans, set: { id: set.id, title: set.title, folder: set.folder, display: set.display, materialType: set.materialType, splitRange: set.splitRange }, units: [{ id: set.id, title: set.title, items: blocks.map((b) => b.id) }],
-    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, jaRemoved: b.jaOverride && !b.ja, jaImport: b.jaImport, jaOverride: b.jaOverride, jaReview: b.jaReview, holes: b.holes, align: b.align, cueRefs: b.cueRefs, lineage: b.lineage, sync: b.sync, jaStatus: b.jaStatus, label: b.label, asr: b.asr, ...metadata.get(b.id) })),
+    items: blocks.map((b) => ({ id: b.id, rev: b.rev, segments: b.segments.map((s) => ({ media: s.sourceId, start: s.start, end: s.end })), text: b.text, ja: b.ja, jaRemoved: b.jaOverride && !b.ja, jaImport: b.jaImport, jaOverride: b.jaOverride, jaReview: b.jaReview, holes: b.holes, align: b.align, cueRefs: b.cueRefs, lineage: b.lineage, sync: b.sync, jaStatus: b.jaStatus, label: b.label, asr: b.asr, ...transferFlags(b), ...metadata.get(b.id) })),
     media: media.map(source => packMedia(source, files.get(source.id))) };
   toast('教材パックを作成中…', 10000);
   const zip = await writeMaterialPack(manifest, material, files);

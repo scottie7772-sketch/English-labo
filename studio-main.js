@@ -16,7 +16,9 @@ import { extractPhrases, extractWords } from './studio-words.js';
 import { findCandidates, applySpans } from './studio-names.js';
 import { alignScript, scriptToLines, hasReplacementAudio } from './studio-align.js';
 import { speechRegions, regionStatistics, snapCueToRegion } from './studio-structure.js';
-import { alignByStructure, parseUnits } from './kinfure-structure-align.js';
+import { alignByStructure, parseUnits, planMissing } from './kinfure-structure-align.js';
+import { loadKfScript, tagsFor } from './studio-kinfure.js';
+import { parseKinfureScript, locateByEdges } from './studio-kinfure-range.js';
 import { joinShortGaps } from './vocab-audio-core.js';
 import { speechFirstPlaybackRange, nextSourceSegment } from './studio-playback-boundary.js';
 import { planVocabAlignment, isVocabTarget, unassignedVocabRanges, vocabKey, isVocabHead } from './studio-vocab-align.js';
@@ -29,7 +31,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.31';
+export const STUDIO_VERSION = '0.21.32';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -407,7 +409,7 @@ async function setsScreen(el, params, revision) {
     if (action === 'kfScript') {
       await kfRegisterScript({ folderId: folder.id, folderName: folder.name });
     } else if (action === 'kfLocate') {
-      await kfLocateFlow({ folderId: folder.id, folderName: folder.name, members, onDone: () => revision === routeRevision && route() });
+      await kfLocateFlow({ edgeCues: (target) => transcribeEdges(target), folderId: folder.id, folderName: folder.name, members, onDone: () => revision === routeRevision && route() });
     } else if (action === 'register') {
       nav(folderJaPath(folder));
     } else if (action === 'apply' || action === 'missing') {
@@ -565,6 +567,69 @@ function srcState(src) {
   return `端末に保存（${sz}）`;
 }
 
+// 音声1本を、必要な範囲だけ読む（AACは区間抽出、小さな音声は全体を1回だけ）。全体をPCMに展開しない。
+async function sourceAudioReader(chosen, say) {
+  const blob = chosen.stored ? chosen.blob : sessionFiles.get(chosen.id);
+  const container = isContainer(chosen, blob) && chosen.derived !== 'audio16k';
+  if (container && !chosen.audio) { chosen.audio = await decideTrack(chosen, blob); await sdb.put('sources', chosen); }
+  const info = container ? await probeSource(chosen, blob).catch(() => null) : null;
+  const tracks = info ? audioTracks(info) : [];
+  const track = tracks.find(t => t.id === chosen.audio?.trackId) || tracks[chosen.audio?.index ?? 0];
+  const ranged = Boolean(track && canExtract(track));
+  let whole = null;
+  if (!ranged) {
+    if (!(chosen.duration > 0 && chosen.duration <= 180 && blob.size <= 18 * 1024 * 1024)) throw new Error('長い音声は、区間抽出に対応したAACのM4AまたはMP4にしてください');
+    whole = (await sourceAudio16k(chosen, blob, { say })).audio; highPass(whole);
+  }
+  const end = track?.duration || chosen.duration || (whole?.length || 0) / 16000;
+  // read(a, b) → { audio, offset }: audio は offset 秒から始まる16kHzのPCM
+  const read = async (a, b) => {
+    if (!ranged) return { audio: whole, offset: 0 };
+    const extracted = await extractTrack(blob, track, Math.max(0, a), Math.min(end, b));
+    const audio = (await decodeTo16k(extracted.blob)).audio; highPass(audio);
+    return { audio, offset: extracted.start };
+  };
+  return { end, read };
+}
+
+// 音声の先頭と末尾だけを文字起こしする（全体スクリプトの中の範囲を推定するため）。結果は教材ごとに保存し、同じ音声なら再実行しない。
+async function transcribeEdges(set, { seconds = 30, say = () => {}, cancelled = () => false } = {}) {
+  const blocks = (await sdb.byIndex('blocks', 'setId', set.id)).filter(b => !b.deleted);
+  const byId = new Map(blocks.map(b => [b.id, b]));
+  const ids = [];
+  for (const id of set.order) { const b = byId.get(id); for (const g of b?.segments || []) if (!ids.includes(g.sourceId)) ids.push(g.sourceId); }
+  if (set.sourceId && !ids.includes(set.sourceId)) ids.unshift(set.sourceId);
+  const sources = [];
+  for (const id of ids) { const src = await sdb.get('sources', id); if (src && (src.stored ? src.blob : sessionFiles.get(src.id))) sources.push(src); }
+  if (!sources.length) throw new Error('音声が端末にありません');
+  const firstSrc = sources[0], lastSrc = sources.at(-1);
+  const sig = [firstSrc.id, firstSrc.size, lastSrc.id, lastSrc.size, seconds].join('|');
+  const cached = await sdb.get('meta', `edge-cues:${set.id}`);
+  if (cached?.sig === sig) return { head: cached.head, tail: cached.tail, duration: cached.duration, cached: true };
+  let tr = null;
+  const one = async (src, a, z, label) => {
+    const reader = await sourceAudioReader(src, say);
+    const total = reader.end, from = Math.max(0, a), to = Math.min(total, z);
+    const { audio, offset } = await reader.read(from - .3, to + .3);
+    tr ||= openTranscriber('en', say, { quality: 'acc' });
+    say(`${src.name || '音声'}　${label}を文字起こし中…`);
+    const pieces = [];
+    for (let t = from; t < to && !cancelled(); t += 10) {
+      const cues = await recognisePiece(tr, audio, Math.max(0, t - offset), Math.min(audio.length / 16000, Math.min(to, t + 10) - offset));
+      const text = (cues.raw || cues.map(x => x.text).join(' ')).trim();
+      if (text) pieces.push({ text, start: t, end: Math.min(to, t + 10) });
+    }
+    return { pieces, total };
+  };
+  try {
+    const headWin = await one(firstSrc, 0, seconds, '先頭');
+    const tailWin = await one(lastSrc, (lastSrc === firstSrc ? headWin.total : (await sourceAudioReader(lastSrc, say)).end) - seconds, Infinity, '末尾');
+    const duration = sources.reduce((sum, x) => sum + (x.duration || 0), 0) || headWin.total;
+    await sdb.put('meta', { key: `edge-cues:${set.id}`, sig, head: headWin.pieces, tail: tailWin.pieces, duration });
+    return { head: headWin.pieces, tail: tailWin.pieces, duration, cached: false };
+  } finally { tr?.close(); }
+}
+
 // Direct script import deliberately bypasses audio trimming, encoding and pairing controls.
 async function directScriptScreen(el, setId) {
   const set = await sdb.get('sets', setId);
@@ -573,31 +638,69 @@ async function directScriptScreen(el, setId) {
     <div class="card stack"><p class="small">音声カットや圧縮設定は不要です。英語のスクリプトを直接追加します。既存の音声と字幕時刻は変更しません。</p>
     <label class="btn" for="directScriptFile">📄 TXT・SRT・VTT・CSVを選ぶ</label><input id="directScriptFile" type="file" accept=".txt,.srt,.vtt,.csv,text/plain,text/csv" hidden>
     <label class="field"><span>または英文を貼り付ける</span><textarea id="directScriptText" rows="9" placeholder="英文を1行ずつ入力"></textarea></label>
-    <div class="card stack"><b>追加範囲を指定（任意）</b><p class="small muted">開始・終了の語句を検索し、該当する部分だけ追加できます。未指定なら全文を追加します。</p>
-    <label class="field">開始語句<input id="directStartSearch" type="search" placeholder="開始する単語"></label><button type="button" class="btn sm" id="directFindStart">開始位置を検索</button>
-    <label class="field">終了語句<input id="directEndSearch" type="search" placeholder="終了する単語"></label><button type="button" class="btn sm" id="directFindEnd">終了位置を検索</button>
+    <div class="card stack"><b>追加範囲を指定（任意）</b><p class="small muted">音声の先頭・末尾の文字起こしから範囲を推定するか、開始・終了の語句を検索して決めます。範囲は行の区切りに合わせます。未指定なら全文を追加します。</p>
+    <button type="button" class="btn sm primary" id="directEstimate">音声の先頭・末尾から範囲を推定</button><p id="directEstimateInfo" class="small muted"></p>
+    <label class="field">開始語句<input id="directStartSearch" type="search" placeholder="開始する行の語句"></label><div class="row"><button type="button" class="btn sm" id="directFindStart">開始位置を検索（次の一致）</button><button type="button" class="btn sm ghost" id="directFindStartPrev">前の一致</button></div><p id="directStartInfo" class="small muted"></p>
+    <label class="field">終了語句<input id="directEndSearch" type="search" placeholder="終了する行の語句"></label><div class="row"><button type="button" class="btn sm" id="directFindEnd">終了位置を検索（次の一致）</button><button type="button" class="btn sm ghost" id="directFindEndPrev">前の一致</button></div><p id="directEndInfo" class="small muted"></p>
     <button type="button" class="btn sm ghost" id="directClearRange">全文に戻す</button><p id="directRangeInfo" class="small muted">全文を追加します</p></div>
     <p id="directScriptInfo" class="small muted"></p><button id="directScriptSave" class="btn primary">スクリプトを追加</button></div>`;
   const area = $('#directScriptText', el), info = $('#directScriptInfo', el), file = $('#directScriptFile', el);
   file.onchange = async () => { const f = file.files?.[0]; if (!f) return; area.value = await f.text(); info.textContent = `${f.name} を読み込みました`; };
   let selectedStart = null, selectedEnd = null;
   const rangeInfo = $('#directRangeInfo', el);
-  const refreshRange = () => { const a = selectedStart ?? 0, b = selectedEnd ?? area.value.length; rangeInfo.textContent = a >= b ? '開始位置が終了位置以降です' : `追加する範囲：${a + 1}〜${b}文字（全${area.value.length}文字）`; };
-  const findBoundary = (which) => {
-    const term = $(`#direct${which === 'start' ? 'Start' : 'End'}Search`, el).value.trim();
-    if (!term) return toast('検索語句を入力してください');
-    const lower = area.value.toLocaleLowerCase(), query = term.toLocaleLowerCase();
-    const prev = which === 'start' ? selectedStart : selectedEnd;
-    let at = lower.indexOf(query, prev == null ? 0 : Math.min(prev + 1, lower.length));
-    if (at < 0) at = lower.indexOf(query);
-    if (at < 0) return toast('一致する語句がありません');
-    if (which === 'start') selectedStart = at; else selectedEnd = at + term.length;
-    area.focus(); area.setSelectionRange(at, at + term.length); refreshRange();
+  const lineStarts = () => { const out = []; let at = 0; for (const l of area.value.split('\n')) { out.push([at, at + l.length]); at += l.length + 1; } return out; };
+  const lineOf = (pos) => { const ls = lineStarts(); const k = ls.findIndex(([a, z]) => pos >= a && pos <= z); return { k: k < 0 ? ls.length - 1 : k, ls }; };
+  const refreshRange = () => {
+    const a = selectedStart ?? 0, b = selectedEnd ?? area.value.length;
+    const n = (x, y) => area.value.slice(x, y).split('\n').filter(t => t.trim()).length;
+    rangeInfo.textContent = a >= b ? '開始位置が終了位置以降です' : `追加する範囲：${n(a, b)}行（全${n(0, area.value.length)}行）`;
   };
-  $('#directFindStart', el).onclick = () => findBoundary('start');
-  $('#directFindEnd', el).onclick = () => findBoundary('end');
-  $('#directClearRange', el).onclick = () => { selectedStart = selectedEnd = null; refreshRange(); };
-  area.addEventListener('input', () => { selectedStart = selectedEnd = null; refreshRange(); });
+  // 語句の一致をすべて集め（大文字小文字を区別しない）、押すたびに次（前）の一致へ進む。範囲は一致した行の先頭／末尾に合わせる（行の途中で切らない）。
+  const matches = { start: { list: [], at: -1, term: '' }, end: { list: [], at: -1, term: '' } };
+  const collect = (term) => { const out = [], lower = area.value.toLocaleLowerCase(), q = term.toLocaleLowerCase(); for (let i = lower.indexOf(q); i >= 0; i = lower.indexOf(q, i + 1)) out.push(i); return out; };
+  const findBoundary = (which, dir = 1) => {
+    const box = $(`#direct${which === 'start' ? 'Start' : 'End'}Search`, el), term = box.value.trim();
+    if (!term) return toast('検索語句を入力してください');
+    const m = matches[which];
+    if (m.term !== term || !m.list.length) { m.term = term; m.list = collect(term); m.at = dir > 0 ? -1 : m.list.length; }
+    if (!m.list.length) return toast('一致する語句がありません');
+    m.at = (m.at + dir + m.list.length) % m.list.length;
+    const pos = m.list[m.at], { k, ls } = lineOf(pos);
+    if (which === 'start') selectedStart = ls[k][0]; else selectedEnd = ls[k][1];
+    $(`#direct${which === 'start' ? 'Start' : 'End'}Info`, el).textContent = `${m.at + 1}/${m.list.length}件目：「${area.value.slice(ls[k][0], ls[k][1]).slice(0, 60)}」の行${which === 'start' ? 'から' : 'まで'}`;
+    area.focus(); area.setSelectionRange(ls[k][0], ls[k][1]); refreshRange();
+  };
+  $('#directFindStart', el).onclick = () => findBoundary('start', 1);
+  $('#directFindStartPrev', el).onclick = () => findBoundary('start', -1);
+  $('#directFindEnd', el).onclick = () => findBoundary('end', 1);
+  $('#directFindEndPrev', el).onclick = () => findBoundary('end', -1);
+  $('#directClearRange', el).onclick = () => { selectedStart = selectedEnd = null; $('#directStartInfo', el).textContent = $('#directEndInfo', el).textContent = $('#directEstimateInfo', el).textContent = ''; refreshRange(); };
+  area.addEventListener('input', () => { selectedStart = selectedEnd = null; matches.start.list = matches.end.list = []; refreshRange(); });
+  // 音声の先頭・末尾を文字起こしして、貼り付けたスクリプトの中の範囲を推定する（文字起こしの結果は教材に保存され、次回は再実行しない）
+  $('#directEstimate', el).onclick = async (event) => {
+    const button = event.currentTarget, note = $('#directEstimateInfo', el);
+    const rows = area.value.split('\n').map(text => ({ text }));
+    if (!rows.some(r => r.text.trim())) return toast('先にスクリプトを貼り付けてください');
+    const script = parseKinfureScript(rows.map(r => ({ text: r.text })));
+    if (script.lines.length < 8) return toast('スクリプトの行が少なすぎます');
+    button.disabled = true; note.textContent = '音声を準備しています…';
+    try {
+      const fresh = await sdb.get('sets', setId) || set;
+      const edge = await transcribeEdges(fresh, { say: text => { note.textContent = text; } });
+      const rate = (script.lines.length || 1) / Math.max(1, script.groups.length);   // 1項目あたりの行数
+      const expectedLines = edge.duration ? Math.round(edge.duration / 9.5 * rate) : 0;   // 金フレ: 1項目 ≈ 9〜10秒
+      const res = locateByEdges(script, edge.head, edge.tail, { expectedLines });
+      if (!(res.startLine >= 0) || !(res.endLine >= res.startLine)) { note.textContent = res.reason || '範囲を推定できませんでした。語句検索で決めてください。'; return; }
+      const row0 = script.lines[res.startLine].row, row1 = script.lines[Math.min(script.lines.length - 1, res.endLine + 1)]?.row;
+      const ls = lineStarts();
+      selectedStart = ls[row0][0];
+      selectedEnd = res.endLine + 1 < script.lines.length && row1 != null ? Math.max(selectedStart, ls[row1][0] - 1) : area.value.length;
+      area.focus(); area.setSelectionRange(selectedStart, selectedEnd); refreshRange();
+      const LV = { high: '確信度：高', mid: '確信度：中', low: '確信度：低' };
+      note.textContent = `推定：No.${res.startN}〜No.${res.endN}（${res.groups}件・${res.lines}行）　${LV[res.level] || ''}（先頭の一致 ${Math.round(res.headShare * 100)}%・末尾の一致 ${Math.round(res.tailShare * 100)}%）${edge.cached ? '　※保存済みの文字起こしを使用' : ''}${res.reason ? '　' + res.reason : ''}${res.ok ? '' : '　→ 範囲を確認し、必要なら語句検索で直してください'}`;
+    } catch (e) { note.textContent = '推定できませんでした：' + (e?.message || e); }
+    finally { button.disabled = false; }
+  };
   $('#directScriptSave', el).onclick = async () => {
     const from = selectedStart ?? 0, to = selectedEnd ?? area.value.length;
     if (from >= to) return toast('選択範囲を確認してください');
@@ -2303,7 +2406,7 @@ async function editorScreen(el, params, revision) {
     const all = (await sdb.all('sets')).filter((x) => x.folder === set.folder);
     const members = folderMembers(all, folder);
     const self = members.find((x) => x.id === set.id) || set;
-    await kfLocateFlow({ folderId: folder.id, folderName: folder.name, members: members.length ? members : [self], targets: [members.find((x) => x.id === set.id) || self],
+    await kfLocateFlow({ edgeCues: (target) => transcribeEdges(target), folderId: folder.id, folderName: folder.name, members: members.length ? members : [self], targets: [members.find((x) => x.id === set.id) || self],
       registerFrom: set, onDone: async () => { await reload(); drawList(); drawSub(); } });
   }
 
@@ -2995,7 +3098,8 @@ async function editorScreen(el, params, revision) {
       if (keepAt) try { restoreViewAnchor(keepAt, viewSwitchSerial); } catch {}
       drawSub();
       toast(`${label}しました`, 1200);
-    } catch (e) { toast((e?.message || String(e)), 3500); }
+      return true;
+    } catch (e) { toast((e?.message || String(e)), 3500); return false; }
   }
   async function action(a) {
     const list0 = ordered();
@@ -3724,12 +3828,13 @@ async function editorScreen(el, params, revision) {
     await reload();
     const skips=[];
     const changes=[];
-    const occupied = vocabInputs().occupied;
+    const reassigned = new Set(chosenCandidates.filter(x => x.reassign).flatMap(x => byId[x.blockId]?.segments || []));
+    const occupied = vocabInputs().occupied.filter(g => !reassigned.has(g));
     const guard = rescueVersion();
     for(const x of chosenCandidates){
       const latest=byId[x.blockId];
       if(!latest){skips.push('対象行なし: '+x.text);continue;}
-      if(latest.segments?.length){skips.push('既に音声あり: '+x.text);continue;}
+      if(latest.segments?.length && !(x.reassign && latest.aligned && latest.sync === 'auto' && !latest.manual)){skips.push('既に音声あり: '+x.text);continue;}
       if (latest.sync === 'manual' || latest.text !== x.text || (x.blockRev != null && latest.rev !== x.blockRev)) {
         skips.push('手動調整済み・解析後に編集: ' + x.text); continue;
       }
@@ -3756,8 +3861,14 @@ async function editorScreen(el, params, revision) {
   // Opt-in: boundaries first, independent ASR per utterance, then monotone script alignment.
   // Preview only: no ASR rows or script changes are persisted before explicit approval.
   async function importBySpeechStructure(range = null) {
-    const sl=scriptLines().filter(b => b.sync !== 'manual');
-    if(!sl.length)return toast('先に完全なスクリプトを取り込んでください',4500);
+    let sl=scriptLines().filter(b => b.sync !== 'manual');
+    // 音声のないスクリプト行がなくても、照合済み（自動）の行があれば、それを対象に割り当て直せる（手動で直した行は変えない）
+    let reassign = false;
+    if (!sl.length) {
+      sl = set.order.map(id => byId[id]).filter(b => b && !b.asr && b.text.trim() && b.aligned && b.sync !== 'manual' && !b.manual && !isSymbolRow(b));
+      reassign = sl.length > 0;
+    }
+    if(!sl.length)return toast('スクリプトの行がありません。先にスクリプトを取り込んでください（照合済みの行があれば、それを割り当て直せます）',5000);
     const sources=materialSourceIds().map(id => srcs[id]).filter(x => x && (x.stored ? x.blob : sessionFiles.get(x.id)));
     if(!sources.length)return toast('音声ファイルを選び直してください',4500);
     // Analyze all speech regions in sequential batches; preserve source-absolute timestamps.
@@ -3837,7 +3948,8 @@ async function editorScreen(el, params, revision) {
       if (!(end > cfg.start)) throw new Error('指定範囲に音声がありません');
       const vocabProfile = cfg.profile === 'vocab';
       const rapid = vocabProfile || ['toeic-response', 'toeic-dialogue', 'toeic-mixed'].includes(cfg.profile);
-      const occupied = vocabInputs().occupied.filter(g => g.sourceId === chosen.id);
+      const ownSegments = reassign ? new Set(sl.flatMap(b => b.segments)) : null;   // 割り当て直す行の古い範囲は、重なりの判定から外す
+      const occupied = vocabInputs().occupied.filter(g => g.sourceId === chosen.id && !(ownSegments && ownSegments.has(g)));
       const checkpointKey = `speech-first:${set.id}`;
       const signature = JSON.stringify([chosen.id, blob.size, chosen.audio?.trackId, chosen.audio?.index, cfg.profile, cfg.start, end]);
       const saved = await sdb.get('meta', checkpointKey);
@@ -3898,7 +4010,7 @@ async function editorScreen(el, params, revision) {
         if (!vocabProfile) {
           const proposals = alignUtterances(sl.map(b => ({ text: b.text })), available, { profile: cfg.profile });
           result = proposals.map(p => ({ b: sl[p.scriptIndex], u: p.range || available[p.utteranceIndex], score: p.score }))
-            .filter(x => !x.b.segments.length && x.b.sync !== 'manual');
+            .filter(x => (reassign || !x.b.segments.length) && x.b.sync !== 'manual');
         }
       }
     } catch (e) {
@@ -3915,7 +4027,7 @@ async function editorScreen(el, params, revision) {
       !utterances.some(u => u.sourceId === cue.sourceId && u.start < cue.end && u.end > cue.start))]);
     if(!result.length)return confirmDialog({title:'安全な一致候補がありません',body:'発話区間は検出しましたが、認識結果とスクリプトの強い一致が得られませんでした。字幕は変更していません。短い単語や重複する例文は誤対応防止のため保留します。',okLabel:'閉じる',cancelLabel:null});
     // Store candidates BEFORE displaying them. No audio blobs are duplicated.
-    const draft=result.map(({b,u,score})=>({blockId:b.id,blockRev:b.rev,sourceId:chosen.id,start:u.start,end:u.end,score,text:b.text}));
+    const draft=result.map(({b,u,score})=>({blockId:b.id,blockRev:b.rev,sourceId:chosen.id,start:u.start,end:u.end,score,text:b.text,...(reassign?{reassign:true}:{})}));
     const freshForDraft=await sdb.get('sets',set.id);
     const draftIds = new Set(draft.map(x => x.blockId));
     const prior = (freshForDraft.speechFirstDraft || []).filter(x => !draftIds.has(x.blockId));
@@ -3929,32 +4041,8 @@ async function editorScreen(el, params, revision) {
   // 1.19.43: 金フレ型の音声を、発話区間の構造（見出し語 → 例文 → 例文の繰り返し → 無音）で台本に割り当てる。
   // 文字起こしの時刻は粗い（1秒前後）ので、境界には使わない。境界は発話区間から取り、文字起こしは「どの項目か」の手がかりにだけ使う。
   // 音声1本ごとに、全体の発話区間を調べ、台本の項目と順序を保って対応づける。手がかりが弱い音声には何も割り当てない。プレビューで確認してから保存（↶で戻せる）。
-  // 音声1本を、必要な範囲だけ読む（AACは区間抽出、小さな音声は全体を1回だけ）。全体をPCMに展開しない。
-  async function sourceAudioReader(chosen, say) {
-    const blob = chosen.stored ? chosen.blob : sessionFiles.get(chosen.id);
-    const container = isContainer(chosen, blob) && chosen.derived !== 'audio16k';
-    if (container && !chosen.audio) { chosen.audio = await decideTrack(chosen, blob); await sdb.put('sources', chosen); }
-    const info = container ? await probeSource(chosen, blob).catch(() => null) : null;
-    const tracks = info ? audioTracks(info) : [];
-    const track = tracks.find(t => t.id === chosen.audio?.trackId) || tracks[chosen.audio?.index ?? 0];
-    const ranged = Boolean(track && canExtract(track));
-    let whole = null;
-    if (!ranged) {
-      if (!(chosen.duration > 0 && chosen.duration <= 180 && blob.size <= 18 * 1024 * 1024)) throw new Error('長い音声は、区間抽出に対応したAACのM4AまたはMP4にしてください');
-      whole = (await sourceAudio16k(chosen, blob, { say })).audio; highPass(whole);
-    }
-    const end = track?.duration || chosen.duration || (whole?.length || 0) / 16000;
-    // read(a, b) → { audio, offset }: audio は offset 秒から始まる16kHzのPCM
-    const read = async (a, b) => {
-      if (!ranged) return { audio: whole, offset: 0 };
-      const extracted = await extractTrack(blob, track, Math.max(0, a), Math.min(end, b));
-      const audio = (await decodeTo16k(extracted.blob)).audio; highPass(audio);
-      return { audio, offset: extracted.start };
-    };
-    return { end, read };
-  }
-  async function sourceSpeechRegions(reader, label, { say, cancelled }) {
-    const { end } = reader, out = []; let cursor = 0;
+  async function sourceSpeechRegions(reader, label, { say, cancelled, resume = null, onProgress = null }) {
+    const { end } = reader, out = resume?.regions ? resume.regions.map(r => [...r]) : []; let cursor = resume?.cursor || 0, n = 0;
     while (cursor < end && !cancelled()) {
       let stop = Math.min(end, cursor + 24);
       say(`${label}　発話区間 ${Math.floor(100 * cursor / end)}%`);
@@ -3968,27 +4056,33 @@ async function editorScreen(el, params, revision) {
       let prev = cursor;
       for (const r of regs) { const a = Math.round(Math.max(prev, origin + r.start) * 1000) / 1000, z = Math.round(Math.min(stop, origin + r.end) * 1000) / 1000; if (z > a) prev = z; if (z - a >= .15) out.push([a, z]); }
       cursor = stop;
+      if (onProgress && ++n % 6 === 0) await onProgress({ cursor, regions: out });   // 6窓ごとに保存（中断しても続きから）
       await new Promise(r => setTimeout(r, 0));
     }
     return out;
   }
   // 例文（繰り返される発話）の1回目だけを文字起こしする。見出し語と繰り返し（2回目）は文字起こししない（全体の約1/3）。時刻は発話区間そのもの。
-  async function recogniseExampleUnits(reader, label, units, { say, cancelled }) {
-    const targets = units.filter(u => u.reads.length > 1).map(u => u.span), hints = [];
+  async function recogniseExampleUnits(reader, label, units, { say, cancelled, done = [], onHint = null }) {
+    const targets = units.filter(u => u.reads.length > 1).map(u => u.span), hints = done.map(h => ({ ...h }));
+    const finished = new Set(done.map(h => `${h.start}:${h.end}`));
     let tr = null, i = 0;
     try {
       while (i < targets.length && !cancelled()) {
+        if (finished.has(`${targets[i][0]}:${targets[i][1]}`) || ( done.some(h => h.start === targets[i][0]) )) { i++; continue; }   // 前回までに文字起こし済み
         const first = targets[i]; let j = i;
         while (j + 1 < targets.length && targets[j + 1][1] - first[0] <= 22) j++;   // 1回の読み込みに収まる例文をまとめる
         const { audio, offset } = await reader.read(first[0] - .5, targets[j][1] + .5);
         tr ||= openTranscriber('en', say, { quality: 'acc' });
         for (let k = i; k <= j && !cancelled(); k++) {
           const [a, z] = targets[k];
-          say(`${label}　例文を文字起こし ${k + 1}/${targets.length}`);
+          if (finished.has(`${a}:${z}`)) continue;
+          say(`${label}　例文を文字起こし ${k + 1}/${targets.length}（途中で中止しても、続きから再開できます）`);
           const cues = await recognisePiece(tr, audio, Math.max(0, a - .1 - offset), Math.min(audio.length / 16000, z + .1 - offset));
           const text = (cues.raw || cues.map(x => x.text).join(' ')).trim();
-          if (text) hints.push({ text, start: a, end: z });
+          hints.push({ text, start: a, end: z }); finished.add(`${a}:${z}`);
+          if (onHint && hints.length % 5 === 0) await onHint(hints);   // 5件ごとに保存
         }
+        if (onHint) await onHint(hints);
         i = j + 1;
       }
     } finally { tr?.close(); }
@@ -4000,6 +4094,16 @@ async function editorScreen(el, params, revision) {
     const { rows } = vocabInputs();
     // 台本は1行ずつ、見出し語か例文。見出し語に例文が1つ以上続く（例文は音声で2回繰り返される）
     const lines = rows.map(row => ({ row, text: row.text, kind: isVocabHead(row) ? 'head' : 'example' }));
+    // フォルダに全体スクリプトが登録されていれば、各行の全体スクリプト上の位置を求める（台本に足りない行を補うため）
+    let kfLines = null;
+    try {
+      const folder = set.folder ? await createStudioFolder(set.folder) : null, kf = folder ? await loadKfScript(folder.id) : null;
+      if (kf) {
+        kfLines = kf.lines.map(l => ({ text: l.text, kind: l.kind === 'word' ? 'head' : 'example' }));
+        const tags = tagsFor(set.order.map(id => byId[id]).filter(Boolean), kf);
+        lines.forEach(l => { const i = tags.get(l.row.id); if (i != null) l.scriptIndex = i; });
+      }
+    } catch { kfLines = null; }
     if (lines.length < 6) return toast('見出し語と例文を含むスクリプトを先に取り込んでください', 4500);
     const hintsBy = new Map();
     for (const b of set.order.map(id => byId[id]).filter(Boolean)) if (b.asr && b.text.trim() && b.segments.length === 1) { const g = b.segments[0]; if (!hintsBy.has(g.sourceId)) hintsBy.set(g.sourceId, []); hintsBy.get(g.sourceId).push({ text: b.text, start: g.start, end: g.end, id: b.id }); }
@@ -4011,7 +4115,7 @@ async function editorScreen(el, params, revision) {
     dlg.onclose = () => { cancelled = true; };
     dlg.showModal();
     const say = text => { const el = $('#saMsg', dlg); if (el?.isConnected) el.textContent = text; };
-    const found = [], notes = [], taken = new Set();
+    const found = [], notes = [], taken = new Set(), extras = [];
     const WHY = { 'weak-evidence': '文字起こしとの一致が弱く、割り当てできません', 'no-structure': '発話区間が少なく、構造が見つかりません', 'no-repeat-structure': '例文が繰り返される構造が見つかりません（この方法の対象外です）', 'no-hints': '文字起こしがありません' };
     const lock = await navigator.wakeLock?.request?.('screen').catch(() => null);
     try {
@@ -4019,7 +4123,21 @@ async function editorScreen(el, params, revision) {
         if (cancelled || revision !== routeRevision) break;
         const label = src.name || '音声';
         let reader, regions;
-        try { reader = await sourceAudioReader(src, say); regions = joinShortGaps(await sourceSpeechRegions(reader, label, { say, cancelled: () => cancelled || revision !== routeRevision })); } catch (e) { notes.push(`${src.name}: ${e?.message || e}`); continue; }
+        // 途中結果（発話区間・例文の文字起こし）は音声ごとに保存する。同じ音声なら、中断したところから続ける（台本や設定が変わっても有効）。
+        const ckKey = `sa-ckpt:${set.id}:${src.id}`, ckSig = [src.id, src.size ?? (src.blob?.size || 0), src.duration || 0].join('|');
+        let ck = await sdb.get('meta', ckKey); if (ck?.sig !== ckSig) ck = { key: ckKey, sig: ckSig, cursor: 0, regions: [], regionsDone: false, hints: [] };
+        const saveCk = () => sdb.put('meta', { ...ck, savedAt: Date.now() });
+        if (ck.regionsDone || ck.cursor || ck.hints.length) notes.push(`${label}: 前回の途中結果から続けます（発話区間 ${ck.regionsDone ? '済み' : `${Math.round(ck.cursor)}秒まで`}・例文の文字起こし ${ck.hints.length}件）`);
+        try {
+          reader = await sourceAudioReader(src, say);
+          if (ck.regionsDone) regions = ck.regions;
+          else {
+            const raw = await sourceSpeechRegions(reader, label, { say, cancelled: () => cancelled || revision !== routeRevision, resume: { cursor: ck.cursor, regions: ck.regions }, onProgress: async ({ cursor, regions: part }) => { ck.cursor = cursor; ck.regions = part; await saveCk(); } });
+            if (cancelled || revision !== routeRevision) { ck.regions = raw; await saveCk(); break; }
+            ck.regions = raw; ck.cursor = reader.end; ck.regionsDone = true; await saveCk(); regions = raw;
+          }
+          regions = joinShortGaps(regions);
+        } catch (e) { notes.push(`${src.name}: ${e?.message || e}`); continue; }
         if (cancelled) break;
         say(`${label}　台本と対応づけています…`);
         const rowsIn = lines.map(l => ({ text: l.text, kind: l.kind }));
@@ -4029,7 +4147,7 @@ async function editorScreen(el, params, revision) {
         const covered = r => r.pairs.filter(p => lines[p.row].kind === 'example').length;
         if (repeatedUnits >= 3 && (!res.ok || covered(res) < .6 * Math.min(repeatedUnits, exampleRows))) {
           try {
-            const extra = await recogniseExampleUnits(reader, label, parseUnits(regions), { say, cancelled: () => cancelled || revision !== routeRevision });
+            const extra = await recogniseExampleUnits(reader, label, parseUnits(regions), { say, cancelled: () => cancelled || revision !== routeRevision, done: ck.hints, onHint: async (all) => { ck.hints = all.map(h => ({ ...h })); await saveCk(); } });
             if (cancelled) break;
             const second = alignByStructure(rowsIn, regions, [...(hintsBy.get(src.id) || []), ...extra]);
             if (second.ok && (!res.ok || second.pairs.length >= res.pairs.length)) res = second;
@@ -4039,6 +4157,8 @@ async function editorScreen(el, params, revision) {
         if (!res.ok) { notes.push(`${src.name}: ${WHY[res.why] || '割り当てできません'}（発話 ${res.units}・繰り返し ${res.repeated}）`); continue; }
         let used = 0;
         for (const p of res.pairs) { if (taken.has(p.row)) continue; taken.add(p.row); used++; found.push({ ...p, src, line: lines[p.row] }); }
+        // 音声にはあるのに台本の行に割り当てられなかった発話: 数と種類が合えば、行の割り当て・全体スクリプトからの行の追加を提案する
+        for (const plan of planMissing(lines.map(l => ({ text: l.text, kind: l.kind, scriptIndex: l.scriptIndex })), res.pairs, res.unitList || [], kfLines)) extras.push({ ...plan, src });
         notes.push(`${src.name}: 発話 ${res.units} のうち ${used} を対応づけ（確実 ${res.supported}・補完 ${res.inferred}）`);
       }
     } finally { lock?.release?.(); if (dlg.open) { dlg.onclose = null; dlg.close(); } }
@@ -4046,22 +4166,28 @@ async function editorScreen(el, params, revision) {
     if (cancelled || revision !== routeRevision) return;
     if (!found.length) return confirmDialog({ title: '割り当てできませんでした', body: `<p>字幕は変更していません。</p><ul class="small">${notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`, okLabel: '閉じる', cancelLabel: null });
     found.sort((a, b) => a.row - b.row);
+    const extraItems = [];   // 提案のうち保存できるもの（行の割り当て・行の追加）
+    extras.forEach(x => { if (x.type !== 'unknown') x.items.forEach(it => { if (it.row != null && (lines[it.row].row.sync === 'manual' || lines[it.row].row.manual || taken.has(it.row))) return; extraItems.push({ ...it, src: x.src, after: x.after, kind: it.kind ?? lines[it.row]?.kind }); }); });
+    const unknowns = extras.filter(x => x.type === 'unknown');
+    const mm = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
     const locked = p => p.line.row.sync === 'manual' || p.line.row.manual;
     const rowsHtml = found.slice(0, 80).map((p, i) => `<div class="row wrap"><label class="grow"><input type="checkbox" data-sa="${i}" ${locked(p) ? 'disabled' : 'checked'}> ${p.line.kind === 'head' ? '【見出し語】' : ''}${esc(p.line.text)}${p.kind === 'inferred' ? '（順序から補完）' : ''}${locked(p) ? '（手動のため変更しません）' : ''}</label>
       <button type="button" class="btn sm ghost" data-sa-play="${i}">▶ ${fmt(p.segments[0].start)}${p.segments.length > 1 ? `（×${p.segments.length}）` : ''}</button></div>`).join('');
     dlg.innerHTML = `<form method="dialog" class="dlg stack"><h3>発話区間の構造で割り当て</h3>
       <ul class="small">${notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>
       <p class="small">${found.length}行${found.length > 80 ? '（先頭80行を表示。保存はすべて）' : ''}。境界は発話区間から取り、繰り返される例文は反復として保持します。聴いて確認してから保存してください。保存は1回の操作として ↶ で戻せます。</p>
-      <div class="stack" style="max-height:50vh;overflow:auto">${rowsHtml}</div>
+      <div class="stack" style="max-height:50vh;overflow:auto">${rowsHtml}${extraItems.length ? `<b class="small">台本にない発話（行の割り当て・追加の提案：${extraItems.length}件）</b><p class="small muted">前後の行と、数・種類（見出し語は1回・例文は繰り返し）が合うものだけを提案します。行の追加は、フォルダの全体スクリプトの行です。</p>${extraItems.map((it, i) => `<div class="row wrap"><label class="grow"><input type="checkbox" data-sx="${i}" checked> ${it.row != null ? '' : '【追加】'}${it.kind === 'head' ? '【見出し語】' : ''}${esc(it.row != null ? lines[it.row].text : it.text)}</label><button type="button" class="btn sm ghost" data-sx-play="${i}">▶ ${mm(it.segments[0].start)}${it.segments.length > 1 ? `（×${it.segments.length}）` : ''}</button></div>`).join('')}` : ''}${unknowns.length ? `<p class="small muted">説明できない発話：${unknowns.reduce((n, x) => n + x.items.length, 0)}件（${unknowns.slice(0, 6).map(x => mm(x.items[0].segments[0].start)).join('・')}${unknowns.length > 6 ? '…' : ''} など）。台本の行が足りないか、全体スクリプトの登録が必要です。</p>` : ''}</div>
       <div class="row end"><button class="btn ghost" value="cancel">閉じる</button><button class="btn primary" value="apply">保存（チェックした行）</button></div></form>`;
+    $$('[data-sx-play]', dlg).forEach(btn => btn.onclick = () => { const it = extraItems[Number(btn.dataset.sxPlay)]; playBlock({ segments: it.segments.map(g => ({ sourceId: it.src.id, start: g.start, end: g.end })) }); });
     $$('[data-sa-play]', dlg).forEach(btn => btn.onclick = () => { const p = found[Number(btn.dataset.saPlay)]; playBlock({ segments: p.segments.map(g => ({ sourceId: p.src.id, start: g.start, end: g.end })) }); });
     dlg.returnValue = '';
-    const chosen = await new Promise(resolve => { dlg.onclose = () => resolve(dlg.returnValue === 'apply' ? found.filter((p, i) => i >= 80 ? !locked(p) : dlg.querySelector(`[data-sa="${i}"]`)?.checked) : []); dlg.showModal(); });
+    let chosenExtras = [];
+    const chosen = await new Promise(resolve => { dlg.onclose = () => { if (dlg.returnValue === 'apply') chosenExtras = extraItems.filter((it, i) => dlg.querySelector(`[data-sx="${i}"]`)?.checked); resolve(dlg.returnValue === 'apply' ? found.filter((p, i) => i >= 80 ? !locked(p) : dlg.querySelector(`[data-sa="${i}"]`)?.checked) : []); }; dlg.showModal(); });
     if (revision !== routeRevision) return;
     ++playbackRequest; pendingSegmentSeek = null; playing = null; vid.pause();
-    if (!chosen.length) return;
+    if (!chosen.length && !chosenExtras.length) return;
     await reload();
-    const changes = [], assigned = [];
+    const changes = [], assigned = [], added = [];
     for (const p of chosen) {
       const cur = byId[p.line.row.id];
       if (!cur || cur.rev !== p.line.row.rev || cur.sync === 'manual' || cur.manual) continue;
@@ -4070,7 +4196,27 @@ async function editorScreen(el, params, revision) {
       if (segs.length > 1) { c.rep = segs.length; c.endEst = false; } else delete c.rep;
       changes.push(c); assigned.push(...segs);
     }
-    if (!changes.length) return toast('字幕が更新されたため保存できません。もう一度実行してください');
+    const withSegs = (cur, it) => {
+      const segs = it.segments.map(g => ({ sourceId: it.src.id, start: g.start, end: g.end }));
+      const c = { ...cur, segments: segs, aligned: true, sync: 'auto', align: [], lineage: { op: 'structure-assign', from: [`${cur.id}@${cur.rev}`], at: Date.now() } };
+      if (segs.length > 1) { c.rep = segs.length; c.endEst = false; } else delete c.rep;
+      assigned.push(...segs); return c;
+    };
+    const insertAfter = new Map();   // 行の id → その後ろに足す新しい行
+    for (const it of chosenExtras) {
+      if (it.row != null) {
+        const cur = byId[lines[it.row].row.id];
+        if (cur && cur.rev === lines[it.row].row.rev && cur.sync !== 'manual' && !cur.manual && !changes.some(c => c.id === cur.id)) changes.push(withSegs(cur, it));
+      } else {
+        const prev = byId[lines[it.after]?.row?.id];
+        if (!prev) continue;
+        const segs = it.segments.map(g => ({ sourceId: it.src.id, start: g.start, end: g.end }));
+        const nb = newBlock(set.id, { text: it.text, script: true, kind: it.kind === 'head' ? 'word' : 'example', segments: segs, aligned: true, sync: 'auto', cueRefs: { en: [], ja: [] }, ...(segs.length > 1 ? { rep: segs.length, endEst: false } : {}), lineage: { op: 'structure-assign', from: [], at: Date.now() } });
+        added.push(nb); assigned.push(...segs);
+        const list = insertAfter.get(prev.id) || []; list.push(nb); insertAfter.set(prev.id, list);
+      }
+    }
+    if (!changes.length && !added.length) return toast('字幕が更新されたため保存できません。もう一度実行してください');
     // 割り当てた範囲に重なる、分割されたままの文字起こし行（未編集）は片づける（残すと重なりの警告が出るため）
     const touched = new Set(changes.map(c => c.id)), drop = [];
     for (const b of set.order.map(id => byId[id]).filter(Boolean)) {
@@ -4081,8 +4227,10 @@ async function editorScreen(el, params, revision) {
       if (dur > 0 && covered >= .5 * dur) drop.push(b);
     }
     const guardedSet = { updatedAt: set.updatedAt, order: set.order.slice(), undo: (set.undo || []).slice(), redo: (set.redo || []).slice() };
-    await run('金フレ型：構造で割り当て', { blocks: [...changes, ...drop.map(b => ({ ...b, deleted: true }))], order: set.order.filter(id => !drop.some(b => b.id === id)), guardedSet });
-    toast(`${changes.length}行を割り当てました（重なっていた文字起こし ${drop.length}行を整理）。↶で戻せます`, 6000);
+    const baseOrder = [];
+    for (const id of set.order) { if (drop.some(b => b.id === id)) continue; baseOrder.push(id); for (const nb of insertAfter.get(id) || []) baseOrder.push(nb.id); }
+    if (!(await run('金フレ型：構造で割り当て', { blocks: [...changes, ...added, ...drop.map(b => ({ ...b, deleted: true }))], order: baseOrder, guardedSet }))) return;   // 失敗したときは、run がエラーの内容を表示している
+    toast(`${changes.length}行を割り当て${added.length ? `、${added.length}行を追加` : ''}しました（重なっていた文字起こし ${drop.length}行を整理）。↶で戻せます`, 6000);
   }
 
   // Virtual split: both halves refer to the same stored source and original timestamps.
@@ -4922,6 +5070,7 @@ async function cleanScreen(el) {
       <div class="row between"><span><b>どの教材にも使われていないファイル</b><br><small class="muted">${orphans.length}件・${fmtSize(orphans.reduce((a, x) => a + sz(x), 0))}</small></span><button class="btn sm" id="cOrph" ${orphans.length ? '' : 'disabled'}>削除</button></div>
       <div class="row between"><span><b>英語ラボとの重複をまとめる</b><br><small class="muted">ラボに送った音声と同じファイルを、スタジオからは外してラボの音声を使います（字幕・編集はそのまま）</small></span><button class="btn sm" id="cDup" ${dupes.length ? '' : 'disabled'}>まとめる</button></div>
       <div class="row between"><span><b>編集の履歴を整理</b><br><small class="muted">↶で戻せる操作と、保存した版に必要な分だけ残します</small></span><button class="btn sm" id="cHist">整理</button></div>
+      <div class="row between"><span><b>解析データ・キャッシュ</b><br><small class="muted">途中結果・文字起こしの保存分・候補などを、一覧から選んで一括削除（音声・字幕・手動の修正は消えません）</small></span><button class="btn sm" id="cDerived">一覧を見る</button></div>
       <div class="row between"><span><b>音声認識モデル</b><br><small class="muted">次に文字起こしするとき再ダウンロード</small></span><button class="btn sm" id="cModel" ${model.length ? '' : 'disabled'}>${fmtSize(mSize)} 削除</button></div>
     </div>
     <h2 class="sec">ファイル（大きい順）</h2>
@@ -4945,6 +5094,7 @@ async function cleanScreen(el) {
     toast(`圧縮しました：${fmtSize(before)} → ${fmtSize(r.file.size)}（${TT[r.tier].label}）`, 3000); cleanScreen(el);
   }));
   $('#cOrph', el).onclick = async () => { if (!(await confirmDialog({ title: '使われていないファイルを削除', body: `<p>${orphans.map((x) => esc(x.name)).join('<br>')}</p>`, okLabel: '削除' }))) return; for (const x of orphans) await sdb.del('sources', x.id); toast('削除しました'); cleanScreen(el); };
+  $('#cDerived', el).onclick = async () => { const m = await import('./derived-cache.js'); await m.openDerivedCacheDialog({ onDone: () => cleanScreen(el) }); };
   $('#cModel', el).onclick = async () => { for (const n of model) await caches.delete(n); toast('削除しました'); cleanScreen(el); };
   $('#cHist', el).onclick = async () => {
     const keepOps = new Set(), keepRevs = new Set();

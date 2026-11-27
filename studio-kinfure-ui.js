@@ -3,7 +3,7 @@ import { $, $$, esc, toast, confirmDialog } from './ui.js';
 import { sdb } from './studio-db.js';
 import { parseScript } from './studio-subs.js';
 import { saveKfScript, loadKfScript, cuesOfSet, applyKfRange, isScriptRow, locateRange, rangeFromNumbers } from './studio-kinfure.js';
-import { coverageReport, nameHint, groupOfLine } from './studio-kinfure-range.js';
+import { coverageReport, nameHint, groupOfLine, locateByEdges } from './studio-kinfure-range.js';
 
 function dialog(title, body, buttons) {
   const dlg = $('#dialog');
@@ -53,7 +53,7 @@ export async function kfRegisterScript({ folderId, folderName, fromSet = null })
 
 // ---------- 範囲の自動特定と確認 ----------
 // members: フォルダ内の全教材（順序つき）。targets: 今回特定する教材（省略時は全部）。
-export async function kfLocateFlow({ folderId, folderName, members, targets = members, onDone, registerFrom = null }) {
+export async function kfLocateFlow({ folderId, folderName, members, targets = members, onDone, registerFrom = null, edgeCues = null }) {
   let script = await loadKfScript(folderId);
   if (!script) {
     script = await kfRegisterScript({ folderId, folderName, fromSet: registerFrom });
@@ -67,8 +67,19 @@ export async function kfLocateFlow({ folderId, folderName, members, targets = me
     const saved = fresh.kfRange?.scriptAt === script.savedAt ? fresh.kfRange : null;
     if (!isTarget) { rows.push({ set: fresh, target: false, saved }); continue; }
     const cues = await cuesOfSet(fresh);
-    const res = locateRange(script, cues, { hint: nameHint(fresh.title) });
-    rows.push({ set: fresh, target: true, saved, cues: cues.length, res, cand: [res, ...res.alternatives].filter((c) => c.startN != null) });
+    let res = locateRange(script, cues, { hint: nameHint(fresh.title) }), by = 'cues';
+    // 文字起こしがない教材は、音声の先頭と末尾だけを文字起こしして範囲を推定する（取り込み直後でも使える）
+    if (!cues.length && edgeCues) {
+      try {
+        toast(`先頭・末尾を文字起こし中：${fresh.title}`, 60000);
+        const edge = await edgeCues(fresh);
+        const rate = script.lines.length / Math.max(1, script.groups.length);
+        const guess = locateByEdges(script, edge.head, edge.tail, { expectedLines: edge.duration ? Math.round(edge.duration / 9.5 * rate) : 0 });
+        if (guess.startLine != null && guess.endLine >= guess.startLine) { res = guess; by = 'edges'; }
+        else res = { ...res, reason: guess.reason || res.reason };
+      } catch (e) { res = { ...res, reason: '先頭・末尾の文字起こしができませんでした：' + (e?.message || e) }; }
+    }
+    rows.push({ set: fresh, target: true, saved, cues: cues.length, by, res, cand: [res, ...(res.alternatives || [])].filter((c) => c.startN != null) });
   }
   const spent = performance.now() - t0;
   const state = rows.map((r) => {
@@ -98,7 +109,8 @@ export async function kfLocateFlow({ folderId, folderName, members, targets = me
     return `<div class="stack" style="padding:8px 0;border-bottom:1px solid #aaa4" data-k="${k}">
       <label class="row"><input type="checkbox" data-ap="${k}" ${r.apply ? 'checked' : ''}> <b class="grow">${esc(r.set.title)}</b></label>
       <div class="small ${level === 'high' ? '' : 'warn-text'}" id="kfL${k}"></div>
-      ${r.cues ? '' : '<div class="small warn-text">文字起こしがありません。先に「文字起こし」を実行するか、番号を手で入れてください。</div>'}
+      ${r.cues || r.by === 'edges' ? '' : `<div class="small warn-text">文字起こしがありません。${esc(res.reason || '')} 番号を手で入れてください。</div>`}
+      ${r.by === 'edges' ? '<div class="small muted">音声の先頭・末尾の文字起こしから推定しました（全体の文字起こしは不要）。先頭と末尾の番号を確認してください。</div>' : ''}
       ${r.cand?.length > 1 ? `<label class="field"><span>候補（${r.cand.length}件）</span><select data-pick="${k}">${r.cand.map((c, i) => `<option value="${i}">${i ? `候補${i + 1}` : '推定'}：No.${c.startN}〜${c.endN}（${c.lines}行）</option>`).join('')}<option value="m">手動</option></select></label>` : ''}
       <div class="row"><label class="field grow"><span>開始番号</span><input type="number" inputmode="numeric" data-a="${k}" value="${r.a}"></label>
         <label class="field grow"><span>終了番号</span><input type="number" inputmode="numeric" data-b="${k}" value="${r.b}"></label></div>

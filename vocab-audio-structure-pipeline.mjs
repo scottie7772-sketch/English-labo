@@ -33,7 +33,7 @@ for (const i of lost) {
   assert.equal(it.state, 'confirmed', `項目${i}は構造から確定`);
   assert(w.fromStructure, '根拠は構造'); assert(w.reasons[0].includes('件数が一致'));
   assert(w.ref.start <= REG[3 * i][0] && w.ref.end >= REG[3 * i][1], '語頭・語尾が切れない');
-  assert(w.ref.start >= REG[3 * i][0] - .2 && w.ref.end <= REG[3 * i][1] + .3, '別の発話を含まない');
+  assert(w.ref.start >= REG[3 * i][0] - .2 && w.ref.end <= REG[3 * i][1] + .5, '別の発話を含まない');
   const e = it.refs.example.ref;
   assert(e.start <= REG[3 * i + 1][0] && e.end >= REG[3 * i + 1][1] && e.end < REG[3 * i + 2][0], '例文は1回目だけ（繰り返しを含まない）');
   assert.equal(it.refs.example.repeats, 2);

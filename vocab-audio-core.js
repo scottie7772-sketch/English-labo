@@ -422,7 +422,8 @@ export function recheckItems(items, ctx = {}) {
     const cues = free.filter(e => e.sourceKey === source && e.start >= lo && e.end <= hi).sort((a, b) => a.start - b.start);
     const regs = regionsFor(ctx, source);
     // 項目×音声の一致度
-    const M = gap.map(it => cues.map(c => ({ ...matchCue(it.head, c), standalone: standaloneOf(it)(c) })));
+    // 金フレ型・単語型では、例文の中に見出し語がある発話（「Let's try anyway.」の anyway）は、見出し語の発話ではない（例文の音声）。見出し語の確定には使わない
+    const M = gap.map(it => cues.map(c => { const x = matchCue(it.head, c), inSentence = (it.profile === 'kinfure' || it.profile === 'wordlist') && kind === 'word' && /^文中/.test(x.why || ''); return { ...x, standalone: standaloneOf(it)(c) && !inSentence }; }));
     // 順序を保つ割り当て（DP）: 一致度0.6以上の組だけ。1つの音声は1項目まで。項目の順序と音声の時間順が一致する。
     const n = gap.length, m = cues.length, dp = Array.from({ length: n + 1 }, () => new Float64Array(m + 1)), how = Array.from({ length: n + 1 }, () => new Int8Array(m + 1));
     for (let a = 1; a <= n; a++) for (let c = 1; c <= m; c++) {
@@ -481,6 +482,118 @@ export function recheckItems(items, ctx = {}) {
     i = j;
   }
   return result;
+}
+// ================= 5a. 構造からの救済（見出し語 → 例文 → 例文の繰り返し → 無音） =================
+// 文字起こしが見出し語を拾えなくても、確定済みの前後の見出し語（錨）にはさまれたギャップを「発話区間の並び」から数えて対応づける。
+// 固定の秒数や件数には依存しない。区間の長さの相似（例文の繰り返し）と、ギャップ内の項目数と区間の組数の一致だけを使う。
+// 組数が合わない・複数の読み方が成り立つ場合は何も確定しない（候補どまり）。
+const rdur = r => r[1] - r[0];
+const similarDur = (a, b, tol = .25) => Math.abs(rdur(a) - rdur(b)) <= tol * Math.max(rdur(a), rdur(b));
+// 発話区間を「見出し語＋例文（＋同じ長さの繰り返し）」の組に分ける。繰り返しが欠けても、次の組で元に戻る（1組ずつ貪欲に読む）。
+export function parseEntryGroups(regs, { tol = .25 } = {}) {
+  const out = [];
+  for (let i = 0; i < regs.length;) {
+    if (i + 1 >= regs.length) { out.push({ head: regs[i], example: null, repeat: null, partial: true }); break; }
+    const trip = i + 2 < regs.length && similarDur(regs[i + 1], regs[i + 2], tol);
+    out.push({ head: regs[i], example: regs[i + 1], repeat: trip ? regs[i + 2] : null });
+    i += trip ? 3 : 2;
+  }
+  return out;
+}
+// 区間 regs（錨と錨のあいだ）を n 組に読む。先頭に前の項目の例文・繰り返しが残っていることがあるので、先頭の0〜2区間を読み飛ばす読み方を試し、成り立つ読み方が1つだけのときに採る。
+export function readGap(regs, n, { prevExample = null, hasPrev = true } = {}) {
+  const fits = [];
+  for (const lead of hasPrev ? [0, 1, 2] : [0]) {
+    if (lead > regs.length) break;
+    if (lead && prevExample && lead > 1) continue;                                           // 前の例文が確定している: 残りは繰り返しの1区間だけ
+    if (lead === 1 && prevExample && !similarDur(regs[0], prevExample)) continue;           // 繰り返しなら、前の例文と同じ長さ
+    if (lead === 2 && !similarDur(regs[0], regs[1])) continue;                              // 例文＋繰り返しなら、2つは同じ長さ
+    const g = parseEntryGroups(regs.slice(lead));
+    // 組はすべて「繰り返しあり」か、すべて「繰り返しなし」のどちらか。混ざる読み方は、区間の欠落や雑音で組がずれている疑いがあるので採らない。
+    // 繰り返しなしの組なのに、見出し語と例文が同じ長さ = 前の項目の「例文と繰り返し」を見出し語と例文に読んでいる疑いも採らない
+    const tr = g.filter(x => x.repeat).length;
+    if (g.length === n && !g.some(x => x.partial) && (tr === 0 || tr === n) && !g.some(x => !x.repeat && similarDur(x.head, x.example))) fits.push({ lead, groups: g, triples: g.filter(x => x.repeat).length });
+  }
+  if (!fits.length) return { ok: false, why: 'count-mismatch', fits: 0 };
+  fits.sort((a, b) => b.triples - a.triples || a.lead - b.lead);
+  if (fits.length > 1 && fits[0].triples === fits[1].triples) return { ok: false, why: 'ambiguous', fits: fits.length };
+  return { ok: true, ...fits[0], fits: fits.length };
+}
+// 発話区間の前後に余白を足す（語頭・語尾が切れないように）。余白は隣の発話までの無音の半分まで。
+// 発話区間の検出は語尾の小さい音を落としやすい（実音声で終わりが 0.05〜0.27 秒早かった）ので、語尾は語頭より広く取る。
+const padRange = (r, before, after) => {
+  const gb = before == null ? .2 : Math.max(0, r[0] - before), ga = after == null ? .6 : Math.max(0, after - r[1]);
+  return { start: round(Math.max(0, r[0] - Math.min(.08, gb / 2))), end: round(r[1] + Math.min(.3, ga / 2)) };
+};
+// 文の途中の短い息継ぎで1つの発話が2つの区間に割れることがある。無音の中央値（組と組のあいだ・見出し語と例文のあいだ）より十分短い切れ目だけをつなぐ。
+export function joinShortGaps(regs) {
+  if (regs.length < 6) return regs;
+  const gaps = regs.slice(1).map((r, i) => r[0] - regs[i][1]).sort((a, b) => a - b);
+  const lim = Math.min(.45, Math.max(.15, .4 * gaps[Math.floor(gaps.length / 2)]));
+  const out = [[...regs[0]]];
+  for (const r of regs.slice(1)) { if (r[0] - out.at(-1)[1] < lim) out.at(-1)[1] = r[1]; else out.push([...r]); }
+  return out;
+}
+export function structureRescue(items, ctx = {}) {
+  const { evidence = [], mode = 'head' } = ctx, out = [];
+  if (mode === 'sentence') return out;
+  const sk = ref => (ref.src.store === 'studio' ? 'src:' : 'vblobs:') + ref.src.key;
+  const head = it => it.refs.word, isHigh = ri => ri?.tier === 'high' && ri.ref.state === 'confirmed';
+  const anchorOf = it => {
+    const w = head(it), e = it.refs.example;
+    if (!isHigh(w)) return null;
+    const ex = isHigh(e) && sk(e.ref) === sk(w.ref) && e.ref.start >= w.ref.start ? e.ref : null;
+    return { sourceKey: sk(w.ref), src: w.ref.src, start: w.ref.start, end: ex ? ex.end : w.ref.end, example: ex ? [ex.start, ex.end] : null };
+  };
+  const anchors = items.map(anchorOf);
+  for (let i = 0; i < items.length;) {
+    if (anchors[i] || items[i].profile !== 'kinfure' || items[i].refs.word?.manualConfirmed) { i++; continue; }
+    let j = i; while (j < items.length && !anchors[j] && items[j].profile === 'kinfure') j++;
+    const gap = items.slice(i, j), prev = i > 0 ? anchors[i - 1] : null, next = j < items.length ? anchors[j] : null;
+    const source = prev?.sourceKey ?? next?.sourceKey;
+    const regsAll = source ? regionsFor(ctx, source) : null;
+    if (!regsAll?.length || (prev && next && prev.sourceKey !== next.sourceKey)) { out.push(...gap.map(it => ({ key: it.key, outcome: 'none', why: !regsAll?.length ? 'no-regions' : 'sources-differ' }))); i = j; continue; }
+    const lo = prev ? prev.end - .02 : 0, hi = next ? next.start + .02 : Infinity;
+    let regs = joinShortGaps(regsAll.filter(r => r[0] >= lo && r[1] <= hi));
+    const bounded = Boolean(next);
+    const src = (prev || next).src;
+    const rd = readGap(regs, gap.length, { prevExample: prev?.example || null, hasPrev: Boolean(prev) });
+    const srcInfo = { store: src.store, key: src.key, size: src.size };
+    const conflicts = (it, g) => evidence.some(e => e.sourceKey === source && Math.min(e.end, g.head[1]) - Math.max(e.start, g.head[0]) > .1 && items.some(o => o !== it && o.profile === 'kinfure' && matchCue(o.head, e).score >= .85) && matchCue(it.head, e).score < .5);
+    if (rd.ok && bounded) {
+      // 前後が確定した見出し語で、件数が一致: 順序のとおりに対応づけて確定する
+      const leadRegs = rd.lead ? regs.slice(0, rd.lead) : [];
+      gap.forEach((it, k) => {
+        const g = rd.groups[k], before = k ? (rd.groups[k - 1].repeat || rd.groups[k - 1].example)[1] : (leadRegs.at(-1)?.[1] ?? prev?.end ?? null);
+        const after = k + 1 < gap.length ? rd.groups[k + 1].head[0] : next?.start ?? null;
+        if (conflicts(it, g)) { out.push({ key: it.key, outcome: 'conflict' }); return; }
+        const hr = padRange(g.head, before, g.example[0]), er = padRange(g.example, g.head[1], g.repeat ? g.repeat[0] : after);
+        const origin = { ...(ctx.origin || {}), text: it.head, ...(it.rows.word ? { itemId: it.rows.word } : {}) };
+        it.refs.word = { ref: makeRef({ ...srcInfo, ...hr, limit: null, origin, state: 'confirmed' }), rowId: it.rows.word, tier: 'high', score: .76, reasons: ['無音区間と発話順序から特定（前後の確定した見出し語と件数が一致）'], repeats: 1, kind: 'word', fromStructure: true };
+        if (it.example && !isHigh(it.refs.example) && !it.refs.example?.manualConfirmed) {
+          const eo = { ...(ctx.origin || {}), text: it.example, ...(it.rows.example ? { itemId: it.rows.example } : {}) };
+          it.refs.example = { ref: makeRef({ ...srcInfo, ...er, limit: null, origin: eo, state: 'confirmed' }), rowId: it.rows.example, tier: 'high', score: .74, reasons: ['無音区間と発話順序から特定（繰り返しの1回目）'], repeats: g.repeat ? 2 : 1, kind: 'example', fromStructure: true };
+        }
+        it.structure = { group: k, repeat: Boolean(g.repeat), lead: rd.lead, head: g.head.map(round), example: g.example.map(round), repeatRegion: g.repeat ? g.repeat.map(round) : null };
+        it.candidates = [];
+        it.state = deriveState(it, mode);
+        out.push({ key: it.key, outcome: 'structure', group: k });
+      });
+    } else {
+      // 確定しない: 前の確定語から順に読める範囲を候補にするだけ（人が試聴して選ぶ）
+      const g = parseEntryGroups(regs.slice(prev?.example && regs[0] && similarDur(regs[0], prev.example) ? 1 : 0)).filter(x => !x.partial);
+      gap.forEach((it, k) => {
+        out.push({ key: it.key, outcome: 'none', why: rd.why || 'open-ended' });
+        const x = g[k];
+        if (!x || !prev || next) return;
+        const r = padRange(x.head, k ? (g[k - 1].repeat || g[k - 1].example)[1] : prev.end, x.example?.[0] ?? null);
+        it.candidates = [...(it.candidates || []).filter(c => c.source !== 'structure'), { start: r.start, end: r.end, score: .5, source: 'structure', est: false, why: '発話の並びから推定（確定ではありません）', text: it.head, src: srcInfo, sourceKey: source, textScore: 0 }];
+        it.state = deriveState(it, mode);
+      });
+    }
+    i = j;
+  }
+  return out;
 }
 // ================= 5b. 人が確定する（候補の選択・開始終了の修正） =================
 // 手で確定した参照は ref.manual = true。自動の再照合・再登録・差し替えで上書きしない。

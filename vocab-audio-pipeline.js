@@ -5,7 +5,7 @@
 //  - 手で確定した参照・登録済みの印は、再実行・再照合・再登録で上書きしない。
 //  - 自動で走らない: すべて人が開始した操作の中だけで動く。長い段階は分割し、中断の確認を挟む。
 import { db, getSetting, setSetting } from './db.js';
-import { detectProfile, extractItems, gradeItems, recheckItems, refineRefs, summarize, deriveState, carryOver, confirmRef, clearRef, toRegistration, PROFILES, MODES, keyOf } from './vocab-audio-core.js';
+import { detectProfile, extractItems, gradeItems, recheckItems, structureRescue, refineRefs, summarize, deriveState, carryOver, confirmRef, clearRef, toRegistration, PROFILES, MODES, keyOf } from './vocab-audio-core.js';
 import { planAudioWords, applyAudioWords, refBytes } from './audio-refs.js';
 
 export const recordKey = (kind, id) => `wap:${kind}:${id}`;
@@ -43,6 +43,18 @@ export function regionWindows(items, { all = false, pad = 1.5, maxLen = 40, mode
     spans.push({ sourceKey: srcKey(ri.ref), src: ri.ref.src, start: Math.max(0, ri.ref.start - pad), end: ri.ref.end + pad });
     for (const c of it.candidates || []) if (c.src) spans.push({ sourceKey: c.sourceKey || srcKey({ src: c.src }), src: c.src, start: Math.max(0, c.start - pad), end: c.end + pad });
   }
+  // 見出し語の音声がまだ見つかっていない項目（文字起こしが拾えなかった）は、前後の確定した見出し語のあいだ全体の切れ目を調べる（構造からの救済に使う）
+  if (mode !== 'sentence') {
+    const hi = ri => ri?.tier === 'high' && ri.ref.state === 'confirmed';
+    for (let i = 0; i < items.length; i++) {
+      if (hi(items[i].refs.word) || items[i].profile !== 'kinfure') continue;
+      let j = i; while (j < items.length && !hi(items[j].refs.word) && items[j].profile === 'kinfure') j++;
+      const p = items[i - 1]?.refs.word, n = items[j]?.refs.word;
+      if (hi(p) && hi(n) && srcKey(p.ref) === srcKey(n.ref) && n.ref.start > p.ref.end) spans.push({ sourceKey: srcKey(p.ref), src: p.ref.src, start: Math.max(0, p.ref.end - .1), end: n.ref.start + .1, gap: true });
+      else if (hi(p)) spans.push({ sourceKey: srcKey(p.ref), src: p.ref.src, start: Math.max(0, p.ref.end - .1), end: p.ref.end + Math.min(40, 6 * (j - i)), gap: true });
+      i = j;
+    }
+  }
   const bySource = new Map();
   for (const s of spans) { if (!bySource.has(s.sourceKey)) bySource.set(s.sourceKey, { src: s.src, list: [] }); bySource.get(s.sourceKey).list.push(s); }
   const out = [];
@@ -50,8 +62,8 @@ export function regionWindows(items, { all = false, pad = 1.5, maxLen = 40, mode
     list.sort((a, b) => a.start - b.start);
     let cur = null;
     for (const s of list) {
-      if (cur && s.start <= cur.end + 2 && s.end - cur.start <= maxLen) cur.end = Math.max(cur.end, s.end);
-      else { if (cur) out.push(cur); cur = { sourceKey, src, start: s.start, end: s.end }; }
+      if (cur && s.start <= cur.end + 2 && s.end - cur.start <= ((s.gap || cur.gap) ? 80 : maxLen)) { cur.end = Math.max(cur.end, s.end); cur.gap ||= s.gap; }   // 構造の救済は、区間が窓の境目で切れないよう長めに取る（窓の上限90秒に収まる80秒まで）
+      else { if (cur) out.push(cur); cur = { sourceKey, src, start: s.start, end: s.end, ...(s.gap ? { gap: true } : {}) }; }
     }
     if (cur) out.push(cur);
   }
@@ -121,6 +133,8 @@ export async function runPipeline(target, options = {}, hooks = {}) {
   step('recheck');
   if (regions.size) { gradeItems(items, m.rows, { evidence: m.evidence, regions }); for (const it of items) if (!it.registeredId) it.state = deriveState(it, opts.mode); }   // 発話の境界が分かれば、欠け・混入も判定に入れる
   recheckItems(items, { evidence: m.evidence, regions: regions.size ? regions : null, mode: opts.mode, origin: { from: m.kind, materialId: m.id, title: m.title }, now: Date.now() });
+  // 4 構造からの救済（金フレ型）: 文字起こしが見出し語を拾えなかった項目を、確定済みの前後の見出し語と発話区間の並びから特定する。前後が確定していて件数が合うときだけ確定
+  if (regions.size) rec.structure = structureRescue(items, { evidence: m.evidence, regions, mode: opts.mode, origin: { from: m.kind, materialId: m.id, title: m.title } }).filter(r => r.outcome !== 'none' || r.why !== 'no-regions');
   if (regions.size) refineRefs(items, regions, { mode: opts.mode });
   for (const it of items) if (!it.registeredId) it.state = deriveState(it, opts.mode);
   rec.items = items;
@@ -207,3 +221,29 @@ export async function runMany(targets, options = {}, hooks = {}) {
   return out;
 }
 export { PROFILES, MODES };
+
+// ---- 診断データ（JSON）: 実機で何が起きたかを、あとから突き合わせられるようにする。音声そのものは含まない（時刻・文字列・判定だけ）。 ----
+// 認識文字列と時刻（evidence）、発話区間、項目ごとの割り当て先・確信度・根拠・候補・構造からの救済の結果をまとめる。
+export async function buildDiagnostics(kind, id, { maxEvidence = 20000 } = {}) {
+  const rec = await loadRecord(kind, id);
+  if (!rec) throw new Error('まだ処理されていません。先に「音声付き単語帳を作成」を実行してください');
+  const m = await loadMaterial(kind, id);
+  const r3 = (t) => Math.round(t * 1000) / 1000;
+  const refOut = (ri) => ri ? { source: ri.ref.src.key, store: ri.ref.src.store, start: r3(ri.ref.start), end: r3(ri.ref.end), state: ri.ref.state, tier: ri.tier, score: ri.score, reasons: ri.reasons, manual: Boolean(ri.manualConfirmed || ri.ref.manual), fromStructure: Boolean(ri.fromStructure), fromRecheck: Boolean(ri.fromRecheck), repeats: ri.repeats ?? null, snapped: Boolean(ri.ref.snapped), orig: ri.ref.orig || null } : null;
+  const ev = (m.evidence || []).slice(0, maxEvidence);
+  return {
+    format: 'englabo-vocab-audio-diagnostics', v: 1, createdAt: new Date().toISOString(),
+    material: { kind, id, title: rec.title }, profile: rec.profile, profileAuto: rec.detect?.auto ?? null, profileScores: rec.detect?.scores || null, mode: rec.mode,
+    summary: summarize(rec.items, rec.mode),
+    regions: Object.fromEntries(Object.entries(rec.regions || {}).map(([k, v]) => [k, v.map(([a, z]) => [r3(a), r3(z)])])),
+    evidence: ev.map(e => ({ id: e.id, text: e.text, start: r3(e.start), end: r3(e.end), source: e.key, store: e.store, wordTimings: Array.isArray(e.wordTimings) ? e.wordTimings.length : 0 })),
+    evidenceTruncated: (m.evidence || []).length > ev.length,
+    structure: rec.structure || [],
+    items: rec.items.map(it => ({
+      order: it.order, head: it.head, example: it.example, state: it.state, registered: Boolean(it.registeredId), issues: it.issues,
+      word: refOut(it.refs.word), exampleRef: refOut(it.refs.example), sentence: refOut(it.refs.sentence),
+      candidates: (it.candidates || []).map(c => ({ start: c.start, end: c.end, score: c.score, source: c.source, est: Boolean(c.est), text: c.text || null, why: c.why || null })),
+      recheck: it.recheck || null, structure: it.structure || null,
+    })),
+  };
+}

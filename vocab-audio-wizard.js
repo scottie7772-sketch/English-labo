@@ -2,7 +2,7 @@
 // 通常の操作は「教材を選ぶ → 開始 → 確認 → 登録」だけ。認識の精度・照合の順序・アルゴリズムは選ばせない（内部で自動）。
 // 教材タイプ・単語リスト・境界の調整などは「詳細設定」に置く。既存の手動編集機能（スタジオの編集・音声を割当）はそのまま使える。
 import { db } from './db.js';
-import { runPipeline, runMany, loadRecord, markBroken, reviewConfirm, reviewClear, registerRecord, planRegistration, parseWordList, loadMaterial, PROFILES, MODES } from './vocab-audio-pipeline.js';
+import { runPipeline, runMany, loadRecord, markBroken, reviewConfirm, reviewClear, registerRecord, planRegistration, buildDiagnostics, parseWordList, loadMaterial, PROFILES, MODES } from './vocab-audio-pipeline.js';
 import { STATE } from './vocab-audio-core.js';
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -210,7 +210,8 @@ async function reviewOnce(kind, id) {
       <div class="vw-list stack">${shownItems.slice(0, shown).map(rowHTML).join('') || '<p class="small muted">該当する語はありません</p>'}${shownItems.length > shown ? `<button type="button" class="btn sm ghost" data-more>さらに表示（残り${shownItems.length - shown}）</button>` : ''}</div>
       <div class="vw-foot stack small"><div id="vwPlan" class="muted">登録の見込みを計算しています…</div>
         <label class="chk"><input type="checkbox" id="vwPartial"> 音声が未確定の語も登録する（音声は後から追加できます）</label>
-        <div class="jp-grid"><button type="button" class="btn sm primary" data-register>確定した音声を登録</button><button type="button" class="btn sm" data-again>未確定だけ再処理</button></div></div></form>`;
+        <div class="jp-grid"><button type="button" class="btn sm primary" data-register>確定した音声を登録</button><button type="button" class="btn sm" data-again>未確定だけ再処理</button></div>
+        <details class="small"><summary class="muted">詳細</summary><button type="button" class="btn sm ghost" data-diag>診断データ（JSON）を書き出す</button><p class="muted small">認識文字列・時刻・発話区間・割り当て先・確信度をまとめます。音声は含みません。精度の確認用です。</p></details></div></form>`;
     const list = dlg.querySelector('.vw-list'); if (list) list.scrollTop = keep;
     planText().then(t => { const el = dlg.querySelector('#vwPlan'); if (el) el.innerHTML = t; });
   }
@@ -245,6 +246,13 @@ async function reviewOnce(kind, id) {
         rec = await loadRecord(kind, id);
         toast(`新規 ${x.added}語・既存の語に音声を追加 ${x.updated}語（追加容量 約${fmtSize(x.bytes)}・音声は複製しません）`, 6000);
         return draw();
+      }
+      if (d.diag != null) {
+        const text = JSON.stringify(await buildDiagnostics(kind, id)), name = `vocab-audio-diagnostics-${String(rec.title || id).replace(/[^\w\u3040-\u30ff\u4e00-\u9fff-]+/g, '_').slice(0, 40)}.json`;
+        const file = new File([text], name, { type: 'application/json' });
+        if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (error) { if (error?.name === 'AbortError') return; } }
+        const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        toast('診断データを書き出しました（音声は含まれません）'); return;
       }
       if (d.again != null) return finish('again');
     } catch (error) { toast(error.message, 5000); }

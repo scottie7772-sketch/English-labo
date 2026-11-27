@@ -27,7 +27,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.28';
+export const STUDIO_VERSION = '0.21.29';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo

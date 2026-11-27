@@ -521,7 +521,7 @@ export function readGap(regs, n, { prevExample = null, hasPrev = true } = {}) {
 }
 // 発話区間の前後に余白を足す（語頭・語尾が切れないように）。余白は隣の発話までの無音の半分まで。
 // 発話区間の検出は語尾の小さい音を落としやすい（実音声で終わりが 0.05〜0.27 秒早かった）ので、語尾は語頭より広く取る。
-const padRange = (r, before, after) => {
+export const padRange = (r, before, after) => {
   const gb = before == null ? .2 : Math.max(0, r[0] - before), ga = after == null ? .6 : Math.max(0, after - r[1]);
   return { start: round(Math.max(0, r[0] - Math.min(.08, gb / 2))), end: round(r[1] + Math.min(.3, ga / 2)) };
 };

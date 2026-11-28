@@ -32,7 +32,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.38';
+export const STUDIO_VERSION = '0.21.39';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -4063,8 +4063,8 @@ async function editorScreen(el, params, revision) {
     return out;
   }
   // 例文（繰り返される発話）の1回目だけを文字起こしする。見出し語と繰り返し（2回目）は文字起こししない（全体の約1/3）。時刻は発話区間そのもの。
-  async function recogniseExampleUnits(reader, label, units, { say, cancelled, done = [], onHint = null }) {
-    const targets = units.filter(u => u.reads.length > 1).map(u => u.span), hints = done.map(h => ({ ...h }));
+  async function recogniseExampleUnits(reader, label, targets, { say, cancelled, done = [], onHint = null, stage = '' }) {
+    const hints = done.map(h => ({ ...h }));
     const finished = new Set(done.map(h => `${h.start}:${h.end}`));
     let tr = null, i = 0;
     try {
@@ -4077,7 +4077,7 @@ async function editorScreen(el, params, revision) {
         for (let k = i; k <= j && !cancelled(); k++) {
           const [a, z] = targets[k];
           if (finished.has(`${a}:${z}`)) continue;
-          say(`${label}　例文を文字起こし ${k + 1}/${targets.length}（途中で中止しても、続きから再開できます）`);
+          say(`${label}　例文を文字起こし ${stage}${k + 1}/${targets.length}（途中で中止しても、続きから再開できます）`);
           const cues = await recognisePiece(tr, audio, Math.max(0, a - .1 - offset), Math.min(audio.length / 16000, z + .1 - offset));
           const text = (cues.raw || cues.map(x => x.text).join(' ')).trim();
           hints.push({ text, start: a, end: z }); finished.add(`${a}:${z}`);
@@ -4142,19 +4142,33 @@ async function editorScreen(el, params, revision) {
         if (cancelled) break;
         say(`${label}　台本と対応づけています…`);
         const rowsIn = lines.map(l => ({ text: l.text, kind: l.kind }));
-        // まず既存の文字起こし（速い）。例文の半分以上を対応づけられなければ、例文だけを文字起こしして（約1/3の量）やり直す
-        let res = alignByStructure(rowsIn, regions, hintsBy.get(src.id) || []);
-        const exampleRows = lines.filter(l => l.kind === 'example').length, repeatedUnits = res.repeated || 0;
-        const covered = r => r.pairs.filter(p => lines[p.row].kind === 'example').length;
-        if (repeatedUnits >= 3 && (!res.ok || covered(res) < .6 * Math.min(repeatedUnits, exampleRows))) {
+        // まず既存の文字起こし（速い）。足りなければ、例文の一部だけを文字起こしして照合する。確実な組にはさまれた連続は、順序から補える（発話の構造が決まっているので）。
+        // 例文の3つに1つ → まだ対応づかない所だけ2つに1つ → 残りすべて、の順に、足りるところで止める。
+        let allHints = [...(hintsBy.get(src.id) || []), ...ck.hints];
+        let res = alignByStructure(rowsIn, regions, allHints);
+        const exampleRows = lines.filter(l => l.kind === 'example').length;
+        const unitsAll = parseUnits(regions), repUnits = unitsAll.map((u, i) => ({ i, span: u.span, reads: u.reads.length })).filter(x => x.reads > 1);   // 繰り返される発話（例文）
+        const coveredOf = r => new Set(r.pairs.map(p => p.unit));
+        const enough = r => r.ok && repUnits.filter(x => coveredOf(r).has(x.i)).length >= .85 * Math.min(repUnits.length, exampleRows);
+        const done = new Set(allHints.map(h => `${h.start}:${h.end}`));
+        const stages = [['第1段階 ', 3], ['第2段階 ', 2], ['最終段階 ', 1]];
+        let transcribed = 0;
+        for (const [stage, every] of stages) {
+          if (repUnits.length < 3 || enough(res) || cancelled) break;
+          const left = repUnits.filter(x => !(res.ok && coveredOf(res).has(x.i)) && !done.has(`${x.span[0]}:${x.span[1]}`));
+          const pick = left.filter((_, k) => k % every === 0).map(x => x.span);
+          if (!pick.length) continue;
           try {
-            const extra = await recogniseExampleUnits(reader, label, parseUnits(regions), { say, cancelled: () => cancelled || revision !== routeRevision, done: ck.hints, onHint: async (all) => { ck.hints = all.map(h => ({ ...h })); await saveCk(); } });
+            const extra = await recogniseExampleUnits(reader, label, pick, { say, stage, cancelled: () => cancelled || revision !== routeRevision, done: ck.hints, onHint: async (all) => { ck.hints = all.map(h => ({ ...h })); await saveCk(); } });
             if (cancelled) break;
-            const second = alignByStructure(rowsIn, regions, [...(hintsBy.get(src.id) || []), ...extra]);
-            if (second.ok && (!res.ok || second.pairs.length >= res.pairs.length)) res = second;
-            notes.push(`${label}: 例文 ${extra.length} 件を文字起こしして照合しました`);
-          } catch (e) { notes.push(`${label}: 例文の文字起こしを実行できませんでした（${e?.message || e}）`); }
+            transcribed += pick.length;
+            allHints = [...(hintsBy.get(src.id) || []), ...extra];
+            for (const h of extra) done.add(`${h.start}:${h.end}`);
+            const next = alignByStructure(rowsIn, regions, allHints);
+            if (next.ok && (!res.ok || next.pairs.length >= res.pairs.length)) res = next;
+          } catch (e) { notes.push(`${label}: 例文の文字起こしを実行できませんでした（${e?.message || e}）`); break; }
         }
+        if (transcribed) notes.push(`${label}: 例文 ${transcribed} 件を文字起こしして照合しました（全体の ${repUnits.length ? Math.round(100 * (done.size) / repUnits.length) : 0}%）`);
         if (!res.ok) { notes.push(`${src.name}: ${WHY[res.why] || '割り当てできません'}（発話 ${res.units}・繰り返し ${res.repeated}）`); continue; }
         let used = 0;
         for (const p of res.pairs) { if (taken.has(p.row)) continue; taken.add(p.row); used++; found.push({ ...p, src, line: lines[p.row] }); }
@@ -4168,7 +4182,7 @@ async function editorScreen(el, params, revision) {
     if (!found.length) return confirmDialog({ title: '割り当てできませんでした', body: `<p>字幕は変更していません。</p><ul class="small">${notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`, okLabel: '閉じる', cancelLabel: null });
     found.sort((a, b) => a.row - b.row);
     // 確実度: 文字起こしの一致が強く（一致度0.6以上）、隣り合う行と区別できるものは「確実」。順序から補ったもの・弱い手がかりのもの・行の追加は「要確認」。
-    const isHigh = p => p.kind === 'supported' && p.sim >= .6;
+    const isHigh = p => (p.kind === 'supported' && p.sim >= .6) || (p.kind === 'inferred' && (p.runLen || 1) <= 4);   // 確実な組にはさまれ、行も発話も連続し、種類が合う短い連続は確実とみなす
     const extraItems = [];   // 提案のうち保存できるもの（行の割り当て・行の追加）
     extras.forEach(x => { if (x.type !== 'unknown') x.items.forEach(it => { if (it.row != null && (lines[it.row].row.sync === 'manual' || lines[it.row].row.manual || taken.has(it.row))) return; extraItems.push({ ...it, src: x.src, after: x.after, before: x.before, kind: it.kind ?? lines[it.row]?.kind }); }); });
     const unknowns = extras.filter(x => x.type === 'unknown');

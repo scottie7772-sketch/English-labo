@@ -46,7 +46,7 @@ export const similarityOf = (text, bag) => recall(content(text), bag);
 // 見出し語は1回、例文は繰り返し（2回以上）という構造に合うかの、小さな加点・減点
 const prior = (row, unit) => (row.kind === 'head') === (unit.reads.length === 1) ? .3 : (row.kind === 'head' ? -.8 : -.3);
 
-export function alignByStructure(rows, regions, hints = [], { slack = .15, minSupport = .45, gap = .6, minSupported = 3, minShare = .25, tol = .05 } = {}) {
+export function alignByStructure(rows, regions, hints = [], { slack = .15, minSupport = .45, gap = .6, minSupported = 3, minShare = .25, tol = .05, maxRun = 6 } = {}) {
   const units = parseUnits(joinShortGaps(regions || []), { tol });
   const M = rows.length, K = units.length, out = { ok: false, why: '', units: K, rows: M, pairs: [], supported: 0, inferred: 0, repeated: units.filter(u => u.reads.length > 1).length };
   if (!M || K < 3) { out.why = 'no-structure'; return out; }
@@ -88,13 +88,24 @@ export function alignByStructure(rows, regions, hints = [], { slack = .15, minSu
     const a = pairs[k - 1], b = pairs[k + 1];
     if (a && b && a.kind === 'supported' && b.kind === 'supported' && a.row + 1 === p.row && p.row + 1 === b.row && a.unit + 1 === p.unit && p.unit + 1 === b.unit) p.kind = 'inferred';
   });
+  // 手がかりの薄い組が続くとき（文字起こしを間引いたとき）: 「確実」な組にはさまれ、行も発話も隙間なく連続し、すべて種類（見出し語は1回・例文は繰り返し）が合うなら、順序から補う。
+  // 途中に台本の欠けや余分な発話があれば、DPが間を飛ばすので連続にならず、補わない。長さは maxRun まで。
+  const contiguous = (a, b) => a.row + 1 === b.row && a.unit + 1 === b.unit;
+  for (let k = 0; k < pairs.length;) {
+    if (pairs[k].kind !== 'weak') { k++; continue; }
+    let e = k; while (e + 1 < pairs.length && pairs[e + 1].kind === 'weak' && contiguous(pairs[e], pairs[e + 1])) e++;
+    const run = pairs.slice(k, e + 1), a = pairs[k - 1], b = pairs[e + 1];
+    if (a?.kind === 'supported' && b?.kind === 'supported' && contiguous(a, run[0]) && contiguous(run.at(-1), b) && run.length <= maxRun && run.every(p => prior(rows[p.row], units[p.unit]) > 0)) run.forEach(p => { p.kind = 'inferred'; p.runLen = run.length; });
+    k = e + 1;
+  }
   out.supported = pairs.filter(p => p.kind === 'supported').length; out.inferred = pairs.filter(p => p.kind === 'inferred').length;
-  if (out.supported < Math.max(minSupported, Math.floor(minShare * Math.min(M, K)))) { out.why = 'weak-evidence'; return out; }
+  // 確実な組が少なすぎる、または確実＋順序から補った組が全体の一部にも満たないときは、何も確定しない
+  if (out.supported < Math.max(minSupported, Math.floor(.08 * Math.min(M, K))) || out.supported + out.inferred < Math.floor(minShare * Math.min(M, K))) { out.why = 'weak-evidence'; return out; }
   out.pairs = pairs.filter(p => p.kind !== 'weak').map(p => {
     const u = units[p.unit], prev = units[p.unit - 1], next = units[p.unit + 1];
     const before = prev ? prev.reads.at(-1)[1] : null, after = next ? next.span[0] : null;
     const segs = u.reads.map((r, k) => padRange(r, k ? u.reads[k - 1][1] : before, k + 1 < u.reads.length ? u.reads[k + 1][0] : after));
-    return { row: p.row, unit: p.unit, kind: p.kind, sim: +p.sim.toFixed(3), segments: segs };
+    return { row: p.row, unit: p.unit, kind: p.kind, sim: +p.sim.toFixed(3), ...(p.runLen ? { runLen: p.runLen } : {}), segments: segs };
   });
   out.unitList = units.map(u => ({ span: u.span, reads: u.reads }));
   out.ok = true;

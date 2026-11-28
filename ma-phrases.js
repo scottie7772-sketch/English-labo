@@ -1,5 +1,6 @@
 // Local MA phrase data and matching. The vocabulary record is the source of truth.
 import { db, getSetting } from './db.js';
+import { detectProfile } from './vocab-audio-core.js';
 import { newWord, newSense, parseCSV } from './words.js';
 import { zipRead } from './common-pack.js';
 import { labRows, makeRef, refBlob, studioConfirmed } from './audio-refs.js';
@@ -377,11 +378,35 @@ function studioCue(block) {
     wordTimings: block.wordTimings, rev: block.rev };
 }
 
+// 金フレ型（見出し語 → 例文 …）の教材は、MA の本文ではない。教材の種類が未設定でも、MA 教材として照合しない。
+// （種類が未設定の教材は MA の候補として扱うため、金フレの音声を割り当てたあとの MA の再照合で、MA の単語に金フレの音声が紐づいていた。）
+// MA とみなす条件（名前・フォルダが MA、または章が保存済み）があれば、そちらを優先する。
+export function vocabLikeStudioSet(set, blocks) {
+  if (set.materialType === 'vocab') return true;
+  if (looksLikeMA({ name: set.title, folder: set.folder })) return false;
+  if (/金フレ|金のフレーズ|kin[_ -]?kaitei|kinfure/i.test([set.title, set.folder].join(' ')) || set.kfRange) return true;
+  const rows = blocks.filter(b => b.text && !b.asr).map(b => ({ id: b.id, text: b.text, role: b.kind === 'word' ? 'word' : b.kind === 'example' ? 'example' : undefined, segments: b.segments || [] }));
+  if (rows.filter(r => r.role).length >= 10) return true;   // 見出し語・例文の印が付いた行が多い
+  if (rows.length < 12) return false;
+  const det = detectProfile(rows);
+  return det.profile === 'kinfure' && det.confidence >= .6;
+}
+export async function forgetStudioChapter(setId) {
+  const key = 'studio:' + setId, words = (await db.all('words')).filter(w => w.ma?.chapters?.[key]);
+  if (!words.length) return 0;
+  await db.tx(['words'], 'readwrite', async tx => {
+    const store = tx.objectStore('words');
+    for (const w of words) { const { [key]: dropped, ...rest } = w.ma.chapters; store.put({ ...w, ma: { ...w.ma, chapters: rest } }); }
+  });
+  return words.length;
+}
 export async function indexStudioChapter(set) {
   const video = { ...set, id: 'studio:' + set.id, name: set.title, studioId: set.id };
   if (!maMaterial(video)) return null;
   const { sdb, liveBlocks } = await import('./studio-db.js');
-  const blocks = (await liveBlocks(set)).filter(b => b.text && (!b.asr || b.aligned));
+  const all = await liveBlocks(set);
+  if (vocabLikeStudioSet(set, all)) { await forgetStudioChapter(set.id); return null; }   // すでに紐づいてしまった分も外す
+  const blocks = all.filter(b => b.text && (!b.asr || b.aligned));
   const cues = blocks.map(studioCue);
   const ids = new Set(blocks.flatMap(b => (b.segments || []).map(g => g.sourceId)));
   const assets = new Map();

@@ -31,7 +31,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.33';
+export const STUDIO_VERSION = '0.21.34';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -4169,7 +4169,7 @@ async function editorScreen(el, params, revision) {
     // 確実度: 文字起こしの一致が強く（一致度0.6以上）、隣り合う行と区別できるものは「確実」。順序から補ったもの・弱い手がかりのもの・行の追加は「要確認」。
     const isHigh = p => p.kind === 'supported' && p.sim >= .6;
     const extraItems = [];   // 提案のうち保存できるもの（行の割り当て・行の追加）
-    extras.forEach(x => { if (x.type !== 'unknown') x.items.forEach(it => { if (it.row != null && (lines[it.row].row.sync === 'manual' || lines[it.row].row.manual || taken.has(it.row))) return; extraItems.push({ ...it, src: x.src, after: x.after, kind: it.kind ?? lines[it.row]?.kind }); }); });
+    extras.forEach(x => { if (x.type !== 'unknown') x.items.forEach(it => { if (it.row != null && (lines[it.row].row.sync === 'manual' || lines[it.row].row.manual || taken.has(it.row))) return; extraItems.push({ ...it, src: x.src, after: x.after, before: x.before, kind: it.kind ?? lines[it.row]?.kind }); }); });
     const unknowns = extras.filter(x => x.type === 'unknown');
     const mm = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
     const locked = p => p.line.row.sync === 'manual' || p.line.row.manual;
@@ -4208,18 +4208,19 @@ async function editorScreen(el, params, revision) {
       if (segs.length > 1) { c.rep = segs.length; c.endEst = false; } else delete c.rep;
       assigned.push(...segs); return c;
     };
-    const insertAfter = new Map();   // 行の id → その後ろに足す新しい行
+    const insertAfter = new Map(), insertBefore = new Map();   // 行の id → その後ろ／前に足す新しい行
     for (const it of chosenExtras) {
       if (it.row != null) {
         const cur = byId[lines[it.row].row.id];
         if (cur && cur.rev === lines[it.row].row.rev && cur.sync !== 'manual' && !cur.manual && !changes.some(c => c.id === cur.id)) changes.push(withSegs(cur, it));
       } else {
-        const prev = byId[lines[it.after]?.row?.id];
+        const prev = it.before != null ? byId[lines[it.before]?.row?.id] : byId[lines[it.after]?.row?.id];
         if (!prev) continue;
         const segs = it.segments.map(g => ({ sourceId: it.src.id, start: g.start, end: g.end }));
         const nb = newBlock(set.id, { text: it.text, script: true, kind: it.kind === 'head' ? 'word' : 'example', segments: segs, aligned: true, sync: 'auto', cueRefs: { en: [], ja: [] }, ...(segs.length > 1 ? { rep: segs.length, endEst: false } : {}), lineage: { op: 'structure-assign', from: [], at: Date.now() } });
         added.push(nb); assigned.push(...segs);
-        const list = insertAfter.get(prev.id) || []; list.push(nb); insertAfter.set(prev.id, list);
+        const map = it.before != null ? insertBefore : insertAfter;   // 先頭の見出し語などは、最初の行の前に入れる
+        const list = map.get(prev.id) || []; list.push(nb); map.set(prev.id, list);
       }
     }
     if (!changes.length && !added.length) return toast('字幕が更新されたため保存できません。もう一度実行してください');
@@ -4234,7 +4235,7 @@ async function editorScreen(el, params, revision) {
     }
     const guardedSet = { updatedAt: set.updatedAt, order: set.order.slice(), undo: (set.undo || []).slice(), redo: (set.redo || []).slice() };
     const baseOrder = [];
-    for (const id of set.order) { if (drop.some(b => b.id === id)) continue; baseOrder.push(id); for (const nb of insertAfter.get(id) || []) baseOrder.push(nb.id); }
+    for (const id of set.order) { for (const nb of insertBefore.get(id) || []) baseOrder.push(nb.id); if (drop.some(b => b.id === id)) continue; baseOrder.push(id); for (const nb of insertAfter.get(id) || []) baseOrder.push(nb.id); }
     if (!(await run('金フレ型：構造で割り当て', { blocks: [...changes, ...added, ...drop.map(b => ({ ...b, deleted: true }))], order: baseOrder, guardedSet }))) return;   // 失敗したときは、run がエラーの内容を表示している
     toast(`${changes.length}行を割り当て${added.length ? `、${added.length}行を追加` : ''}しました（重なっていた文字起こし ${drop.length}行を整理）。↶で戻せます`, 6000);
     if (autoMode) {   // 確実な分を保存した。残り（要確認・台本にない発話）で、もう一度確認画面を出す

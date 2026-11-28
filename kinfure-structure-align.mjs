@@ -150,3 +150,27 @@ console.log('kinfure-structure-align:', out.map(r => `${r.label} 割当${r.pairs
   assert(plan2.length > 0 && plan2.every(it => it.row === data.audio[it.unit].row), '未割当の行を順序で割り当てた対応がすべて正しい: ' + plan2.length);
   console.log(`planMissing: 全体スクリプトから補う ${fromScript.length}行（正しい${right}）／未割当の台本行を順序で割り当て ${plan2.length}行（すべて正しい）`);
 }
+
+// ---- 最初の見出し語・最後の行が台本に無いとき（先頭・末尾の未割当の発話）も、全体スクリプトから補う ----
+{
+  const { planMissing } = await import('../kinfure-structure-align.js');
+  const data = make(30, e => 1 + (e * 7) % 3);
+  const whole = data.script.map(l => ({ text: l.text, kind: l.kind }));
+  const lastIdx = data.script.length - 1;
+  const keep = data.script.map((_, i) => i).filter(i => i !== 0 && i !== lastIdx);   // 最初の見出し語と最後の行が台本に無い
+  const rows = keep.map(i => ({ text: data.script[i].text, kind: data.script[i].kind, scriptIndex: i }));
+  const res = alignByStructure(rows, data.regions, mkHints(data, { headMiss: .1, dropRate: .05, seed: 6 }));
+  assert(res.ok);
+  const plan = planMissing(rows, res.pairs, res.unitList, whole);
+  const lead = plan.find(p => p.before != null), trail = plan.find(p => p.after === rows.length - 1 && p.type === 'script');
+  assert(lead && lead.type === 'script', '先頭の見出し語を補う');
+  assert.equal(lead.items[0].text, data.script[0].text); assert.equal(lead.items[0].unit, 0, '最初の発話に割り当てる');
+  assert.equal(lead.items[0].segments.length, 1, '見出し語は1回');
+  assert(lead.items[0].segments[0].start <= data.audio[0].start && lead.items[0].segments[0].end >= data.audio[0].end, '語頭・語尾が欠けない');
+  assert(trail, '末尾の行を補う');
+  assert.equal(trail.items.at(-1).text, data.script[lastIdx].text);
+  // 全体スクリプトが無いとき: 先頭の発話は「説明できない」として時刻だけ知らせる（行は作らない）
+  const none = planMissing(rows, res.pairs, res.unitList, null);
+  assert(none.some(p => p.type === 'unknown' && p.after === -1) && none.every(p => p.type !== 'script'));
+  console.log('planMissing（先頭・末尾）: 最初の見出し語と最後の行を全体スクリプトから補えた');
+}

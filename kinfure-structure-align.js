@@ -129,5 +129,25 @@ export function planMissing(rows, pairs, unitList, script = null) {
       out.push({ type: 'rows', after: A.row, items: us.map((u, i) => ({ row: between[i], unit: u, segments: segs(u) })) });
     } else out.push({ type: 'unknown', after: A.row, items: us.map(u => ({ unit: u, segments: segs(u) })), why: lines ? `全体スクリプトの上では${lines.length}行（発話は${us.length}件）で、数か種類が合いません` : `台本の行（${between.length}）と発話（${us.length}）が合いません` });
   }
+  // 先頭・末尾（最初の割り当ての前・最後の割り当ての後）の未割当の発話: 最初の見出し語などが、台本に無いことがある。
+  // 数は4件まで。教材に未割当の行があればそれを、無ければ全体スクリプトの上で最初（最後）の行のすぐ前（後）の行を、数と種類が合うときだけ補う。
+  if (sorted.length) {
+    const first = sorted[0], last = sorted.at(-1), LIMIT = 4;
+    const segsOf = u => unitList[u].reads.map(r => ({ start: r[0], end: r[1] }));
+    const edge = (us, side) => {
+      if (!us.length || us.length > LIMIT) { if (us.length) out.push({ type: 'unknown', after: side === 'after' ? last.row : -1, items: us.map(u => ({ unit: u, segments: segsOf(u) })), why: `${side === 'after' ? '末尾' : '先頭'}の未割当の発話が${us.length}件あります` }); return; }
+      const anchor = side === 'before' ? first : last, kindsOk = kinds => kinds.length === us.length && kinds.every((kd, i) => compat(kd, unitList[us[i]]));
+      const rowIdx = side === 'before' ? Array.from({ length: us.length }, (_, i) => anchor.row - us.length + i) : Array.from({ length: us.length }, (_, i) => anchor.row + 1 + i);
+      if (rowIdx.every(r => r >= 0 && r < rows.length) && kindsOk(rowIdx.map(r => rows[r].kind))) { out.push({ type: 'rows', after: side === 'before' ? -1 : anchor.row, items: us.map((u, i) => ({ row: rowIdx[i], unit: u, segments: segsOf(u) })) }); return; }
+      const ia = rows[anchor.row]?.scriptIndex;
+      if (script && ia != null) {
+        const lines = side === 'before' ? script.slice(Math.max(0, ia - us.length), ia) : script.slice(ia + 1, ia + 1 + us.length);
+        if (kindsOk(lines.map(l => l.kind))) { out.push({ type: 'script', ...(side === 'before' ? { before: anchor.row } : { after: anchor.row }), items: us.map((u, i) => ({ text: lines[i].text, kind: lines[i].kind, unit: u, segments: segsOf(u) })) }); return; }
+      }
+      out.push({ type: 'unknown', after: side === 'after' ? last.row : -1, items: us.map(u => ({ unit: u, segments: segsOf(u) })), why: `${side === 'after' ? '末尾' : '先頭'}の未割当の発話${us.length}件に合う行が、台本・全体スクリプトに見つかりません` });
+    };
+    edge(Array.from({ length: first.unit }, (_, k) => k).filter(k => !paired.has(k)), 'before');
+    edge(Array.from({ length: unitList.length - last.unit - 1 }, (_, k) => last.unit + 1 + k).filter(k => !paired.has(k)), 'after');
+  }
   return out;
 }

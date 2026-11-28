@@ -130,7 +130,8 @@ export function studioRows(blocks, sources, { isHead, jaOf = b => b.ja || '', ex
       return { store: lab ? 'vblobs' : 'studio', key: lab || g.sourceId, sourceKey: lab ? 'vblobs:' + lab : 'src:' + g.sourceId, size: s?.size || s?.blob?.size || null, start: g.start, end: g.end };   // sourceKey = the recording itself, whichever store holds it
     });
     return { id: b.id, itemId: b.id, text: b.text, ja: jaOf(b), ...(explicitRoles ? { role: head ? 'word' : 'example', group: group || null } : {}), segments: segs, confirmed: studioConfirmed(b),
-      estimated: b.sync === 'estimated', manual: b.sync === 'manual', rep: b.rep, wordTimings: b.wordTimings };
+      estimated: b.sync === 'estimated', manual: b.sync === 'manual', rep: b.rep, wordTimings: b.wordTimings,
+      ...(b.lineage?.op === 'structure-assign' ? { structure: true } : {}) };   // 発話区間の構造から割り当てた行（文字起こしの時刻は粗いので、文字起こしとの食い違いでは確信度を下げない）
   });
 }
 // Raw recognition lines (文字起こし) of a Studio set: the evidence for the local re-check. Never script text.

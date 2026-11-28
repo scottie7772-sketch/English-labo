@@ -174,3 +174,35 @@ console.log('kinfure-structure-align:', out.map(r => `${r.label} 割当${r.pairs
   assert(none.some(p => p.type === 'unknown' && p.after === -1) && none.every(p => p.type !== 'script'));
   console.log('planMissing（先頭・末尾）: 最初の見出し語と最後の行を全体スクリプトから補えた');
 }
+
+// ---- 文字起こしを間引いたとき（例文の一部だけ文字起こし）: 確実な組にはさまれた連続を、順序から補う ----
+{
+  for (const [label, every, noise] of [['例文の3つに1つだけ文字起こし', 3, .1], ['例文の2つに1つだけ', 2, .2], ['例文の4つに1つだけ', 4, .1]]) {
+    const data = make(60, e => 1 + (e * 7) % 3), r = rnd(31);
+    let k = 0;
+    const hints = data.audio.filter(a => a.reads === 2).filter(() => (k++ % every) === 0).map(a => ({ text: data.script[a.row].text.split(' ').map(w => (r() < noise ? 'xq' + Math.floor(r() * 1e4) : w)).join(' '), start: a.start, end: a.end }));
+    const pre = Array.from({ length: 10 }, (_, i) => ({ text: i % 3 ? `Extra ${nm(900 + i)} sentence here today.` : nm(900 + i), kind: i % 3 ? 'example' : 'head' }));
+    const res = alignByStructure([...pre, ...data.script], data.regions, hints);
+    assert(res.ok, label + ' ' + res.why);
+    const c = evaluate(res, data, 10); out.push({ label, ...c });
+    assert.equal(c.wrong, 0, label + ': 誤り ' + c.wrong);
+    assert.equal(c.clip, 0, label + ': 語頭・語尾が欠けない');
+    assert(c.pairs >= data.audio.length * (every >= 4 ? .45 : .6), label + ': ' + c.pairs + '/' + data.audio.length + '（補完 ' + c.inferred + '）');
+    console.log(`  ${label}: 割当${c.pairs}/${data.audio.length}（確実${c.supported}・補完${c.inferred}）誤${c.wrong}`);
+  }
+}
+
+// 文字起こしを間引いていて、台本の途中の1行が音声にない（または音声の1つが台本にない）とき、補った組が別の行にならない
+{
+  const data = make(60, e => 1 + (e * 7) % 3), r = rnd(41);
+  let k = 0;
+  const hints = data.audio.filter(a => a.reads === 2).filter(() => (k++ % 3) === 0).map(a => ({ text: data.script[a.row].text, start: a.start, end: a.end }));
+  for (const skip of [20, 47, 80, 111]) {
+    const script = data.script.filter((_, i) => i !== skip);
+    const res = alignByStructure(script, data.regions, hints);
+    assert(res.ok);
+    let wrong = 0;
+    for (const p of res.pairs) { const a = data.audio[p.unit], expected = a.row < skip ? a.row : a.row - 1; if (a.row === skip || p.row !== expected) wrong++; }
+    assert.equal(wrong, 0, '台本の行が1つ欠けていても、補った組が別の行にならない（skip=' + skip + ' 誤' + wrong + '）');
+  }
+}

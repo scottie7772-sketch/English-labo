@@ -208,6 +208,7 @@ export function gradeRef(ri, row, item, ctx = {}) {
   const kind = ri.kind, d = ref.end - ref.start;
   let s = row?.confirmed ? (row.manual ? .95 : .70) : row?.estimated ? .15 : row?.asr ? .2 : .3;
   reasons.push(row?.confirmed ? (row.manual ? '手で確定' : '照合済み') : row?.estimated ? '時刻は推定' : '未確認');
+  if (row?.structure && row.confirmed && !row.manual) { s += .05; reasons.push('発話区間の構造から割り当て'); }
   const word = kind === 'word', okDur = word ? d >= .15 && d <= 3.5 : d >= .5 && d <= 20, badDur = word ? d < .1 || d > 6 : d < .3 || d > 30;
   if (okDur) s += .05; else if (badDur) { s -= .3; reasons.push(`長さが不自然（${d.toFixed(2)}秒）`); }
   // 他の行の音声との重なり
@@ -242,7 +243,8 @@ export function gradeRef(ri, row, item, ctx = {}) {
     const over = ctx.evidence.filter(e => e.sourceKey === key && Math.min(e.end, ref.end) - Math.max(e.start, ref.start) >= .5 * Math.min(e.end - e.start, ref.end - ref.start));
     if (over.length) {
       const best = Math.max(...over.map(e => matchCue(item.head, e).score));
-      if (best >= .85) { s += .1; reasons.push('文字起こしと一致'); } else if (best < .3) { s -= .3; reasons.push('文字起こしと食い違う'); }
+      // 発話区間の構造から割り当てた行は、文字起こしが見出し語を聞き間違えていても（その場合に構造で補っている）、確信度を下げない
+      if (best >= .85) { s += .1; reasons.push('文字起こしと一致'); } else if (best < .3) { if (row?.structure) reasons.push('文字起こしは食い違うが、発話区間の構造から割り当て済み'); else { s -= .3; reasons.push('文字起こしと食い違う'); } }
     }
   }
   if (!row?.confirmed) s = Math.min(s, TIER.mid - .01);

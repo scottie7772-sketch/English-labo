@@ -176,6 +176,9 @@ async function reviewOnce(kind, id) {
     for (const c of it.candidates || []) list.push({ ...c, label: c.source === 'estimate' ? '文字数からの推定' : `認識結果「${clip(c.text, 24)}」（${c.why || ''}）`, why: '' });
     return list;
   };
+  let resultNote = null;   // 直前の登録の結果（画面が変わらないように見えないよう、結果をその場に残す）
+  const NEG = /重なる|長さが不自然|前の項目より前|欠けている|混ざる|復唱の長さ/;
+  const differing = () => rec.items.filter(it => it.state === 'candidates' && it.refs.word && it.refs.word.reasons.includes('文字起こしと食い違う') && it.refs.word.reasons.includes('照合済み') && !it.refs.word.reasons.some(r => NEG.test(r)));
   const rowHTML = it => {
     const kind0 = editKinds()[0], ref = it.refs[kind0], isOpen = open === it.key;
     const play = (k, label) => it.refs[k] && !it.refs[k].broken ? `<button type="button" class="btn xs" data-play="${esc(it.key)}|${k}">▶ ${label}</button>` : '';
@@ -209,6 +212,8 @@ async function reviewOnce(kind, id) {
       <div class="seg wrap" data-filter>${FILTERS.map(([v, l]) => `<button type="button" data-v="${v}" class="${filter === v ? 'on' : ''}">${esc(l)}</button>`).join('')}</div>
       <div class="vw-list stack">${shownItems.slice(0, shown).map(rowHTML).join('') || '<p class="small muted">該当する語はありません</p>'}${shownItems.length > shown ? `<button type="button" class="btn sm ghost" data-more>さらに表示（残り${shownItems.length - shown}）</button>` : ''}</div>
       <div class="vw-foot stack small"><div id="vwPlan" class="muted">登録の見込みを計算しています…</div>
+        ${resultNote ? `<div class="card ${resultNote.ok ? '' : 'warn'} small" role="status"><b>${esc(resultNote.title)}</b><br>${esc(resultNote.body)}</div>` : ''}
+        ${differing().length ? `<button type="button" class="btn sm" data-trust>照合済みで、文字起こしだけが食い違う ${differing().length}語を確定する</button><span class="muted small">文字起こしが見出し語を聞き間違えただけのことが多い語です（確定した語は、手で確定した扱いになります）。</span>` : ''}
         <label class="chk"><input type="checkbox" id="vwPartial"> 音声が未確定の語も登録する（音声は後から追加できます）</label>
         <div class="jp-grid"><button type="button" class="btn sm primary" data-register>確定した音声を登録</button><button type="button" class="btn sm" data-again>未確定だけ再処理</button></div>
         <details class="small"><summary class="muted">詳細</summary><button type="button" class="btn sm ghost" data-diag>診断データ（JSON）を書き出す</button><p class="muted small">認識文字列・時刻・発話区間・割り当て先・確信度をまとめます。音声は含みません。精度の確認用です。</p></details></div></form>`;
@@ -244,7 +249,12 @@ async function reviewOnce(kind, id) {
       if (d.register != null) {
         const x = await registerRecord(kind, id, { onlyConfirmed: !dlg.querySelector('#vwPartial')?.checked });
         rec = await loadRecord(kind, id);
-        toast(`新規 ${x.added}語・既存の語に音声を追加 ${x.updated}語（追加容量 約${fmtSize(x.bytes)}・音声は複製しません）`, 6000);
+        const left = rec.items.filter(it => !['confirmed', 'registered'].includes(it.state)).length;
+        const nothing = !x.added && !x.updated;
+        resultNote = nothing
+          ? { ok: false, title: '新しく登録するものはありません', body: `確定した語はすでに登録済みで、音声も変わりません（変更なし ${x.plan.skip.length}語）。${left ? `未確定の ${left}語は、候補を確定するか、「音声が未確定の語も登録する」をオンにして登録できます。` : ''}` }
+          : { ok: true, title: `登録しました：新規 ${x.added}語・既存の語に音声を追加 ${x.updated}語`, body: `追加容量 約${fmtSize(x.bytes)}（音声は元の録音を参照するため、複製しません）。${left ? `未確定の ${left}語は残っています。` : 'すべて登録済みです。'}` };
+        toast(resultNote.title, 6000);
         return draw();
       }
       if (d.diag != null) {
@@ -253,6 +263,12 @@ async function reviewOnce(kind, id) {
         if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (error) { if (error?.name === 'AbortError') return; } }
         const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
         toast('診断データを書き出しました（音声は含まれません）'); return;
+      }
+      if (d.trust != null) {
+        const list = differing(); let n = 0;
+        for (const it of list) { const cur = it.refs.word; if (!cur) continue; rec = await reviewConfirm(kind, id, it.key, editKinds()[0], { src: cur.ref.src, start: cur.ref.start, end: cur.ref.end }); n++; }
+        resultNote = { ok: true, title: `${n}語を確定しました`, body: '「確定した音声を登録」で単語帳に登録できます。' };
+        return draw();
       }
       if (d.again != null) return finish('again');
     } catch (error) { toast(error.message, 5000); }

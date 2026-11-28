@@ -18,6 +18,7 @@ import { alignScript, scriptToLines, hasReplacementAudio } from './studio-align.
 import { speechRegions, regionStatistics, snapCueToRegion } from './studio-structure.js';
 import { alignByStructure, parseUnits, planMissing } from './kinfure-structure-align.js';
 import { loadKfScript, tagsFor } from './studio-kinfure.js';
+import { duplicateTranscripts } from './studio-transcript-tidy.js';
 import { parseKinfureScript, locateByEdges } from './studio-kinfure-range.js';
 import { joinShortGaps } from './vocab-audio-core.js';
 import { speechFirstPlaybackRange, nextSourceSegment } from './studio-playback-boundary.js';
@@ -31,7 +32,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.37';
+export const STUDIO_VERSION = '0.21.38';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -4224,15 +4225,11 @@ async function editorScreen(el, params, revision) {
       }
     }
     if (!changes.length && !added.length) return toast('字幕が更新されたため保存できません。もう一度実行してください');
-    // 割り当てた範囲に重なる、分割されたままの文字起こし行（未編集）は片づける（残すと重なりの警告が出るため）
-    const touched = new Set(changes.map(c => c.id)), drop = [];
-    for (const b of set.order.map(id => byId[id]).filter(Boolean)) {
-      if (!b.asr || b.aligned || b.sync === 'manual' || b.ja || b.holes?.length || b.rev !== 1 || b.lineage?.op !== 'split' || b.segments.length !== 1 || touched.has(b.id)) continue;
-      const g = b.segments[0], dur = g.end - g.start;
-      // 見出し語・例文・繰り返しにまたがる文字起こし行は、割り当てた範囲（発話の部分）の合計が行の半分以上を覆うときに片づける
-      const covered = assigned.filter(a => a.sourceId === g.sourceId).reduce((sum, a) => sum + Math.max(0, Math.min(a.end, g.end) - Math.max(a.start, g.start)), 0);
-      if (dur > 0 && covered >= .5 * dur) drop.push(b);
-    }
+    // 照合した行と同じ内容の、未確定の文字起こし（見出し語＋例文がまとまった行など）は片づける。手を付けていない行だけ（照合・手動・日本語訳つきの行は残す）。
+    const touched = new Set(changes.map(c => c.id));
+    const after = [];
+    for (const id of set.order) { for (const nb of insertBefore.get(id) || []) after.push(nb); const c = changes.find(x => x.id === id); const row = c || byId[id]; if (row) after.push(row); for (const nb of insertAfter.get(id) || []) after.push(nb); }
+    const drop = duplicateTranscripts(after, { assigned }).map(x => x.block).filter(x => !touched.has(x.id) && byId[x.id]);
     const guardedSet = { updatedAt: set.updatedAt, order: set.order.slice(), undo: (set.undo || []).slice(), redo: (set.redo || []).slice() };
     const baseOrder = [];
     for (const id of set.order) { for (const nb of insertBefore.get(id) || []) baseOrder.push(nb.id); if (drop.some(b => b.id === id)) continue; baseOrder.push(id); for (const nb of insertAfter.get(id) || []) baseOrder.push(nb.id); }
@@ -4245,6 +4242,23 @@ async function editorScreen(el, params, revision) {
       if (found.length || extraItems.length) { await new Promise(r => setTimeout(r, 400)); again = true; }
     }
     }
+  }
+
+  // 1.19.52: 照合済みの行（見出し語・例文×2）と同じ内容の、未確定の文字起こしを一覧して整理する（↶で戻せる）
+  async function tidyDuplicateTranscripts() {
+    await reload();
+    if (revision !== routeRevision) return;
+    const list = set.order.map(id => byId[id]).filter(Boolean);
+    const found = duplicateTranscripts(list);
+    if (!found.length) return toast('照合済みの行と重なる文字起こしはありません', 3500);
+    const sample = found.slice(0, 6).map(x => `<li>${esc(x.block.text.slice(0, 60))}　<span class="muted">${esc(x.why)}</span></li>`).join('');
+    const ok = await confirmDialog({ title: '重複した文字起こしを整理', body: `<p>${found.length}行の文字起こしが、照合済みの行と同じ内容です。</p><ul class="small">${sample}${found.length > 6 ? '<li>…</li>' : ''}</ul><p class="small muted">消すのは、手を付けていない文字起こしの行だけです（照合済みの行・手動の行・日本語訳つきの行は残ります）。↶で戻せます。</p>`, okLabel: `${found.length}行を整理` });
+    if (!ok || revision !== routeRevision) return;
+    await reload();
+    const ids = new Set(found.map(x => x.block.id));
+    const drop = found.map(x => byId[x.block.id]).filter(b => b && b.rev === found.find(x => x.block.id === b.id).block.rev);
+    if (!drop.length) return toast('行が更新されました。もう一度実行してください');
+    await run('重複した文字起こしを整理', { blocks: drop.map(b => ({ ...b, deleted: true })), order: set.order.filter(id => !ids.has(id)), guardedSet: { updatedAt: set.updatedAt, order: set.order.slice(), undo: (set.undo || []).slice(), redo: (set.redo || []).slice() } });
   }
 
   // Virtual split: both halves refer to the same stored source and original timestamps.
@@ -4875,6 +4889,7 @@ async function editorScreen(el, params, revision) {
       <button class="btn" value="align">スクリプトと照合</button>
       <button class="btn" value="kfRange">金フレ型：スクリプトの範囲を特定（全体スクリプトから）</button>
       <button class="btn primary" value="structAssign">金フレ型：無音の構造で割り当て（推奨）</button>
+      <button class="btn" value="tidyAsr">照合済みと重複する文字起こしを整理</button>
       <button class="btn" value="alignVocab">金フレ型：既存ASRと照合</button>
       <button class="btn" value="alignProse">朗読・会話向け：緩めのスクリプト照合（試験版）</button>
       <button class="btn" value="maBoundary">MA型の音声境界を検査</button>
@@ -4940,6 +4955,7 @@ async function editorScreen(el, params, revision) {
       if (v === 'align') runAlign();
       if (v === 'kfRange') kfEditorRange();
       if (v === 'structAssign') assignByKinfureStructure();
+      if (v === 'tidyAsr') tidyDuplicateTranscripts();
       if (v === 'alignVocab') previewVocabAlignment();
       if (v === 'alignProse') runAlign({ mode: 'prose' });
       if (v === 'maBoundary') inspectMaBoundaries();

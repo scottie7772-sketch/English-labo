@@ -32,7 +32,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.39';
+export const STUDIO_VERSION = '0.21.40';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -594,7 +594,7 @@ async function sourceAudioReader(chosen, say) {
 }
 
 // 音声の先頭と末尾だけを文字起こしする（全体スクリプトの中の範囲を推定するため）。結果は教材ごとに保存し、同じ音声なら再実行しない。
-async function transcribeEdges(set, { seconds = 30, say = () => {}, cancelled = () => false } = {}) {
+async function transcribeEdges(set, { seconds = 18, say = () => {}, cancelled = () => false } = {}) {
   const blocks = (await sdb.byIndex('blocks', 'setId', set.id)).filter(b => !b.deleted);
   const byId = new Map(blocks.map(b => [b.id, b]));
   const ids = [];
@@ -607,24 +607,24 @@ async function transcribeEdges(set, { seconds = 30, say = () => {}, cancelled = 
   const sig = [firstSrc.id, firstSrc.size, lastSrc.id, lastSrc.size, seconds].join('|');
   const cached = await sdb.get('meta', `edge-cues:${set.id}`);
   if (cached?.sig === sig) return { head: cached.head, tail: cached.tail, duration: cached.duration, cached: true };
+  // 先頭・末尾それぞれ 約18秒（金フレなら2項目ぶん）を、1回の音声認識で読む。音声ファイルは1度だけ開く。
+  const readers = new Map();
+  const readerOf = async (src) => { if (!readers.has(src.id)) readers.set(src.id, await sourceAudioReader(src, say)); return readers.get(src.id); };
   let tr = null;
-  const one = async (src, a, z, label) => {
-    const reader = await sourceAudioReader(src, say);
-    const total = reader.end, from = Math.max(0, a), to = Math.min(total, z);
-    const { audio, offset } = await reader.read(from - .3, to + .3);
+  const one = async (src, from, to, label) => {
+    const reader = await readerOf(src);
+    const a = Math.max(0, from), z = Math.min(reader.end, to);
+    const { audio, offset } = await reader.read(a - .2, z + .2);
     tr ||= openTranscriber('en', say, { quality: 'acc' });
-    say(`${src.name || '音声'}　${label}を文字起こし中…`);
-    const pieces = [];
-    for (let t = from; t < to && !cancelled(); t += 10) {
-      const cues = await recognisePiece(tr, audio, Math.max(0, t - offset), Math.min(audio.length / 16000, Math.min(to, t + 10) - offset));
-      const text = (cues.raw || cues.map(x => x.text).join(' ')).trim();
-      if (text) pieces.push({ text, start: t, end: Math.min(to, t + 10) });
-    }
-    return { pieces, total };
+    say(`${src.name || '音声'}　${label}を文字起こし中…（約${Math.round(z - a)}秒ぶん）`);
+    const cues = cancelled() ? [] : await recognisePiece(tr, audio, Math.max(0, a - offset), Math.min(audio.length / 16000, z - offset));
+    const text = (cues.raw || cues.map(x => x.text).join(' ')).trim();
+    return { pieces: text ? [{ text, start: a, end: z }] : [], total: reader.end };
   };
   try {
     const headWin = await one(firstSrc, 0, seconds, '先頭');
-    const tailWin = await one(lastSrc, (lastSrc === firstSrc ? headWin.total : (await sourceAudioReader(lastSrc, say)).end) - seconds, Infinity, '末尾');
+    const tailTotal = (await readerOf(lastSrc)).end;
+    const tailWin = await one(lastSrc, tailTotal - seconds, tailTotal, '末尾');
     const duration = sources.reduce((sum, x) => sum + (x.duration || 0), 0) || headWin.total;
     await sdb.put('meta', { key: `edge-cues:${set.id}`, sig, head: headWin.pieces, tail: tailWin.pieces, duration });
     return { head: headWin.pieces, tail: tailWin.pieces, duration, cached: false };
@@ -639,26 +639,66 @@ async function directScriptScreen(el, setId) {
     <div class="card stack"><p class="small">音声カットや圧縮設定は不要です。英語のスクリプトを直接追加します。既存の音声と字幕時刻は変更しません。</p>
     <label class="btn" for="directScriptFile">📄 TXT・SRT・VTT・CSVを選ぶ</label><input id="directScriptFile" type="file" accept=".txt,.srt,.vtt,.csv,text/plain,text/csv" hidden>
     <label class="field"><span>または英文を貼り付ける</span><textarea id="directScriptText" rows="9" placeholder="英文を1行ずつ入力"></textarea></label>
-    <div class="card stack"><b>追加範囲を指定（任意）</b><p class="small muted">音声の先頭・末尾の文字起こしから範囲を推定するか、開始・終了の語句を検索して決めます。範囲は行の区切りに合わせます。未指定なら全文を追加します。</p>
+    <div class="card stack"><b>追加範囲を指定（任意）</b><p class="small muted">音声の先頭・末尾の文字起こしから範囲を推定するか、開始・終了の語句を検索して決めます。範囲は行の区切りに合わせ、開始の行も含みます。決めた範囲は、前後の行を削除して固定できます（↶のように元に戻せます）。</p>
     <button type="button" class="btn sm primary" id="directEstimate">音声の先頭・末尾から範囲を推定</button><p id="directEstimateInfo" class="small muted"></p>
-    <label class="field">開始語句<input id="directStartSearch" type="search" placeholder="開始する行の語句"></label><div class="row"><button type="button" class="btn sm" id="directFindStart">開始位置を検索（次の一致）</button><button type="button" class="btn sm ghost" id="directFindStartPrev">前の一致</button></div><p id="directStartInfo" class="small muted"></p>
-    <label class="field">終了語句<input id="directEndSearch" type="search" placeholder="終了する行の語句"></label><div class="row"><button type="button" class="btn sm" id="directFindEnd">終了位置を検索（次の一致）</button><button type="button" class="btn sm ghost" id="directFindEndPrev">前の一致</button></div><p id="directEndInfo" class="small muted"></p>
-    <button type="button" class="btn sm ghost" id="directClearRange">全文に戻す</button><p id="directRangeInfo" class="small muted">全文を追加します</p></div>
+    <label class="field">開始語句<input id="directStartSearch" type="search" placeholder="開始する行の語句（この行から後ろを自動で選びます）"></label><div class="row"><button type="button" class="btn sm" id="directFindStart">開始位置を検索（次の一致）</button><button type="button" class="btn sm ghost" id="directFindStartPrev">前の一致</button></div><p id="directStartInfo" class="small muted"></p>
+    <label class="field">終了語句<input id="directEndSearch" type="search" placeholder="終了する行の語句（この行までを選びます）"></label><div class="row"><button type="button" class="btn sm" id="directFindEnd">終了位置を検索（次の一致）</button><button type="button" class="btn sm ghost" id="directFindEndPrev">前の一致</button></div><p id="directEndInfo" class="small muted"></p>
+    <div class="card stack" id="directRangeBox" hidden>
+      <b id="directRangeInfo" class="small"></b>
+      <div class="small" id="directRangeStart"></div><div class="row wrap"><button type="button" class="btn sm ghost" data-adj="start:-1">開始を1行前へ</button><button type="button" class="btn sm ghost" data-adj="start:1">開始を1行後へ</button></div>
+      <div class="small" id="directRangeEnd"></div><div class="row wrap"><button type="button" class="btn sm ghost" data-adj="end:-1">終了を1行前へ</button><button type="button" class="btn sm ghost" data-adj="end:1">終了を1行後へ</button></div>
+      <div class="row wrap"><button type="button" class="btn sm primary" id="directTrim">この範囲だけを残す（前後を削除）</button><button type="button" class="btn sm ghost" id="directRestore" hidden>削除する前に戻す</button><button type="button" class="btn sm ghost" id="directClearRange">範囲を解除</button></div>
+    </div>
+    <p class="small muted" id="directRangeNote">全文を追加します</p></div>
     <p id="directScriptInfo" class="small muted"></p><button id="directScriptSave" class="btn primary">スクリプトを追加</button></div>`;
   const area = $('#directScriptText', el), info = $('#directScriptInfo', el), file = $('#directScriptFile', el);
-  file.onchange = async () => { const f = file.files?.[0]; if (!f) return; area.value = await f.text(); info.textContent = `${f.name} を読み込みました`; };
-  let selectedStart = null, selectedEnd = null;
-  const rangeInfo = $('#directRangeInfo', el);
-  const lineStarts = () => { const out = []; let at = 0; for (const l of area.value.split('\n')) { out.push([at, at + l.length]); at += l.length + 1; } return out; };
-  const lineOf = (pos) => { const ls = lineStarts(); const k = ls.findIndex(([a, z]) => pos >= a && pos <= z); return { k: k < 0 ? ls.length - 1 : k, ls }; };
-  const refreshRange = () => {
-    const a = selectedStart ?? 0, b = selectedEnd ?? area.value.length;
-    const n = (x, y) => area.value.slice(x, y).split('\n').filter(t => t.trim()).length;
-    rangeInfo.textContent = a >= b ? '開始位置が終了位置以降です' : `追加する範囲：${n(a, b)}行（全${n(0, area.value.length)}行）`;
+  file.onchange = async () => { const f = file.files?.[0]; if (!f) return; area.value = await f.text(); info.textContent = `${f.name} を読み込みました`; area.dispatchEvent(new Event('input')); };
+  // 範囲は「行」で持つ（a = 開始の行、b = 終了の行。空行を除いた行の番号ではなく、貼り付けた文章の行番号）。開始の行も終了の行も含む。
+  let rangeA = null, rangeB = null, backup = null;
+  const rawLines = () => area.value.split('\n');
+  const nonEmpty = () => rawLines().map((t, k) => ({ k, t })).filter(x => x.t.trim());
+  const offsets = () => { const out = []; let at = 0; for (const l of rawLines()) { out.push([at, at + l.length]); at += l.length + 1; } return out; };
+  const bounds = () => { const ne = nonEmpty(); return { first: ne[0]?.k ?? 0, last: ne.at(-1)?.k ?? 0, ne }; };
+  const stepLine = (k, dir) => { const { ne } = bounds(); const i = ne.findIndex(x => x.k === k); return ne[Math.max(0, Math.min(ne.length - 1, (i < 0 ? 0 : i) + dir))]?.k ?? k; };
+  const snippet = (k) => esc((rawLines()[k] || '').slice(0, 70));
+  const near = (k) => { const ne = bounds().ne, i = ne.findIndex(x => x.k === k); return [ne[i - 1], ne[i], ne[i + 1]].map((x, j) => x ? `<div style="${j === 1 ? 'font-weight:700' : 'opacity:.55'}">${j === 1 ? '▶ ' : '　'}${snippet(x.k)}</div>` : '').join(''); };
+  const current = () => { const { first, last } = bounds(); const a = rangeA ?? first, b = rangeB ?? last; return { a, b, ok: a <= b }; };
+  const showSelection = () => {
+    const { a, b, ok } = current(), off = offsets();
+    if (!ok || !off[a] || !off[b]) return;
+    area.setSelectionRange(off[a][0], off[b][1]);
+    // 選んだ範囲が画面に見えるよう、入力欄をその位置までスクロールする（行の折り返しがあるので、位置の割合から求める）
+    area.scrollTop = Math.max(0, (off[a][0] / Math.max(1, area.value.length)) * area.scrollHeight - area.clientHeight / 4);
   };
-  // 語句の一致をすべて集め（大文字小文字を区別しない）、押すたびに次（前）の一致へ進む。範囲は一致した行の先頭／末尾に合わせる（行の途中で切らない）。
+  const refreshRange = () => {
+    const box = $('#directRangeBox', el), note = $('#directRangeNote', el), { a, b, ok } = current(), total = bounds().ne.length;
+    const n = bounds().ne.filter(x => x.k >= a && x.k <= b).length;
+    const trimmed = rangeA == null && rangeB == null;
+    box.hidden = trimmed && !backup;
+    $('#directRangeInfo', el).textContent = !ok ? '開始が終了より後ろです' : trimmed ? `全文を追加します（${total}行）` : `追加する範囲：${n}行（全${total}行）　行${a + 1}〜${b + 1}`;
+    $('#directRangeStart', el).innerHTML = `<b>開始（この行を含む）</b>${near(a)}`;
+    $('#directRangeEnd', el).innerHTML = `<b>終了（この行を含む）</b>${near(b)}`;
+    $('#directTrim', el).disabled = !ok || trimmed;
+    $('#directRestore', el).hidden = !backup;
+    note.textContent = trimmed ? '全文を追加します' : ok ? `追加する範囲：${n}行（前後の${total - n}行は追加しません）` : '範囲を確認してください';
+    if (!trimmed && ok) showSelection();
+  };
+  // 語句の一致をすべて集め（大文字小文字を区別しない）、押すたびに次（前）の一致へ進む。
+  // 開始の語句は、その行から後ろ（終了が決まっていなければ最後まで）を自動で選ぶ。終了の語句は、その行までを選ぶ。
   const matches = { start: { list: [], at: -1, term: '' }, end: { list: [], at: -1, term: '' } };
-  const collect = (term) => { const out = [], lower = area.value.toLocaleLowerCase(), q = term.toLocaleLowerCase(); for (let i = lower.indexOf(q); i >= 0; i = lower.indexOf(q, i + 1)) out.push(i); return out; };
+  // 一致した行を、(1)行がその語句だけ → (2)行がその語句で始まる → (3)行のどこかにある、の順に並べる（同じ行は1つ）。見出し語を探すときに、見出し語の行が先に出る。
+  const collect = (term) => {
+    const q = term.toLocaleLowerCase(), norm = (t) => t.toLocaleLowerCase().replace(/[\s.,!?"“”'’:;]+/g, ' ').trim();
+    const tiers = [[], [], []], seen = new Set();
+    rawLines().forEach((text, k) => {
+      const t = norm(text), qq = norm(q);
+      if (!t || !text.toLocaleLowerCase().includes(q) || seen.has(k)) return;
+      seen.add(k);
+      tiers[t === qq ? 0 : t.startsWith(qq) ? 1 : 2].push(k);
+    });
+    return tiers.flat();
+  };
+  const lineAt = (pos) => { const off = offsets(); const k = off.findIndex(([x, z]) => pos >= x && pos <= z); return k < 0 ? off.length - 1 : k; };
   const findBoundary = (which, dir = 1) => {
     const box = $(`#direct${which === 'start' ? 'Start' : 'End'}Search`, el), term = box.value.trim();
     if (!term) return toast('検索語句を入力してください');
@@ -666,46 +706,64 @@ async function directScriptScreen(el, setId) {
     if (m.term !== term || !m.list.length) { m.term = term; m.list = collect(term); m.at = dir > 0 ? -1 : m.list.length; }
     if (!m.list.length) return toast('一致する語句がありません');
     m.at = (m.at + dir + m.list.length) % m.list.length;
-    const pos = m.list[m.at], { k, ls } = lineOf(pos);
-    if (which === 'start') selectedStart = ls[k][0]; else selectedEnd = ls[k][1];
-    $(`#direct${which === 'start' ? 'Start' : 'End'}Info`, el).textContent = `${m.at + 1}/${m.list.length}件目：「${area.value.slice(ls[k][0], ls[k][1]).slice(0, 60)}」の行${which === 'start' ? 'から' : 'まで'}`;
-    area.focus(); area.setSelectionRange(ls[k][0], ls[k][1]); refreshRange();
+    const k = m.list[m.at];   // 一致した行の番号
+    if (which === 'start') rangeA = k; else rangeB = k;
+    $(`#direct${which === 'start' ? 'Start' : 'End'}Info`, el).textContent = `${m.at + 1}/${m.list.length}件目：「${snippet(k).replace(/&[a-z#0-9]+;/g, ' ')}」`;
+    refreshRange();
   };
   $('#directFindStart', el).onclick = () => findBoundary('start', 1);
   $('#directFindStartPrev', el).onclick = () => findBoundary('start', -1);
   $('#directFindEnd', el).onclick = () => findBoundary('end', 1);
   $('#directFindEndPrev', el).onclick = () => findBoundary('end', -1);
-  $('#directClearRange', el).onclick = () => { selectedStart = selectedEnd = null; $('#directStartInfo', el).textContent = $('#directEndInfo', el).textContent = $('#directEstimateInfo', el).textContent = ''; refreshRange(); };
-  area.addEventListener('input', () => { selectedStart = selectedEnd = null; matches.start.list = matches.end.list = []; refreshRange(); });
+  $$('[data-adj]', el).forEach(btn => btn.onclick = () => {
+    const [which, d] = btn.dataset.adj.split(':'), { a, b } = current();
+    if (which === 'start') rangeA = stepLine(a, +d); else rangeB = stepLine(b, +d);
+    refreshRange();
+  });
+  $('#directClearRange', el).onclick = () => { rangeA = rangeB = null; $('#directStartInfo', el).textContent = $('#directEndInfo', el).textContent = $('#directEstimateInfo', el).textContent = ''; refreshRange(); };
+  // 範囲を固定して、前後を削除する（削除する前に戻せる）
+  $('#directTrim', el).onclick = () => {
+    const { a, b, ok } = current(), off = offsets();
+    if (!ok) return;
+    backup = area.value;
+    area.value = area.value.slice(off[a][0], off[b][1]);
+    rangeA = rangeB = null; matches.start.list = matches.end.list = [];
+    area.scrollTop = 0;
+    info.textContent = '範囲の前後を削除しました。「削除する前に戻す」で全文に戻せます';
+    refreshRange();
+  };
+  $('#directRestore', el).onclick = () => { if (backup == null) return; area.value = backup; backup = null; rangeA = rangeB = null; info.textContent = '削除する前の全文に戻しました'; refreshRange(); };
+  area.addEventListener('input', () => { rangeA = rangeB = null; backup = null; matches.start.list = matches.end.list = []; refreshRange(); });
   // 音声の先頭・末尾を文字起こしして、貼り付けたスクリプトの中の範囲を推定する（文字起こしの結果は教材に保存され、次回は再実行しない）
   $('#directEstimate', el).onclick = async (event) => {
     const button = event.currentTarget, note = $('#directEstimateInfo', el);
-    const rows = area.value.split('\n').map(text => ({ text }));
+    const rows = rawLines().map(text => ({ text }));
     if (!rows.some(r => r.text.trim())) return toast('先にスクリプトを貼り付けてください');
     const script = parseKinfureScript(rows.map(r => ({ text: r.text })));
     if (script.lines.length < 8) return toast('スクリプトの行が少なすぎます');
     button.disabled = true; note.textContent = '音声を準備しています…';
     try {
       const fresh = await sdb.get('sets', setId) || set;
+      const t0 = performance.now();
       const edge = await transcribeEdges(fresh, { say: text => { note.textContent = text; } });
       const rate = (script.lines.length || 1) / Math.max(1, script.groups.length);   // 1項目あたりの行数
       const expectedLines = edge.duration ? Math.round(edge.duration / 9.5 * rate) : 0;   // 金フレ: 1項目 ≈ 9〜10秒
       const res = locateByEdges(script, edge.head, edge.tail, { expectedLines });
       if (!(res.startLine >= 0) || !(res.endLine >= res.startLine)) { note.textContent = res.reason || '範囲を推定できませんでした。語句検索で決めてください。'; return; }
-      const row0 = script.lines[res.startLine].row, row1 = script.lines[Math.min(script.lines.length - 1, res.endLine + 1)]?.row;
-      const ls = lineStarts();
-      selectedStart = ls[row0][0];
-      selectedEnd = res.endLine + 1 < script.lines.length && row1 != null ? Math.max(selectedStart, ls[row1][0] - 1) : area.value.length;
-      area.focus(); area.setSelectionRange(selectedStart, selectedEnd); refreshRange();
+      // 開始の行から終了の行まで（終了の行は、その項目の最後の行）。貼り付けた文章の行番号にする
+      rangeA = script.lines[res.startLine].row;
+      const lastRow = script.lines[res.endLine].row, next = script.lines[res.endLine + 1]?.row;
+      rangeB = next != null ? Math.max(lastRow, stepLine(next, -1)) : bounds().last;
+      refreshRange();
       const LV = { high: '確信度：高', mid: '確信度：中', low: '確信度：低' };
-      note.textContent = `推定：No.${res.startN}〜No.${res.endN}（${res.groups}件・${res.lines}行）　${LV[res.level] || ''}（先頭の一致 ${Math.round(res.headShare * 100)}%・末尾の一致 ${Math.round(res.tailShare * 100)}%）${edge.cached ? '　※保存済みの文字起こしを使用' : ''}${res.reason ? '　' + res.reason : ''}${res.ok ? '' : '　→ 範囲を確認し、必要なら語句検索で直してください'}`;
+      note.textContent = `推定：No.${res.startN}〜No.${res.endN}（${res.groups}件・${res.lines}行）　${LV[res.level] || ''}（先頭の一致 ${Math.round(res.headShare * 100)}%・末尾の一致 ${Math.round(res.tailShare * 100)}%）${edge.cached ? '　※保存済みの文字起こしを使用' : `　（${Math.round((performance.now() - t0) / 1000)}秒）`}${res.reason ? '　' + res.reason : ''}${res.ok ? '' : '　→ 範囲を確認し、必要なら語句検索や「開始・終了を1行ずつ動かす」で直してください'}`;
     } catch (e) { note.textContent = '推定できませんでした：' + (e?.message || e); }
     finally { button.disabled = false; }
   };
   $('#directScriptSave', el).onclick = async () => {
-    const from = selectedStart ?? 0, to = selectedEnd ?? area.value.length;
-    if (from >= to) return toast('選択範囲を確認してください');
-    const raw = area.value.slice(from, to).trim(); if (!raw) return toast('スクリプトを入力してください');
+    const { a: ra, b: rb, ok } = current(), off = offsets();
+    if (!ok) return toast('選択範囲を確認してください');
+    const raw = area.value.slice(off[ra]?.[0] ?? 0, off[rb]?.[1] ?? area.value.length).trim(); if (!raw) return toast('スクリプトを入力してください');
     const parsed = withoutPlainScriptHeaders(parseScript(raw, file.files?.[0]?.name || 'script.txt'), raw, [set.title, file.files?.[0]?.name]);
     const lines = scriptToLines(parsed.cues.map((c) => c.text).join('\n'));
     if (!lines.length) return toast('英文を読み取れませんでした');

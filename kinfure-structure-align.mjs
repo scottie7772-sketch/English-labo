@@ -49,7 +49,7 @@ const evaluate = (res, data, offset) => {
     const a = truthOf.get(p.unit);
     if (!a || p.row !== a.row + offset) { wrong++; continue; }
     const seg = p.segments[0];
-    if (seg.start <= a.start && seg.end >= a.end && seg.end - a.end < .35 && a.start - seg.start < .12) ok++; else clip++;
+    if (seg.start <= a.start && seg.end >= a.end && seg.end - a.end < .5 && a.start - seg.start < .15) ok++; else clip++;
     if (p.segments.length === a.reads) repOk++;
   }
   return { pairs: res.pairs.length, ok, wrong, clip, repOk, supported: res.supported, inferred: res.inferred };
@@ -115,3 +115,62 @@ for (const [label, noise] of [['例文だけ文字起こし（語の誤り15%）
 // 繰り返しの検出: 実音声の長さの分布で、見出し語と例文を取り違えない
 { const u = parseUnits(REG); assert.equal(u.length, 200, '100項目 → 見出し語100 + 例文(繰り返しまとめ)100'); assert.equal(u.filter(x => x.reads.length === 2).length, 100); }
 console.log('kinfure-structure-align:', out.map(r => `${r.label} 割当${r.pairs} 正${r.ok} 誤${r.wrong}(確実${r.supported}/補完${r.inferred})`).join(' | '));
+
+// ---- 台本に行が足りない所（音声にはある発話）を、全体スクリプトから見つけて補う ----
+{
+  const { planMissing } = await import('../kinfure-structure-align.js');
+  const data = make(40, e => 1 + (e * 7) % 3);
+  // 全体スクリプト = 台本の全行。この教材の台本は、そこから一部の行（見出し語3つ・例文2つ）が抜けている
+  const whole = data.script.map(l => ({ text: l.text, kind: l.kind }));
+  const dropped = new Set([data.script.findIndex(l => l.text === nm(5)), data.script.findIndex(l => l.text === nm(12)), data.script.findIndex(l => l.text === nm(20))]);
+  const exRows = data.script.map((l, i) => ({ l, i })).filter(x => x.l.kind === 'example' && x.l.entry === 9 || x.l.entry === 30 && x.l.kind === 'example');
+  for (const x of exRows.slice(0, 2)) dropped.add(x.i);
+  const keep = data.script.map((l, i) => i).filter(i => !dropped.has(i));
+  const rows = keep.map(i => ({ text: data.script[i].text, kind: data.script[i].kind, scriptIndex: i }));
+  const res = alignByStructure(rows, data.regions, mkHints(data, { headMiss: .2, dropRate: .1, seed: 4 }));
+  assert(res.ok);
+  const plan = planMissing(rows, res.pairs, res.unitList, whole);
+  const fromScript = plan.filter(p => p.type === 'script').flatMap(p => p.items).filter(it => it.text != null);
+  const viaRows = plan.flatMap(p => p.items).filter(it => it.row != null);
+  for (const it of viaRows) assert.equal(it.row_ok ?? true, true);
+  // 補う行は、実際に抜けた行と一致し、割り当てる発話もその行のもの
+  const truthUnitOf = new Map(); data.audio.forEach((a, u) => truthUnitOf.set(a.row, u));
+  let right = 0; for (const it of fromScript) { const idx = whole.findIndex(w => w.text === it.text); if (dropped.has(idx) && truthUnitOf.get(idx) === it.unit) right++; }
+  assert(fromScript.length >= 2, '抜けた行を見つける: ' + fromScript.length);
+  assert.equal(right, fromScript.length, '補う行と発話の対応がすべて正しい');
+  // 全体スクリプトが無ければ、説明できない発話として時刻だけを知らせる（行は作らない）
+  const none = planMissing(rows, res.pairs, res.unitList, null);
+  assert(none.every(p => p.type !== 'script') && none.some(p => p.type === 'unknown'));
+  // 未割当の台本行が、数と種類の合う発話の間にあるときは、順序どおりに割り当てる
+  const rows2 = data.script.map((l, i) => ({ text: l.text, kind: l.kind, scriptIndex: i }));
+  const res2 = alignByStructure(rows2, data.regions, mkHints(data, { headMiss: .2, dropRate: .5, seed: 8 }));
+  const plan2 = planMissing(rows2, res2.pairs, res2.unitList, whole).filter(p => p.type === 'rows').flatMap(p => p.items);
+  const fromScript2 = planMissing(rows2, res2.pairs, res2.unitList, null).filter(p => p.type === 'rows').flatMap(p => p.items);
+  assert(fromScript2.every(it => it.row === data.audio[it.unit].row), '全体スクリプトが無くても、未割当の行を順序で割り当てた対応がすべて正しい');
+  assert(plan2.length > 0 && plan2.every(it => it.row === data.audio[it.unit].row), '未割当の行を順序で割り当てた対応がすべて正しい: ' + plan2.length);
+  console.log(`planMissing: 全体スクリプトから補う ${fromScript.length}行（正しい${right}）／未割当の台本行を順序で割り当て ${plan2.length}行（すべて正しい）`);
+}
+
+// ---- 最初の見出し語・最後の行が台本に無いとき（先頭・末尾の未割当の発話）も、全体スクリプトから補う ----
+{
+  const { planMissing } = await import('../kinfure-structure-align.js');
+  const data = make(30, e => 1 + (e * 7) % 3);
+  const whole = data.script.map(l => ({ text: l.text, kind: l.kind }));
+  const lastIdx = data.script.length - 1;
+  const keep = data.script.map((_, i) => i).filter(i => i !== 0 && i !== lastIdx);   // 最初の見出し語と最後の行が台本に無い
+  const rows = keep.map(i => ({ text: data.script[i].text, kind: data.script[i].kind, scriptIndex: i }));
+  const res = alignByStructure(rows, data.regions, mkHints(data, { headMiss: .1, dropRate: .05, seed: 6 }));
+  assert(res.ok);
+  const plan = planMissing(rows, res.pairs, res.unitList, whole);
+  const lead = plan.find(p => p.before != null), trail = plan.find(p => p.after === rows.length - 1 && p.type === 'script');
+  assert(lead && lead.type === 'script', '先頭の見出し語を補う');
+  assert.equal(lead.items[0].text, data.script[0].text); assert.equal(lead.items[0].unit, 0, '最初の発話に割り当てる');
+  assert.equal(lead.items[0].segments.length, 1, '見出し語は1回');
+  assert(lead.items[0].segments[0].start <= data.audio[0].start && lead.items[0].segments[0].end >= data.audio[0].end, '語頭・語尾が欠けない');
+  assert(trail, '末尾の行を補う');
+  assert.equal(trail.items.at(-1).text, data.script[lastIdx].text);
+  // 全体スクリプトが無いとき: 先頭の発話は「説明できない」として時刻だけ知らせる（行は作らない）
+  const none = planMissing(rows, res.pairs, res.unitList, null);
+  assert(none.some(p => p.type === 'unknown' && p.after === -1) && none.every(p => p.type !== 'script'));
+  console.log('planMissing（先頭・末尾）: 最初の見出し語と最後の行を全体スクリプトから補えた');
+}

@@ -78,7 +78,7 @@ export async function openVocabAudioWizard({ targets = null, folder = false, pre
     ${rec0 ? `<p class="small muted">前回の作成の記録があります（${rec0.items.length}項目）。入力が変わっていなければ、前回の結果をそのまま使います。</p>` : ''}
     <details><summary class="small">詳細設定</summary><div class="stack small">
       <label class="field"><span>教材の種類</span><select name="profile"><option value="auto">自動で判定（標準）</option>${Object.entries(PROFILES).map(([k, t]) => `<option value="${k}" ${rec0?.profileSetting === k ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
-      <label class="field"><span>単語リスト（会話・朗読で、文中のフレーズを登録するとき。1行に1つ、「フレーズ[タブ]意味」でも可）</span><textarea name="words" rows="4" autocapitalize="off" spellcheck="false">${esc((rec0?.wordList || []).map(w => w.ja ? `${w.head}\t${w.ja}` : w.head).join('\n'))}</textarea></label>
+      <label class="field"><span>英和テキスト（任意）: 日本語の意味を付けたいとき（金フレ・単語）／会話・朗読で文中のフレーズを登録するとき。ChatGPT などの出力（番号・説明文・表・例文つき）でも、書いてある英語と意味を読み取ります</span><textarea name="words" rows="4" autocapitalize="off" spellcheck="false">${esc((rec0?.wordList || []).map(w => w.ja ? `${w.head}\t${w.ja}` : w.head).join('\n'))}</textarea></label>
       <label class="chk"><input type="checkbox" name="refine" checked> 発話の切れ目を調べて、確認が必要な語の端（語頭・語尾）を合わせる</label>
       <label class="chk"><input type="checkbox" name="force"> 前回の結果を使わず、最初からやり直す（手で確定した音声は残ります）</label></div></details>`,
     [['go', '開始', 'primary'], ['close', '閉じる', 'ghost']]);

@@ -38,6 +38,7 @@ export async function storageScreen(el) {
     </div>
     <h2 class="sec">すぐ消せるもの（学習データは消えません）</h2>
     <div class="card stack">
+      <div class="row between"><span><b>解析データ・キャッシュ</b><br><small class="muted">途中結果・文字起こしの保存分・候補などを、一覧から選んで一括削除（動画・字幕・手動の修正・単語・学習記録は消えません）</small></span><button class="btn sm" id="delDerived">一覧を見る</button></div>
       <div class="row between"><span><b>音声認識モデル</b><br><small class="muted">字幕の自動作成に使う部品。消しても、次に使うとき自動で再ダウンロード（Wi-Fi推奨）</small></span><button class="btn sm" id="delModel" ${model.length ? '' : 'disabled'}>${fmtSize(mTotal)} 削除</button></div>
       <div class="row between"><span><b>アプリ本体の保存分</b><br><small class="muted">画面の部品。消すと最新版を読み込み直します（ネット接続が必要）</small></span><button class="btn sm" id="delApp">${fmtSize(aTotal)} 削除</button></div>
     </div>
@@ -48,6 +49,7 @@ export async function storageScreen(el) {
     <p class="hint">「動画だけ削除」は字幕・穴埋め・学習記録を残します（あとで「動画を選び直す」で戻せます）。「全部削除」は字幕なども消えます。</p>`;
   (await import('./audio-words-ui.js')).bindStorageAudio(el, () => storageScreen(el));
   $$('[data-comp]', el).forEach((b) => (b.onclick = async () => { const { compressVideoAudio } = await import('./video.js'); if (await compressVideoAudio(b.dataset.comp)) storageScreen(el); }));
+  $('#delDerived', el).onclick = async () => { const m = await import('./derived-cache.js'); await m.openDerivedCacheDialog({ onDone: () => storageScreen(el) }); };
   $('#delModel', el).onclick = async () => {
     if (!(await confirmDialog({ title: '音声認識モデルを削除', body: `<p>${fmtSize(mTotal)} を空けます。次に字幕を自動で作るとき、もう一度ダウンロードします。</p>`, okLabel: '削除' }))) return;
     for (const c of model) await caches.delete(c.name);

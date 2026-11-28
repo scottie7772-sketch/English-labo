@@ -24,7 +24,7 @@ const headLike = (t) => t.trim().split(/\s+/).length <= 4 && !/[.!?。]["”’)
 export function parseKinfureScript(rows) {
   const items = [];
   let pendingNum = null;
-  for (const r of rows) {
+  for (const [ri, r] of rows.entries()) {
     const raw = String(r.text ?? '').trim();
     if (!raw) continue;
     if (/[぀-ヿ一-鿿]/.test(raw) && !/[A-Za-z]{2}/.test(raw)) {   // 日本語だけの行は直前の英語行の訳として扱う（見出し語・例文にしない）
@@ -39,7 +39,7 @@ export function parseKinfureScript(rows) {
     else if ((m = raw.match(NUM_BARE)) && headLike(raw.slice(m[0].length)) && r.kind !== 'example') { num = +m[1]; text = raw.slice(m[0].length).trim(); }
     if (!text) continue;
     const head = r.kind === 'word' || (r.kind !== 'example' && headLike(text));
-    items.push({ text, ja: r.ja || '', rep: r.rep || 0, kind: head ? 'word' : 'example', num: head ? num : null, was: raw });
+    items.push({ text, ja: r.ja || '', rep: r.rep || 0, kind: head ? 'word' : 'example', num: head ? num : null, was: raw, row: ri });
   }
   const heads = items.filter((x) => x.kind === 'word');
   const numbered = heads.filter((x) => x.num != null);
@@ -52,7 +52,7 @@ export function parseKinfureScript(rows) {
       seq++;
       open(x.kind === 'word' ? x.text : '', useNumbers && x.num != null ? x.num : seq, !(useNumbers && x.num != null));
     }
-    lines.push({ i: lines.length, n: g.n, text: x.text, ja: x.ja, rep: x.rep, kind: x.kind, key: kfKey(x.text) });
+    lines.push({ i: lines.length, n: g.n, text: x.text, ja: x.ja, rep: x.rep, kind: x.kind, key: kfKey(x.text), row: x.row });
     g.i1 = lines.length;
   });
   return { lines, groups, numbered: useNumbers, count: lines.length };
@@ -260,4 +260,57 @@ export function rangeFromNumbers(script, a, b) {
   if (g0 < 0 || g1 < 0 || g1 < g0) return null;
   return { startLine: script.groups[g0].i0, endLine: script.groups[g1].i1 - 1, startN: script.groups[g0].n, endN: script.groups[g1].n,
     startLabel: script.groups[g0].label, endLabel: script.groups[g1].label, groups: g1 - g0 + 1, lines: script.groups[g1].i1 - script.groups[g0].i0 };
+}
+
+// ---------- 先頭と末尾だけの文字起こしからの推定 ----------
+// 音声の先頭 数十秒と末尾 数十秒だけを文字起こしした結果（headCues / tailCues）から、全体スクリプトの中の範囲を推定する。
+// 文字起こしの全体が無くても使える（取り込み直後・文字起こし前）。先頭と末尾はそれぞれ独立に「語の集合がもっともよく重なる数行の窓」を探す。
+// 珍しい語（スクリプト全体で出現が少ない語）ほど強い手がかり。範囲は見出し語のまとまりの境界に合わせる（開始は見出し語から、終了は例文の最後まで）。
+// 確信度が低いときは確定させず、番号を手で入れてもらう（level: 'low'）。
+const tokenSet = (text) => new Set(kfKey(text).split(' ').filter((w) => w.length >= 3));
+export function locateByEdges(script, headCues, tailCues, opts = {}) {
+  const N = script.lines.length;
+  const empty = { ok: false, confidence: 0, level: 'none', reason: '', total: (headCues?.length || 0) + (tailCues?.length || 0), alternatives: [] };
+  if (!N || !headCues?.length || !tailCues?.length) return { ...empty, reason: '先頭と末尾の文字起こしがありません' };
+  const df = new Map(), lineTokens = script.lines.map((l) => { const s = tokenSet(l.text); for (const w of s) df.set(w, (df.get(w) || 0) + 1); return s; });
+  const idf = (w) => Math.max(0, Math.log(N / (1 + (df.get(w) || 0))));
+  const window = opts.window ?? 10;
+  // cues → 語の集合。行ごとに照らして最良の窓を探す（窓内のどれかの行に語があれば加点。語の重みは idf）
+  const best = (cues) => {
+    const bag = new Set(); for (const c of cues) for (const w of tokenSet(c.text)) if (df.has(w)) bag.add(w);
+    const total = [...bag].reduce((s, w) => s + idf(w), 0);
+    if (!total) return null;
+    // 語 → 出現する行
+    const where = new Map(); for (const w of bag) where.set(w, []);
+    lineTokens.forEach((set, i) => { for (const w of bag) if (set.has(w)) where.get(w).push(i); });
+    let top = { score: -1, i: 0 };
+    for (let i = 0; i < N; i++) {
+      let s = 0;
+      for (const [w, ls] of where) { if (ls.length && ls.some((l) => l >= i && l < i + window)) s += idf(w); }   // ls は短いので線形で足りる
+      if (s > top.score) top = { score: s, i };
+    }
+    return { ...top, share: top.score / total, bag, where };
+  };
+  const h = best(headCues), t = best(tailCues);
+  if (!h || !t) return { ...empty, reason: '全体スクリプトと一致する語がありません' };
+  // 先頭: 窓の中で、先頭の文字起こし（最初の2つ）に出てくる語がある最初の行。末尾: 末尾の文字起こし（最後の2つ）に出てくる語がある最後の行
+  const firstBag = new Set(); for (const c of headCues.slice(0, 2)) for (const w of tokenSet(c.text)) firstBag.add(w);
+  const lastBag = new Set(); for (const c of tailCues.slice(-2)) for (const w of tokenSet(c.text)) lastBag.add(w);
+  // 行ごとの「その行の語のうち、文字起こしで説明できる割合」（idf 重み）。ありふれた語が偶然前の行にあるだけでは、半分に届かない
+  const hit = (i, bag) => { let s = 0, all = 0; for (const w of lineTokens[i]) { const x = idf(w); all += x; if (bag.has(w)) s += x; } return all ? s / all : 0; };
+  let startLine = h.i, endLine = Math.min(N - 1, t.i + window - 1);
+  for (let i = h.i; i < Math.min(N, h.i + window); i++) if (hit(i, firstBag) >= .5) { startLine = i; break; }
+  for (let i = Math.min(N - 1, t.i + window - 1); i >= t.i; i--) if (hit(i, lastBag) >= .5) { endLine = i; break; }
+  const g0 = groupOfLine(script, startLine), g1 = groupOfLine(script, endLine);
+  const i0 = g0.i0, i1 = g1.i1 - 1;
+  if (i1 < i0) return { ...empty, reason: '先頭より前に末尾が見つかりました（別の場所と取り違えている可能性があります）', startLine: i0, endLine: i1 };
+  const conf = Math.max(0, Math.min(1, Math.min(h.share, t.share) * 1.25));
+  const level = conf >= .6 ? 'high' : conf >= .4 ? 'mid' : 'low';
+  const lines = i1 - i0 + 1;
+  // 長さの手がかり（任意）: 音声の長さ・行あたりの秒数から期待される行数と大きく違えば、確信度を下げる
+  let note = '';
+  if (opts.expectedLines && (lines > opts.expectedLines * 2.2 || lines < opts.expectedLines / 2.2)) note = `行数（${lines}）が音声の長さから見た目安（約${opts.expectedLines}）と大きく違います`;
+  return { ok: level !== 'low' && !note, confidence: +conf.toFixed(2), level: note && level === 'high' ? 'mid' : level, startN: g0.n, endN: g1.n, startLine: i0, endLine: i1, startLabel: g0.label, endLabel: g1.label,
+    groups: script.groups.indexOf(g1) - script.groups.indexOf(g0) + 1, lines, total: empty.total, matched: 0, coverage: +Math.min(h.share, t.share).toFixed(2),
+    reason: note || (level === 'low' ? '先頭・末尾の一致が弱いため確定できません' : ''), alternatives: [], by: 'edges', headShare: +h.share.toFixed(2), tailShare: +t.share.toFixed(2) };
 }

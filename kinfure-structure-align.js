@@ -18,7 +18,8 @@ const has = (bag, t) => bag.has(t) || (t.length >= 4 && [...bag].some(b => b.len
 const recall = (need, bag) => need.length ? need.filter(t => has(bag, t)).length / need.length : 0;
 
 // 例文の繰り返しは同じ録音で、長さが数%以内で一致する（実音声: 差の最大 2.2%、許容 5%）。見出し語と例文・次の発話との差は 20% 以上。繰り返しは2回まで読む。
-const similarDur = (a, b, tol) => Math.abs((a[1] - a[0]) - (b[1] - b[0])) <= tol * Math.max(a[1] - a[0], b[1] - b[0]);
+// 長い発話（1.5秒以上）は、発話区間の検出の誤差（末尾の小さい音）が長さの1割近くになることがあるので、許容を広げる。
+const similarDur = (a, b, tol) => { const m = Math.max(a[1] - a[0], b[1] - b[0]); return Math.abs((a[1] - a[0]) - (b[1] - b[0])) <= (m >= 1.5 ? Math.max(tol, .12) : tol) * m; };
 // 発話区間 → 発話（繰り返しは1つにまとめる）。units[k] = { span: 1回目, reads: [1回目, 2回目, …] }
 export function parseUnits(regions, { tol = .05, maxReads = 2 } = {}) {
   const units = [];
@@ -95,6 +96,58 @@ export function alignByStructure(rows, regions, hints = [], { slack = .15, minSu
     const segs = u.reads.map((r, k) => padRange(r, k ? u.reads[k - 1][1] : before, k + 1 < u.reads.length ? u.reads[k + 1][0] : after));
     return { row: p.row, unit: p.unit, kind: p.kind, sim: +p.sim.toFixed(3), segments: segs };
   });
+  out.unitList = units.map(u => ({ span: u.span, reads: u.reads }));
   out.ok = true;
+  return out;
+}
+
+// 音声にはあるのに台本の行に割り当てられなかった発話（台本に行が足りない所）を探す。
+// 割り当てた2つの行のあいだにある未割当の発話を、次の順で説明する。
+//   1) その間に未割当の台本行があり、数と種類（見出し語＝1回、例文＝繰り返し）が合う → 順序どおりに割り当てる（'rows'）
+//   2) 台本の行がなく、全体スクリプトの上で前後の行のあいだにある行の数と種類が合う → その行を追加する（'script'）
+//   3) 説明できない → 発話の時刻だけを知らせる（'unknown'）
+// rows: 台本の行 [{ text, kind, scriptIndex? }]（scriptIndex = 全体スクリプト上の行番号。分からなければ省略）
+// pairs / unitList: alignByStructure の結果（pairs は割り当て済み）。script: 全体スクリプトの行 [{ text, kind }]（任意）
+export function planMissing(rows, pairs, unitList, script = null) {
+  const sorted = [...pairs].sort((a, b) => a.unit - b.unit), paired = new Set(sorted.map(p => p.unit)), out = [];
+  const compat = (kind, unit) => (kind === 'head') === (unit.reads.length === 1);
+  const unitsBetween = (a, z) => { const list = []; for (let k = a + 1; k < z; k++) if (!paired.has(k)) list.push(k); return list; };
+  for (let k = 0; k + 1 < sorted.length; k++) {
+    const A = sorted[k], B = sorted[k + 1], us = unitsBetween(A.unit, B.unit);
+    if (!us.length) continue;
+    const between = []; for (let r = A.row + 1; r < B.row; r++) between.push(r);
+    const segs = u => { const x = unitList[u]; return x.reads.map(r => ({ start: r[0], end: r[1] })); };
+    const ok = (kinds) => kinds.length === us.length && kinds.every((kd, i) => compat(kd, unitList[us[i]]));
+    const ia = rows[A.row]?.scriptIndex, ib = rows[B.row]?.scriptIndex;
+    const lines = script && ia != null && ib != null && ib > ia ? script.slice(ia + 1, ib) : null;
+    if (lines && ok(lines.map(l => l.kind))) {
+      // 全体スクリプトの上で前後の行のあいだにある行の数・種類が、未割当の発話と合う: 順序どおりに対応づける。教材に行があればそれを、無ければ行を追加する。
+      const rowAt = new Map(between.map(r => [rows[r].scriptIndex, r]));
+      const items = us.map((u, i) => { const r = rowAt.get(ia + 1 + i); return r != null ? { row: r, unit: u, segments: segs(u) } : { text: lines[i].text, kind: lines[i].kind, unit: u, segments: segs(u) }; });
+      out.push({ type: items.some(x => x.text != null) ? 'script' : 'rows', after: A.row, items });
+    } else if (between.length === us.length && ok(between.map(r => rows[r].kind))) {
+      out.push({ type: 'rows', after: A.row, items: us.map((u, i) => ({ row: between[i], unit: u, segments: segs(u) })) });
+    } else out.push({ type: 'unknown', after: A.row, items: us.map(u => ({ unit: u, segments: segs(u) })), why: lines ? `全体スクリプトの上では${lines.length}行（発話は${us.length}件）で、数か種類が合いません` : `台本の行（${between.length}）と発話（${us.length}）が合いません` });
+  }
+  // 先頭・末尾（最初の割り当ての前・最後の割り当ての後）の未割当の発話: 最初の見出し語などが、台本に無いことがある。
+  // 数は4件まで。教材に未割当の行があればそれを、無ければ全体スクリプトの上で最初（最後）の行のすぐ前（後）の行を、数と種類が合うときだけ補う。
+  if (sorted.length) {
+    const first = sorted[0], last = sorted.at(-1), LIMIT = 4;
+    const segsOf = u => unitList[u].reads.map(r => ({ start: r[0], end: r[1] }));
+    const edge = (us, side) => {
+      if (!us.length || us.length > LIMIT) { if (us.length) out.push({ type: 'unknown', after: side === 'after' ? last.row : -1, items: us.map(u => ({ unit: u, segments: segsOf(u) })), why: `${side === 'after' ? '末尾' : '先頭'}の未割当の発話が${us.length}件あります` }); return; }
+      const anchor = side === 'before' ? first : last, kindsOk = kinds => kinds.length === us.length && kinds.every((kd, i) => compat(kd, unitList[us[i]]));
+      const rowIdx = side === 'before' ? Array.from({ length: us.length }, (_, i) => anchor.row - us.length + i) : Array.from({ length: us.length }, (_, i) => anchor.row + 1 + i);
+      if (rowIdx.every(r => r >= 0 && r < rows.length) && kindsOk(rowIdx.map(r => rows[r].kind))) { out.push({ type: 'rows', after: side === 'before' ? -1 : anchor.row, items: us.map((u, i) => ({ row: rowIdx[i], unit: u, segments: segsOf(u) })) }); return; }
+      const ia = rows[anchor.row]?.scriptIndex;
+      if (script && ia != null) {
+        const lines = side === 'before' ? script.slice(Math.max(0, ia - us.length), ia) : script.slice(ia + 1, ia + 1 + us.length);
+        if (kindsOk(lines.map(l => l.kind))) { out.push({ type: 'script', ...(side === 'before' ? { before: anchor.row } : { after: anchor.row }), items: us.map((u, i) => ({ text: lines[i].text, kind: lines[i].kind, unit: u, segments: segsOf(u) })) }); return; }
+      }
+      out.push({ type: 'unknown', after: side === 'after' ? last.row : -1, items: us.map(u => ({ unit: u, segments: segsOf(u) })), why: `${side === 'after' ? '末尾' : '先頭'}の未割当の発話${us.length}件に合う行が、台本・全体スクリプトに見つかりません` });
+    };
+    edge(Array.from({ length: first.unit }, (_, k) => k).filter(k => !paired.has(k)), 'before');
+    edge(Array.from({ length: unitList.length - last.unit - 1 }, (_, k) => last.unit + 1 + k).filter(k => !paired.has(k)), 'after');
+  }
   return out;
 }

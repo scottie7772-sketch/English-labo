@@ -249,7 +249,7 @@ screens.studio = async (el) => {
   const { importMaterial, studioLabState, syncStudioLabFolder } = await import('./video.js');
   studioMod.mount(el, { base: 'studio/', host: { exitHref: '#home', sendToLab: (manifest, mat, getFile, options) => importMaterial(manifest, mat, getFile, { askUpdate: false, direct: true, ...options }),
     studioLabState, syncStudioLabFolder,
-    addWordsCsv: (text, deck, note) => { try { sessionStorage.setItem('ell-pending-csv', JSON.stringify({ text, deck, note })); } catch {} location.hash = '#vocab-csv'; } } });
+    addWordsCsv: (text, deck, note, setId) => { try { sessionStorage.setItem('ell-pending-csv', JSON.stringify({ text, deck, note, setId })); } catch {} location.hash = '#vocab-csv'; } } });
 };
 async function render() {
   const route = screens[currentRoute()] ? currentRoute() : 'home';

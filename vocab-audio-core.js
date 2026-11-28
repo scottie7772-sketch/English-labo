@@ -520,10 +520,10 @@ export function readGap(regs, n, { prevExample = null, hasPrev = true } = {}) {
   return { ok: true, ...fits[0], fits: fits.length };
 }
 // 発話区間の前後に余白を足す（語頭・語尾が切れないように）。余白は隣の発話までの無音の半分まで。
-// 発話区間の検出は語尾の小さい音を落としやすい（実音声で終わりが 0.05〜0.27 秒早かった）ので、語尾は語頭より広く取る。
+// 発話区間の検出は語尾の小さい音を落としやすい（実音声で終わりが 0.05〜0.37 秒早かった。実機のAACでは 0.13 秒短いものが残った）ので、語尾は語頭より広く取る（隣の発話までの無音の半分まで）。
 export const padRange = (r, before, after) => {
   const gb = before == null ? .2 : Math.max(0, r[0] - before), ga = after == null ? .6 : Math.max(0, after - r[1]);
-  return { start: round(Math.max(0, r[0] - Math.min(.08, gb / 2))), end: round(r[1] + Math.min(.3, ga / 2)) };
+  return { start: round(Math.max(0, r[0] - Math.min(.12, gb / 2))), end: round(r[1] + Math.min(.45, ga / 2)) };
 };
 // 文の途中の短い息継ぎで1つの発話が2つの区間に割れることがある。無音の中央値（組と組のあいだ・見出し語と例文のあいだ）より十分短い切れ目だけをつなぐ。
 export function joinShortGaps(regs) {

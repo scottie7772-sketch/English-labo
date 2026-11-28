@@ -22,7 +22,7 @@ import { round, normEn, sameText, pickReading, limitsFor, makeRef } from './audi
 // A reference that a person adjusted or confirmed by hand (ref.manual) is never replaced.
 const KINDS = [['word', 'word'], ['example', 'ex'], ['sentence', 'sentence']];
 const sameOrigin = (a, b) => Boolean(a.origin && b.origin && a.origin.materialId === b.origin.materialId && (a.origin.cueId ?? a.origin.itemId) === (b.origin.cueId ?? b.origin.itemId));
-export function planAudioWords(items, existing, { mode = 'merge', replace = false, lang = 'en', tags = [], source = {}, onlyConfirmed = true, primary = 'word' } = {}) {
+export function planAudioWords(items, existing, { mode = 'merge', replace = false, lang = 'en', tags = [], source = {}, onlyConfirmed = true, primary = 'word', headOnly = false } = {}) {
   const byHead = new Map();
   for (const w of existing) { if ((w.lang || 'en') !== lang) continue; const k = headKey(w.headword); if (!byHead.has(k)) byHead.set(k, []); byHead.get(k).push(w); }
   const exOf = w => (w.senses || []).flatMap(s => s.examples || []).map(x => x.en);
@@ -39,9 +39,11 @@ export function planAudioWords(items, existing, { mode = 'merge', replace = fals
     const key = headKey(it.head) + '\u0001' + normEn(it.example);
     if (seen.has(key)) { out.skip.push({ item: it, reason: '同じ教材内で重複' }); continue; }
     seen.set(key, it);
-    const same = (byHead.get(headKey(it.head)) || []).filter(w =>
+    let same = (byHead.get(headKey(it.head)) || []).filter(w =>
       (it.example && exOf(w).some(en => sameText(en, it.example))) || (meanings.length && meaningsOf(w).some(m => meanings.includes(m))) ||
       (!meaningsOf(w).length && !exOf(w).length));
+    // 見出し語が1つしかない単語なら、意味・例文が違っていても同じ語とみなす（headOnly: 別の経路で追加した単語に音声を付けるとき）
+    if (!same.length && headOnly) { const only = byHead.get(headKey(it.head)); if (only?.length === 1) same = only; }
     if (same.length > 1) out.dupes.push({ item: it, words: same });
     // 登録に使う音声は、確定したものだけ（onlyConfirmed:false のときは未確定も手元に残す）
     const usable = ref => ref && (ref.state === 'confirmed' || !onlyConfirmed) ? ref : null;

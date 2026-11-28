@@ -41,7 +41,7 @@ const evalCase = (label, missing, { withExample = true, n = 100 } = {}) => {
     const w = items[i].refs.word, e = items[i].refs.example, t = truth(i);
     if (!w || !w.fromStructure) continue;
     tried++;
-    const hit = (r, ref) => ref.start <= r[0] + .01 && ref.end >= r[1] - .01 && ref.start >= r[0] - .2 && ref.end <= r[1] + .35;
+    const hit = (r, ref) => ref.start <= r[0] + .01 && ref.end >= r[1] - .01 && ref.start >= r[0] - .2 && ref.end <= r[1] + .5;
     if (hit(t.head, w.ref)) headOk++; else { wrong++; if (REG.slice(0, 3 * n).some((r, k) => k % 3 === 0 && k !== 3 * i && hit(r, w.ref))) shifted++; else if (w.ref.start > t.head[0] + .01 || w.ref.end < t.head[1] - .01) clip++; else extra++; }
     if (e) { if (hit(t.ex, e.ref) && e.ref.end < t.rep[0]) exOk++; else wrong++; }
   }

@@ -1,5 +1,6 @@
 // Word data operations, parsing (bulk / CSV), seed data
 import { db, uid, getMeta, setMeta } from './db.js';
+import { parseLooseEnJa } from './loose-enja.js';
 import { SKILLS, setManual, mid } from './mastery.js';
 import { curLang, langOf, isZh } from './langs.js';
 
@@ -132,7 +133,7 @@ const COLS = {
 
 // CSV analysis: header detection, number column detection, content-based fallback.
 // Returns { entries, columns: [{name, sample}], map: {field: colIndex}, header: bool, indexCols: [i], notes: [] }
-export function analyzeCSV(text, overrideMap = null) {
+export function analyzeCSVStrict(text, overrideMap = null) {
   const rows = parseCSV(text);
   const res = { entries: [], columns: [], map: {}, header: false, indexCols: [], notes: [], rows: rows.length };
   if (!rows.length) { res.notes.push('ファイルに読み取れる行がありません（空、またはCSVではない形式）'); return res; }
@@ -175,6 +176,27 @@ export function analyzeCSV(text, overrideMap = null) {
   })).filter((e) => e.headword);
   if (!res.entries.length) res.notes.push(map.headword == null ? '英語の列が見つかりませんでした' : '英語の列が空です');
   return res;
+}
+// 英和テキストの読み取り: CSV として読んだ結果と、ゆるい読み取り（番号・説明文・表・英日交互などが混ざっていてもよい）を比べて、良いほうを使う。
+// 列の割り当てを手で指定したとき（overrideMap）は、CSV としてだけ読む。
+const goodEntry = (e) => e.headword && !isNumOnly(e.headword) && !/^\s*(?:\d{1,4}\s*[.)）:：]|[-*•・])/.test(e.headword) && !/[*`|]/.test(e.headword) && !hasJa(e.headword) && String(e.headword).split(/\s+/).length <= 8 && (e.meanings || []).some(hasJa);
+const scoreOf = (entries) => entries.filter(goodEntry).length;
+export function analyzeCSV(text, overrideMap = null) {
+  const csv = analyzeCSVStrict(text, overrideMap);
+  if (overrideMap) return csv;
+  const loose = parseLooseEnJa(text), le = loose.entries.map((e) => ({ headword: normHead(e.headword), meanings: e.meanings || [], pos: e.pos || '', example_en: e.example_en || '', example_ja: e.example_ja || '', tags: [], accepted: [], ipa: '', lang: '', gender: '', bookmarked: false }));
+  const sc = scoreOf(csv.entries), sl = scoreOf(le);
+  // CSV として良く読めている（半分以上の行が見出し語＋日本語の意味）なら CSV を使う。ゆるい読み取りのほうが多く拾えるときだけ切り替える
+  if (sl > sc && !(csv.entries.length && sc >= csv.entries.length * 0.8 && sc >= sl * 0.9)) {
+    return { ...csv, entries: le, columns: [], map: {}, header: false, indexCols: [], how: 'loose', skipped: loose.skipped, notes: ['番号・説明文・記号などが混ざったテキストとして読みました（書いてある英語と意味だけを拾っています）', ...loose.notes, ...(csv.entries.length && sc < csv.entries.length ? [`CSVとしては ${sc}/${csv.entries.length} 行しか読めませんでした`] : [])] };
+  }
+  return csv;
+}
+// 1行1語のテキスト（「英語, 意味」など）: parseBulk とゆるい読み取りを比べて、意味まで読めた語が多いほうを使う
+export function parseWordsText(text) {
+  const bulk = parseBulk(text), loose = parseLooseEnJa(text).entries.map((e) => ({ headword: normHead(e.headword), meanings: e.meanings || [], pos: e.pos || '', example_en: e.example_en || '', example_ja: e.example_ja || '' }));
+  const sb = scoreOf(bulk), sl = scoreOf(loose);
+  return sl > sb || (sl === sb && sl > 0 && bulk.length > loose.length) ? loose : bulk;   // 同点なら、説明文などの余計な行を捨てているほうを使う
 }
 export function csvToEntries(text) { return analyzeCSV(text).entries; }
 

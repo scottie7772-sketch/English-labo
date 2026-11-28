@@ -31,7 +31,7 @@ import { frameRms, frameZcr, edgeCut, isScreenRec, defaultCut } from './media-au
 import { kfRegisterScript, kfLocateFlow } from './studio-kinfure-ui.js';
 import { TIERS, bytesPerMin, compressAudio, estimate, cutAac } from './compress.js';
 
-export const STUDIO_VERSION = '0.21.34';
+export const STUDIO_VERSION = '0.21.35';
 const STUDIO_UPDATED_JST = '2026-11-24 JST';
 const LIMIT = { video: 45 * 60, audio: 100 * 60 };   // one import: video up to 45 min, audio up to 100 min in total (user decisions; 1.16: 75 → 100)
 let ROOT = null, BASE = '', HOST = null;   // HOST: set when the studio runs inside English Labo
@@ -5025,10 +5025,10 @@ async function wordsScreen(el, params) {
         <button class="btn sm grow" id="cl">Claude用にコピー</button></div>
         <small class="muted">意味をつけるには「Claude用にコピー」→ Claudeのチャットに貼る → 返ってきたCSVを${HOST ? '下に貼り付けて単語帳へ。' : '英語ラボの単語帳「CSVから追加」で読み込み。'}</small></div>
       ${HOST ? `<div class="card stack"><b>訳をつけたCSVを単語帳へ</b>
-        <textarea id="wPaste" rows="5" placeholder="Claudeから返ってきたCSV（英語,日本語,品詞,例文,例文訳…）をここに貼り付け" autocapitalize="off" autocorrect="off"></textarea>
+        <textarea id="wPaste" rows="5" placeholder="ChatGPT・Claudeの返答をそのまま貼り付け（CSV・番号つきの一覧・表・説明文つきでも、書いてある英語と意味を読み取ります）" autocapitalize="off" autocorrect="off"></textarea>
         <label class="field"><span>単語集の名前（元データごとにまとめます）</span><input id="wDeck" value="${esc(set.folder || set.title)}"></label>
         <button class="btn primary" id="wSend">英語ラボの単語帳へ（確認画面へ）</button>
-        <small class="muted">同じ単語がすでにあれば、新しく作らずにこの単語集にも入れます。</small></div>` : ''}`;
+        <small class="muted">同じ単語がすでにあれば、新しく作らずにこの単語集にも入れます。この教材で確定している音声（見出し語・例文）は、追加した単語に自動で付きます。</small></div>` : ''}`;
     const upd = () => { $('#cnt', el).textContent = `${set.title}：${list.length}${mode === 'phrase' ? '個の熟語' : '語'}（選択 ${chosen.size}）`; $('#csv', el).disabled = $('#cl', el).disabled = !chosen.size; };
     upd();
     $('#md', el).onclick = (e) => { const v = e.target.dataset.v; if (v && v !== mode) { mode = v; chosen.clear(); try { localStorage.setItem('st-wmode', v); } catch {} draw(); } };
@@ -5051,7 +5051,7 @@ async function wordsScreen(el, params) {
     $('#wSend', el)?.addEventListener('click', () => {
       const text = $('#wPaste', el).value.replace(/^```\w*\n?|```\s*$/gm, '').trim();
       if (!text) return toast('CSVを貼り付けてください');
-      HOST.addWordsCsv?.(text, $('#wDeck', el).value.trim() || set.title, set.title);
+      HOST.addWordsCsv?.(text, $('#wDeck', el).value.trim() || set.title, set.title, set.id);
     });
     $('#cl', el).onclick = async () => {
       const text = (mode === 'phrase'

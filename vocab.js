@@ -11,7 +11,7 @@ import { L, curLang, langOf, numToMarks, LANGS, isZh, langAttr } from './langs.j
 import { setDue } from './srs.js';
 import { scanWords } from './datacheck.js';
 import { EXTRA_SKILLS } from './mastery.js';
-import { newWord, newSense, saveWord, toggleBookmark, deleteWord, headKey, splitList, parseBulk, csvToEntries, analyzeCSV, entryIssues, registerEntries, wordsByHead, findDuplicate, meaningsOf, splitWord } from './words.js';
+import { newWord, newSense, saveWord, toggleBookmark, deleteWord, headKey, splitList, parseBulk, csvToEntries, analyzeCSV, parseWordsText, entryIssues, registerEntries, wordsByHead, findDuplicate, meaningsOf, splitWord } from './words.js';
 
 const POS_JA = { noun: '名詞', verb: '動詞', adjective: '形容詞', adverb: '副詞', preposition: '前置詞', conjunction: '接続詞', pronoun: '代名詞', 'phrasal verb': '句動詞', idiom: 'イディオム', phrase: '熟語' };
 const POS_OPTIONS = ['', 'noun', 'verb', 'adjective', 'adverb', 'phrasal verb', 'idiom', 'phrase', 'preposition', 'conjunction'];
@@ -530,7 +530,7 @@ export async function vocabBulk(el) {
       <button class="btn primary" id="prev">確認する</button>
     </div>
     <div id="out"></div>`;
-  $('#prev', el).onclick = () => previewAndRegister(el, parseBulk($('#t', el).value), { type: 'bulk' }, { tags: splitList($('#tags', el).value), bookmarked: $('#bm', el).checked });
+  $('#prev', el).onclick = () => previewAndRegister(el, parseWordsText($('#t', el).value), { type: 'bulk' }, { tags: splitList($('#tags', el).value), bookmarked: $('#bm', el).checked });
 }
 
 // shared preview -> register. Rows with problems are listed with the reason and NOT registered unless ticked.
@@ -578,7 +578,17 @@ async function previewAndRegister(el, entries, src, extra = {}, csv = null) {
       // duplicates (not registered again): put the existing word into this deck too
       let linked = r.linked || 0;
       if (extra.deckIds?.length) for (const x of rows.filter((y) => !y.on && y.dup && y.dup.id !== '_')) { const cur = await db.get('words', x.dup.id); if (!cur) continue; const add = extra.deckIds.filter((d) => !(cur.deckIds || []).includes(d)); if (add.length) { cur.deckIds = [...(cur.deckIds || []), ...add]; await db.put('words', cur); linked++; } }
-      toast(`${r.added}件を登録しました${r.skipped ? `（${r.skipped}件スキップ）` : ''}${linked ? `・登録済みの${linked}件を単語集に追加` : ''}`, 3500);
+      // スタジオの単語リストから来たときは、その教材で確定している音声（見出し語・例文）を、追加した単語に付ける
+      let audioNote = '';
+      if (src.type === 'studio' && src.setId) {
+        try {
+          const m = await import('./vocab-audio-pipeline.js');
+          const heads = new Set(rows.map((x) => m.keyOfHead(x.e.headword)));
+          const a = await m.attachAudioFromSet('studio', src.setId, { heads });
+          audioNote = a.updated ? `・音声を ${a.updated}語に付けました（見出し語 ${a.wordAudio}・例文 ${a.exampleAudio}）` : '・この教材には、付けられる確定した音声がありません（先に教材で音声を割り当ててください）';
+        } catch (e) { audioNote = '・音声は付けられませんでした：' + (e?.message || e); }
+      }
+      toast(`${r.added}件を登録しました${r.skipped ? `（${r.skipped}件スキップ）` : ''}${linked ? `・登録済みの${linked}件を単語集に追加` : ''}${audioNote}`, audioNote ? 6500 : 3500);
       go('#vocab');
     };
   };
@@ -628,7 +638,7 @@ export async function vocabCSV(el) {
   if (pending?.text) {
     $('#deckName', el).value = pending.deck || '';
     const a = analyzeCSV(pending.text);
-    previewAndRegister(el, a.entries, { type: 'studio', note: pending.note || pending.deck || '' }, { tags: [], deckIds: await deckIdOf(pending.deck) }, { text: pending.text, analysis: a });
+    previewAndRegister(el, a.entries, { type: 'studio', note: pending.note || pending.deck || '', ...(pending.setId ? { setId: pending.setId } : {}) }, { tags: [], deckIds: await deckIdOf(pending.deck) }, { text: pending.text, analysis: a });
   }
   $('#file', el).onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;

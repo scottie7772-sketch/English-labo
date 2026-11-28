@@ -7,6 +7,7 @@
 import { db, getSetting, setSetting } from './db.js';
 import { detectProfile, extractItems, gradeItems, recheckItems, structureRescue, refineRefs, summarize, deriveState, carryOver, confirmRef, clearRef, toRegistration, PROFILES, MODES, keyOf } from './vocab-audio-core.js';
 import { planAudioWords, applyAudioWords, refBytes } from './audio-refs.js';
+import { parseLooseEnJa } from './loose-enja.js';
 
 export const recordKey = (kind, id) => `wap:${kind}:${id}`;
 const hash = (text) => { let a = 2166136261; for (let i = 0; i < text.length; i++) a = Math.imul(a ^ text.charCodeAt(i), 16777619); return (a >>> 0).toString(36); };
@@ -14,12 +15,26 @@ export const materialFingerprint = (m) => hash(JSON.stringify(m.rows.map(r => [r
 export const evidenceFingerprint = (m) => hash(JSON.stringify((m.evidence || []).map(e => [e.id, e.text, e.start, e.end])));
 const optionsFingerprint = (o) => hash(JSON.stringify([o.profile, o.mode, o.wordList || []]));
 
-// 単語リスト（会話・朗読の対象フレーズ）: 1行に1つ。「フレーズ[タブ/カンマ]意味」でも可。
+// 単語リスト（英和テキスト）: 1行に1つ。「フレーズ[タブ/コンマ]意味」でも、ChatGPT の出力（番号・説明文・表・英日交互・例文つき）でも、書いてある英語と意味を拾う。
+// 会話・朗読では「対象フレーズ」、金フレ型・一般単語では「日本語の意味（と例文訳）」として使う。
 export function parseWordList(text) {
+  const loose = parseLooseEnJa(text, { keepBare: true }).entries.map((e) => ({ head: e.headword, ...(e.meanings.length ? { ja: e.meanings.join(' / ') } : {}), ...(e.example_en ? { example: e.example_en } : {}), ...(e.example_ja ? { exampleJa: e.example_ja } : {}), ...(e.pos ? { pos: e.pos } : {}) })).filter((x) => keyOf(x.head));
+  if (loose.length) return loose;
   return String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => {
     const m = l.split(/\t|,|，|　{2,}/).map(x => x.trim());
     return { head: m[0], ...(m[1] ? { ja: m[1] } : {}) };
   }).filter(x => keyOf(x.head));
+}
+// 英和テキストの意味・例文訳を、項目に付ける（すでに意味のある項目・手で付けた意味は変えない）。見出し語が同じものだけ。例文訳は、例文が同じときだけ。
+export function applyMeanings(items, wordList) {
+  const by = new Map(); for (const t of wordList || []) { const k = keyOf(t.head); if (k && !by.has(k)) by.set(k, t); }
+  let n = 0;
+  for (const it of items) {
+    const t = by.get(keyOf(it.head)); if (!t) continue;
+    if (t.ja && !it.ja) { it.ja = t.ja; n++; }
+    if (t.exampleJa && it.example && !it.exampleJa && t.example && keyOf(t.example) === keyOf(it.example)) it.exampleJa = t.exampleJa;
+  }
+  return n;
 }
 
 export async function loadRecord(kind, id) { return getSetting(recordKey(kind, id), null); }
@@ -106,6 +121,7 @@ export async function runPipeline(target, options = {}, hooks = {}) {
   step('extract', { profile: det.profile });
   const { items, notes } = extractItems(m.rows, det.profile, { mode: opts.mode, wordList: opts.wordList, from: m.kind, materialId: m.id, title: m.title });
   rec.notes = notes;
+  if (det.profile === 'kinfure' || det.profile === 'wordlist') rec.meaningsApplied = applyMeanings(items, opts.wordList);   // 英和テキストの意味を付ける
   carryOver(rec.items, items, opts.mode);   // 手で確定した参照・登録済みの印・調整の記録は引き継ぐ
   step('grade');
   gradeItems(items, m.rows, { evidence: m.evidence });
@@ -189,11 +205,11 @@ export async function reviewClear(kind, id, key, refKind) {
 // ---- 登録 ----
 // 確定した音声だけを登録する（標準）。未確定の項目は登録せず、あとでもう一度実行すると、その時点で確定していれば追加される。
 // 既存の単語には音声だけを足す（意味・例文・学習記録は変えない）。同じ項目を2回登録しても増えない。
-export async function planRegistration(rec, { onlyConfirmed = true, replace = false, addNew = true } = {}) {
+export async function planRegistration(rec, { onlyConfirmed = true, replace = false, addNew = true, headOnly = false } = {}) {
   const mode = rec.mode, words = await db.all('words');
   const reg = toRegistration(rec.items, mode);
   const lang = 'en';
-  return planAudioWords(reg, words, { mode: addNew ? 'merge' : 'audio', replace, lang, tags: [rec.title], source: rec.kind === 'lab' ? { type: 'video', videoId: rec.id, title: rec.title } : { type: 'studio', setId: rec.id, title: rec.title }, onlyConfirmed, primary: mode === 'sentence' ? 'sentence' : 'word' });
+  return planAudioWords(reg, words, { mode: addNew ? 'merge' : 'audio', replace, headOnly, lang, tags: [rec.title], source: rec.kind === 'lab' ? { type: 'video', videoId: rec.id, title: rec.title } : { type: 'studio', setId: rec.id, title: rec.title }, onlyConfirmed, primary: mode === 'sentence' ? 'sentence' : 'word' });
 }
 export async function registerRecord(kind, id, options = {}) {
   const rec = await loadRecord(kind, id); if (!rec) throw new Error('作成の記録が見つかりません');
@@ -247,3 +263,17 @@ export async function buildDiagnostics(kind, id, { maxEvidence = 20000 } = {}) {
     })),
   };
 }
+
+// 別の経路（スタジオの単語リスト → CSV）で単語帳に追加した単語に、その教材の確定した音声（見出し語・例文）を付ける。
+// 追加はしない（すでにある単語に音声の参照を付けるだけ）。heads（見出し語の集合）を渡すと、その語だけが対象。
+// 見出し語が同じ単語が1つだけなら、意味・例文が違っていても同じ語とみなす。例文の音声は、単語の例文が教材の例文と同じときだけ付ける。
+export async function attachAudioFromSet(kind, id, { heads = null } = {}) {
+  const r = await runPipeline({ kind, id }, {}, {});   // 入力が同じなら前回の結果を使う
+  const items = heads ? r.rec.items.filter((it) => heads.has(keyOfHead(it.head))) : r.rec.items;
+  const plan = await planRegistration({ ...r.rec, items }, { addNew: false, headOnly: true });
+  const res = await applyAudioWords(plan);
+  const exampleAudio = plan.update.filter((u) => u.audio.example).length;
+  return { items: items.length, updated: res.updated, wordAudio: plan.update.filter((u) => u.audio.word).length, exampleAudio, noAudio: items.filter((it) => !it.refs.word || it.refs.word.ref.state !== 'confirmed').length, summary: r.summary };
+}
+const keyOfHead = (h) => String(h || '').toLowerCase().replace(/[　\s]+/g, ' ').trim();
+export { keyOfHead };
